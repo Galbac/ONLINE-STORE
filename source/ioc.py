@@ -7,6 +7,7 @@ from source.common.commiter import Commiter
 from source.config.settings import Settings, settings
 from source.db.db_helper import db_helper
 from source.db.sa_commiter import SACommiter
+from source.interactors.auth_login import AuthLoginInteractor
 from source.interactors.auth_register import AuthRegisterInteractor
 from source.services.auth import AuthService
 
@@ -25,6 +26,10 @@ class AppProvider(Provider):
     )
     auth_register_interactor = provide(
         AuthRegisterInteractor,
+        scope=Scope.REQUEST,
+    )
+    auth_login_interactor = provide(
+        AuthLoginInteractor,
         scope=Scope.REQUEST,
     )
 

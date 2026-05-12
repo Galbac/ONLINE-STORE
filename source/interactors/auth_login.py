@@ -1,18 +1,18 @@
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from source.schemas.pydantic.auth import RegisterAuthResponse, UserRegisterRequest
+from source.schemas.pydantic.auth import AuthResponse, UserLoginRequest
 from source.services.auth import AuthService
 
 
-class AuthRegisterInteractor:
+class AuthLoginInteractor:
     async def execute(
         self,
         *,
         session: AsyncSession,
         auth_service: AuthService,
-        data: UserRegisterRequest,
-    ) -> RegisterAuthResponse:
-        return await auth_service.register_user(
+        data: UserLoginRequest,
+    ) -> AuthResponse:
+        return await auth_service.login_user(
             session=session,
             data=data,
         )

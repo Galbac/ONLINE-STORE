@@ -10,7 +10,12 @@ class UserRegisterRequest(BaseModel):
     password: str = Field(min_length=8)
 
 
-class UserResponse(BaseModel):
+class UserLoginRequest(BaseModel):
+    login: str = Field(min_length=3, max_length=255)
+    password: str = Field(min_length=1)
+
+
+class UserShortResponse(BaseModel):
     id: int
     name: str
     phone: str
@@ -21,7 +26,18 @@ class UserResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
-class AuthResponse(UserResponse):
+class UserResponse(UserShortResponse):
+    pass
+
+
+class RegisterAuthResponse(UserShortResponse):
+    access_token: str
+    refresh_token: str
+    token_type: str = "bearer"
+
+
+class AuthResponse(BaseModel):
+    user: UserShortResponse
     access_token: str
     refresh_token: str
     token_type: str = "bearer"
