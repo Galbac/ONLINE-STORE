@@ -44,3 +44,7 @@ class InvalidCurrentPasswordError(Exception):
 
 class ChangePasswordRateLimitExceededError(Exception):
     pass
+
+
+class CurrentUserNotFoundError(Exception):
+    pass

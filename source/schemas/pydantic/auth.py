@@ -1,4 +1,5 @@
 import re
+from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator
 from pydantic import TypeAdapter
@@ -115,3 +116,15 @@ class AuthResponse(BaseModel):
     access_token: str
     refresh_token: str
     token_type: str = "bearer"
+
+
+class CurrentUserResponse(BaseModel):
+    id: int
+    name: str
+    phone: str
+    email: EmailStr | None
+    role: UserRole
+    permissions: list[str]
+    is_active: bool
+    is_verified: bool = False
+    created_at: datetime

@@ -17,6 +17,7 @@ from source.db.models.refresh_token import RefreshToken
 from source.db.models.user import User
 from source.errors.auth import (
     ChangePasswordRateLimitExceededError,
+    CurrentUserNotFoundError,
     InactiveUserError,
     InvalidCurrentPasswordError,
     InvalidPasswordResetTokenError,
@@ -32,6 +33,7 @@ from source.errors.auth import (
 from source.schemas.pydantic.auth import (
     AuthResponse,
     ChangePasswordRequest,
+    CurrentUserResponse,
     ForgotPasswordRequest,
     MessageResponse,
     RegisterAuthResponse,
@@ -263,6 +265,7 @@ class AuthService:
 
         await redis_service.delete(token_key)
         await redis_service.delete(f"password_reset:user:{user.id}")
+        await self.invalidate_current_user_cache(redis_service=redis_service, user_id=user.id)
 
         return MessageResponse(message=RESET_PASSWORD_SUCCESS_MESSAGE)
 
@@ -315,12 +318,49 @@ class AuthService:
 
         await redis_service.delete(failed_key)
         await self._delete_password_reset_tokens(redis_service=redis_service, user_id=user.id)
+        await self.invalidate_current_user_cache(redis_service=redis_service, user_id=user.id)
         await self._blacklist_access_token_if_enabled(
             redis_service=redis_service,
             access_token=access_token,
         )
 
         return MessageResponse(message=RESET_PASSWORD_SUCCESS_MESSAGE)
+
+    async def get_current_user_profile(
+        self,
+        *,
+        session: AsyncSession,
+        redis_service: RedisService,
+        user_id: int,
+    ) -> CurrentUserResponse:
+        cache_key = f"auth:me:user:{user_id}"
+        cached_user = await redis_service.get(cache_key)
+        if cached_user is not None:
+            return CurrentUserResponse.model_validate_json(
+                self._decode_redis_value(cached_user),
+            )
+
+        user = await self._get_user_by_id(session=session, user_id=user_id)
+        if user is None:
+            raise CurrentUserNotFoundError
+        if not user.is_active:
+            raise InactiveUserError
+
+        response = self._build_current_user_response(user)
+        await redis_service.set(
+            cache_key,
+            response.model_dump_json(),
+            ttl_seconds=settings.auth_me.cache_ttl_seconds,
+        )
+        return response
+
+    async def invalidate_current_user_cache(
+        self,
+        *,
+        redis_service: RedisService,
+        user_id: int,
+    ) -> None:
+        await redis_service.delete(f"auth:me:user:{user_id}")
 
     def create_access_token(self, *, user_id: int, role: UserRole) -> str:
         return self._create_token(
@@ -405,6 +445,24 @@ class AuthService:
     def _normalize_login(self, login: str) -> str:
         normalized_login = login.strip()
         return normalized_login.lower() if "@" in normalized_login else normalized_login
+
+    def _build_current_user_response(self, user: User) -> CurrentUserResponse:
+        return CurrentUserResponse(
+            id=user.id,
+            name=user.name,
+            phone=user.phone,
+            email=user.email,
+            role=user.role,
+            permissions=self._get_permissions_for_role(user.role),
+            is_active=user.is_active,
+            is_verified=False,
+            created_at=user.created_date,
+        )
+
+    def _get_permissions_for_role(self, role: UserRole) -> list[str]:
+        if role == UserRole.CUSTOMER:
+            return ["profile:read", "orders:read", "orders:create"]
+        return []
 
     async def _check_password_reset_rate_limit(
         self,

@@ -12,6 +12,7 @@ from source.interactors.auth_change_password import AuthChangePasswordInteractor
 from source.interactors.auth_forgot_password import AuthForgotPasswordInteractor
 from source.interactors.auth_login import AuthLoginInteractor
 from source.interactors.auth_logout import AuthLogoutInteractor
+from source.interactors.auth_me import AuthMeInteractor
 from source.interactors.auth_register import AuthRegisterInteractor
 from source.interactors.auth_reset_password import AuthResetPasswordInteractor
 from source.services.auth import AuthService
@@ -53,6 +54,10 @@ class AppProvider(Provider):
     )
     auth_change_password_interactor = provide(
         AuthChangePasswordInteractor,
+        scope=Scope.REQUEST,
+    )
+    auth_me_interactor = provide(
+        AuthMeInteractor,
         scope=Scope.REQUEST,
     )
     redis_service = provide(

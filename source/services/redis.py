@@ -16,6 +16,9 @@ class RedisService:
     async def delete(self, key: str) -> None:
         await self._redis.delete(key)
 
+    async def exists(self, key: str) -> bool:
+        return bool(await self._redis.exists(key))
+
     async def incr(self, key: str) -> int:
         return int(await self._redis.incr(key))
 

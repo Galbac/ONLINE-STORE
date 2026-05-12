@@ -2,11 +2,12 @@ from dishka.integrations.fastapi import FromDishka, inject
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from source.api.dependencies import get_current_user
+from source.api.dependencies import get_current_user, verify_access_token
 from source.common.commiter import Commiter
 from source.db.models.user import User
 from source.errors.auth import (
     ChangePasswordRateLimitExceededError,
+    CurrentUserNotFoundError,
     InactiveUserError,
     InvalidCurrentPasswordError,
     InvalidCredentialsError,
@@ -23,11 +24,13 @@ from source.interactors.auth_change_password import AuthChangePasswordInteractor
 from source.interactors.auth_forgot_password import AuthForgotPasswordInteractor
 from source.interactors.auth_login import AuthLoginInteractor
 from source.interactors.auth_logout import AuthLogoutInteractor
+from source.interactors.auth_me import AuthMeInteractor
 from source.interactors.auth_register import AuthRegisterInteractor
 from source.interactors.auth_reset_password import AuthResetPasswordInteractor
 from source.schemas.pydantic.auth import (
     AuthResponse,
     ChangePasswordRequest,
+    CurrentUserResponse,
     ForgotPasswordRequest,
     LogoutRequest,
     MessageResponse,
@@ -41,6 +44,52 @@ from source.services.notifications import EmailService, TelegramNotificationServ
 from source.services.redis import RedisService
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+
+
+@router.get(
+    "/me",
+    response_model=CurrentUserResponse,
+    status_code=status.HTTP_200_OK,
+    responses={
+        status.HTTP_401_UNAUTHORIZED: {
+            "description": "Пользователь не авторизован или access_token недействителен.",
+        },
+        status.HTTP_403_FORBIDDEN: {
+            "description": "Пользователь заблокирован или неактивен.",
+        },
+        status.HTTP_404_NOT_FOUND: {
+            "description": "Пользователь не найден.",
+        },
+        status.HTTP_500_INTERNAL_SERVER_ERROR: {
+            "description": "Внутренняя ошибка сервера.",
+        },
+    },
+)
+@inject
+async def get_me(
+    token_payload: dict = Depends(verify_access_token),
+    session: FromDishka[AsyncSession] = None,
+    auth_service: FromDishka[AuthService] = None,
+    redis_service: FromDishka[RedisService] = None,
+    auth_me_interactor: FromDishka[AuthMeInteractor] = None,
+) -> CurrentUserResponse:
+    try:
+        return await auth_me_interactor.execute(
+            session=session,
+            auth_service=auth_service,
+            redis_service=redis_service,
+            user_id=int(token_payload["user_id"]),
+        )
+    except CurrentUserNotFoundError as error:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Пользователь не найден",
+        ) from error
+    except InactiveUserError as error:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Пользователь заблокирован или неактивен",
+        ) from error
 
 
 @router.post(

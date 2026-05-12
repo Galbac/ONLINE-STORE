@@ -173,6 +173,12 @@ class ChangePasswordSettings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 
+class AuthMeSettings(BaseSettings):
+    cache_ttl_seconds: int = Field(default=120, alias="AUTH_ME_CACHE_TTL_SECONDS")
+
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=(".env.example", ".env"),
@@ -192,6 +198,7 @@ class Settings(BaseSettings):
     redis: RedisSettings = RedisSettings()
     password_reset: PasswordResetSettings = PasswordResetSettings()
     change_password: ChangePasswordSettings = ChangePasswordSettings()
+    auth_me: AuthMeSettings = AuthMeSettings()
 
     @property
     def tz(self) -> tzinfo:
