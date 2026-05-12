@@ -20,3 +20,7 @@ class RefreshTokenNotFoundError(Exception):
 
 class RefreshTokenAlreadyRevokedError(Exception):
     pass
+
+
+class PasswordResetRateLimitExceededError(Exception):
+    pass

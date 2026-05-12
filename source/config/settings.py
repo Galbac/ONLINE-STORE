@@ -145,6 +145,23 @@ class WebSettings(BaseModel):
     cabinet_base_url: str = ""
 
 
+class RedisSettings(BaseSettings):
+    url: str = Field(default="redis://localhost:6379/0", alias="REDIS_URL")
+
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+
+class PasswordResetSettings(BaseSettings):
+    token_ttl_seconds: int = Field(default=1800, alias="PASSWORD_RESET_TOKEN_TTL_SECONDS")
+    frontend_url: str = Field(default="https://site.ru/reset-password", alias="PASSWORD_RESET_FRONTEND_URL")
+    rate_limit_by_login: int = Field(default=3, alias="PASSWORD_RESET_RATE_LIMIT_BY_LOGIN")
+    rate_limit_by_ip: int = Field(default=10, alias="PASSWORD_RESET_RATE_LIMIT_BY_IP")
+    rate_limit_window_seconds: int = Field(default=3600, alias="PASSWORD_RESET_RATE_LIMIT_WINDOW_SECONDS")
+    token_secret: str = Field(default="change-me-in-env", alias="PASSWORD_RESET_TOKEN_SECRET")
+
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=(".env.example", ".env"),
@@ -161,6 +178,8 @@ class Settings(BaseSettings):
     middleware: MiddlewareSettings = MiddlewareSettings()
     smtp: SmtpSettings = SmtpSettings()
     web: WebSettings = WebSettings()
+    redis: RedisSettings = RedisSettings()
+    password_reset: PasswordResetSettings = PasswordResetSettings()
 
     @property
     def tz(self) -> tzinfo:

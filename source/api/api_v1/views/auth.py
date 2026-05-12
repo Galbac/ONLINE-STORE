@@ -1,5 +1,5 @@
 from dishka.integrations.fastapi import FromDishka, inject
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from source.api.dependencies import get_current_user
@@ -8,16 +8,19 @@ from source.db.models.user import User
 from source.errors.auth import (
     InactiveUserError,
     InvalidCredentialsError,
+    PasswordResetRateLimitExceededError,
     RefreshTokenAlreadyRevokedError,
     RefreshTokenNotFoundError,
     UserEmailAlreadyExistsError,
     UserPhoneAlreadyExistsError,
 )
+from source.interactors.auth_forgot_password import AuthForgotPasswordInteractor
 from source.interactors.auth_login import AuthLoginInteractor
 from source.interactors.auth_logout import AuthLogoutInteractor
 from source.interactors.auth_register import AuthRegisterInteractor
 from source.schemas.pydantic.auth import (
     AuthResponse,
+    ForgotPasswordRequest,
     LogoutRequest,
     MessageResponse,
     RegisterAuthResponse,
@@ -25,6 +28,8 @@ from source.schemas.pydantic.auth import (
     UserRegisterRequest,
 )
 from source.services.auth import AuthService
+from source.services.notifications import EmailService, TelegramNotificationService
+from source.services.redis import RedisService
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -163,4 +168,49 @@ async def logout_user(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Refresh token уже отозван",
+        ) from error
+
+
+@router.post(
+    "/forgot-password",
+    response_model=MessageResponse,
+    status_code=status.HTTP_200_OK,
+    responses={
+        status.HTTP_400_BAD_REQUEST: {
+            "description": "Неверный формат login.",
+        },
+        status.HTTP_429_TOO_MANY_REQUESTS: {
+            "description": "Слишком много запросов на восстановление пароля.",
+        },
+        status.HTTP_500_INTERNAL_SERVER_ERROR: {
+            "description": "Внутренняя ошибка сервера.",
+        },
+    },
+)
+@inject
+async def forgot_password(
+    body: ForgotPasswordRequest,
+    request: Request,
+    session: FromDishka[AsyncSession],
+    auth_service: FromDishka[AuthService],
+    redis_service: FromDishka[RedisService],
+    email_service: FromDishka[EmailService],
+    telegram_service: FromDishka[TelegramNotificationService],
+    auth_forgot_password_interactor: FromDishka[AuthForgotPasswordInteractor],
+) -> MessageResponse:
+    try:
+        return await auth_forgot_password_interactor.execute(
+            session=session,
+            auth_service=auth_service,
+            redis_service=redis_service,
+            email_service=email_service,
+            telegram_service=telegram_service,
+            data=body,
+            ip_address=request.client.host if request.client else "unknown",
+            user_agent=request.headers.get("user-agent"),
+        )
+    except PasswordResetRateLimitExceededError as error:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Слишком много запросов на восстановление пароля",
         ) from error

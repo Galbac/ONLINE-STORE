@@ -1,4 +1,7 @@
-from pydantic import BaseModel, ConfigDict, EmailStr, Field
+import re
+
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
+from pydantic import TypeAdapter
 
 from source.db.models.choises.enum import UserRole
 
@@ -17,6 +20,25 @@ class UserLoginRequest(BaseModel):
 
 class LogoutRequest(BaseModel):
     refresh_token: str = Field(min_length=1)
+
+
+class ForgotPasswordRequest(BaseModel):
+    login: str = Field(min_length=3, max_length=255)
+
+    @field_validator("login")
+    @classmethod
+    def validate_login(cls, value: str) -> str:
+        login = value.strip()
+        if not login:
+            raise ValueError("login is required")
+
+        if "@" in login:
+            TypeAdapter(EmailStr).validate_python(login)
+            return login.lower()
+
+        if re.fullmatch(r"\+?\d{5,15}", login) is None:
+            raise ValueError("login must be a valid email or phone")
+        return login
 
 
 class MessageResponse(BaseModel):
