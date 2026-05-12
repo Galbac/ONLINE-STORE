@@ -4,8 +4,9 @@ import hmac
 import json
 from secrets import token_urlsafe
 from urllib.parse import urlencode
+from uuid import uuid4
 
-from jose import jwt
+from jose import JWTError, jwt
 from passlib.context import CryptContext
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -15,7 +16,9 @@ from source.db.models.choises.enum import UserRole
 from source.db.models.refresh_token import RefreshToken
 from source.db.models.user import User
 from source.errors.auth import (
+    ChangePasswordRateLimitExceededError,
     InactiveUserError,
+    InvalidCurrentPasswordError,
     InvalidPasswordResetTokenError,
     InvalidCredentialsError,
     NewPasswordSameAsOldError,
@@ -28,6 +31,7 @@ from source.errors.auth import (
 )
 from source.schemas.pydantic.auth import (
     AuthResponse,
+    ChangePasswordRequest,
     ForgotPasswordRequest,
     MessageResponse,
     RegisterAuthResponse,
@@ -262,6 +266,62 @@ class AuthService:
 
         return MessageResponse(message=RESET_PASSWORD_SUCCESS_MESSAGE)
 
+    async def change_password(
+        self,
+        *,
+        session: AsyncSession,
+        redis_service: RedisService,
+        user: User,
+        data: ChangePasswordRequest,
+        ip_address: str,
+        access_token: str | None,
+    ) -> MessageResponse:
+        if not user.is_active:
+            raise InactiveUserError
+
+        await self._check_change_password_rate_limit(
+            redis_service=redis_service,
+            key=f"auth:change_password:rate:user:{user.id}",
+            limit=settings.change_password.rate_limit_by_user,
+            window_seconds=settings.change_password.rate_limit_window_seconds,
+        )
+        await self._check_change_password_rate_limit(
+            redis_service=redis_service,
+            key=f"auth:change_password:rate:ip:{ip_address}",
+            limit=settings.change_password.rate_limit_by_ip,
+            window_seconds=settings.change_password.rate_limit_window_seconds,
+        )
+
+        failed_key = f"auth:change_password:failed:user:{user.id}"
+        failed_count = await self._get_redis_int(redis_service=redis_service, key=failed_key)
+        if failed_count >= settings.change_password.failed_limit:
+            raise ChangePasswordRateLimitExceededError
+
+        if not self.verify_password(data.current_password, user.password_hash):
+            failed_count = await redis_service.incr(failed_key)
+            if failed_count == 1:
+                await redis_service.expire(failed_key, settings.change_password.failed_window_seconds)
+            if failed_count >= settings.change_password.failed_limit:
+                raise ChangePasswordRateLimitExceededError
+            raise InvalidCurrentPasswordError
+
+        if self.verify_password(data.new_password, user.password_hash):
+            raise NewPasswordSameAsOldError
+
+        user.password_hash = self.hash_password(data.new_password)
+        session.add(user)
+        await self._revoke_active_refresh_tokens(session=session, user_id=user.id)
+        await session.flush()
+
+        await redis_service.delete(failed_key)
+        await self._delete_password_reset_tokens(redis_service=redis_service, user_id=user.id)
+        await self._blacklist_access_token_if_enabled(
+            redis_service=redis_service,
+            access_token=access_token,
+        )
+
+        return MessageResponse(message=RESET_PASSWORD_SUCCESS_MESSAGE)
+
     def create_access_token(self, *, user_id: int, role: UserRole) -> str:
         return self._create_token(
             user_id=user_id,
@@ -292,6 +352,7 @@ class AuthService:
             "user_id": user_id,
             "role": role.value,
             "token_type": token_type,
+            "jti": uuid4().hex,
             "iat": now,
             "exp": now + expires_delta,
         }
@@ -358,6 +419,20 @@ class AuthService:
         if requests_count > limit:
             raise PasswordResetRateLimitExceededError
 
+    async def _check_change_password_rate_limit(
+        self,
+        *,
+        redis_service: RedisService,
+        key: str,
+        limit: int,
+        window_seconds: int,
+    ) -> None:
+        requests_count = await redis_service.incr(key)
+        if requests_count == 1:
+            await redis_service.expire(key, window_seconds)
+        if requests_count > limit:
+            raise ChangePasswordRateLimitExceededError
+
     def _build_password_reset_link(self, reset_token: str) -> str:
         return f"{settings.password_reset.frontend_url}?{urlencode({'token': reset_token})}"
 
@@ -389,6 +464,60 @@ class AuthService:
             )
             .values(revoked_at=datetime.now(UTC)),
         )
+
+    async def _delete_password_reset_tokens(
+        self,
+        *,
+        redis_service: RedisService,
+        user_id: int,
+    ) -> None:
+        user_key = f"password_reset:user:{user_id}"
+        token_hash = await redis_service.get(user_key)
+        if token_hash is not None:
+            token_hash = self._decode_redis_value(token_hash)
+            await redis_service.delete(f"password_reset:token:{token_hash}")
+        await redis_service.delete(user_key)
+
+    async def _blacklist_access_token_if_enabled(
+        self,
+        *,
+        redis_service: RedisService,
+        access_token: str | None,
+    ) -> None:
+        if not settings.change_password.jwt_access_blacklist_enabled or not access_token:
+            return
+        try:
+            payload = jwt.decode(
+                token=access_token,
+                key=settings.auth.jwt_secret_key,
+                algorithms=[settings.auth.jwt_algorithm],
+            )
+        except JWTError:
+            return
+
+        jti = payload.get("jti")
+        exp = payload.get("exp")
+        if not jti or not isinstance(exp, int):
+            return
+
+        ttl_seconds = exp - int(datetime.now(UTC).timestamp())
+        if ttl_seconds > 0:
+            await redis_service.set(
+                f"auth:blacklist:access:{jti}",
+                "1",
+                ttl_seconds=ttl_seconds,
+            )
+
+    async def _get_redis_int(
+        self,
+        *,
+        redis_service: RedisService,
+        key: str,
+    ) -> int:
+        value = await redis_service.get(key)
+        if value is None:
+            return 0
+        return int(self._decode_redis_value(value))
 
     async def _store_refresh_token(
         self,

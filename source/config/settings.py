@@ -162,6 +162,17 @@ class PasswordResetSettings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 
+class ChangePasswordSettings(BaseSettings):
+    rate_limit_by_user: int = Field(default=5, alias="CHANGE_PASSWORD_RATE_LIMIT_BY_USER")
+    rate_limit_by_ip: int = Field(default=10, alias="CHANGE_PASSWORD_RATE_LIMIT_BY_IP")
+    rate_limit_window_seconds: int = Field(default=3600, alias="CHANGE_PASSWORD_RATE_LIMIT_WINDOW_SECONDS")
+    failed_limit: int = Field(default=5, alias="CHANGE_PASSWORD_FAILED_LIMIT")
+    failed_window_seconds: int = Field(default=900, alias="CHANGE_PASSWORD_FAILED_WINDOW_SECONDS")
+    jwt_access_blacklist_enabled: bool = Field(default=False, alias="JWT_ACCESS_BLACKLIST_ENABLED")
+
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=(".env.example", ".env"),
@@ -180,6 +191,7 @@ class Settings(BaseSettings):
     web: WebSettings = WebSettings()
     redis: RedisSettings = RedisSettings()
     password_reset: PasswordResetSettings = PasswordResetSettings()
+    change_password: ChangePasswordSettings = ChangePasswordSettings()
 
     @property
     def tz(self) -> tzinfo:

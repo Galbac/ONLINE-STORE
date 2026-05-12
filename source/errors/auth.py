@@ -36,3 +36,11 @@ class PasswordResetUserNotFoundError(Exception):
 
 class NewPasswordSameAsOldError(Exception):
     pass
+
+
+class InvalidCurrentPasswordError(Exception):
+    pass
+
+
+class ChangePasswordRateLimitExceededError(Exception):
+    pass

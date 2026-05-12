@@ -8,6 +8,7 @@ from source.common.commiter import Commiter
 from source.config.settings import Settings, settings
 from source.db.db_helper import db_helper
 from source.db.sa_commiter import SACommiter
+from source.interactors.auth_change_password import AuthChangePasswordInteractor
 from source.interactors.auth_forgot_password import AuthForgotPasswordInteractor
 from source.interactors.auth_login import AuthLoginInteractor
 from source.interactors.auth_logout import AuthLogoutInteractor
@@ -48,6 +49,10 @@ class AppProvider(Provider):
     )
     auth_reset_password_interactor = provide(
         AuthResetPasswordInteractor,
+        scope=Scope.REQUEST,
+    )
+    auth_change_password_interactor = provide(
+        AuthChangePasswordInteractor,
         scope=Scope.REQUEST,
     )
     redis_service = provide(

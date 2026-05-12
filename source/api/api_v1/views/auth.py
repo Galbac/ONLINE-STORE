@@ -1,12 +1,14 @@
 from dishka.integrations.fastapi import FromDishka, inject
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from source.api.dependencies import get_current_user
 from source.common.commiter import Commiter
 from source.db.models.user import User
 from source.errors.auth import (
+    ChangePasswordRateLimitExceededError,
     InactiveUserError,
+    InvalidCurrentPasswordError,
     InvalidCredentialsError,
     InvalidPasswordResetTokenError,
     NewPasswordSameAsOldError,
@@ -17,6 +19,7 @@ from source.errors.auth import (
     UserEmailAlreadyExistsError,
     UserPhoneAlreadyExistsError,
 )
+from source.interactors.auth_change_password import AuthChangePasswordInteractor
 from source.interactors.auth_forgot_password import AuthForgotPasswordInteractor
 from source.interactors.auth_login import AuthLoginInteractor
 from source.interactors.auth_logout import AuthLogoutInteractor
@@ -24,6 +27,7 @@ from source.interactors.auth_register import AuthRegisterInteractor
 from source.interactors.auth_reset_password import AuthResetPasswordInteractor
 from source.schemas.pydantic.auth import (
     AuthResponse,
+    ChangePasswordRequest,
     ForgotPasswordRequest,
     LogoutRequest,
     MessageResponse,
@@ -284,4 +288,77 @@ async def reset_password(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Новый пароль совпадает со старым",
+        ) from error
+
+
+@router.post(
+    "/change-password",
+    response_model=MessageResponse,
+    status_code=status.HTTP_200_OK,
+    responses={
+        status.HTTP_400_BAD_REQUEST: {
+            "description": "Пароли не совпадают, пароль слишком слабый или совпадает со старым.",
+        },
+        status.HTTP_401_UNAUTHORIZED: {
+            "description": "Пользователь не авторизован или access_token недействителен.",
+        },
+        status.HTTP_403_FORBIDDEN: {
+            "description": "Текущий пароль неверный или пользователь неактивен.",
+        },
+        status.HTTP_429_TOO_MANY_REQUESTS: {
+            "description": "Слишком много попыток смены пароля.",
+        },
+        status.HTTP_500_INTERNAL_SERVER_ERROR: {
+            "description": "Внутренняя ошибка сервера.",
+        },
+    },
+)
+@inject
+async def change_password(
+    body: ChangePasswordRequest,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    authorization: str | None = Header(default=None),
+    session: FromDishka[AsyncSession] = None,
+    commiter: FromDishka[Commiter] = None,
+    auth_service: FromDishka[AuthService] = None,
+    redis_service: FromDishka[RedisService] = None,
+    auth_change_password_interactor: FromDishka[AuthChangePasswordInteractor] = None,
+) -> MessageResponse:
+    try:
+        _, _, access_token = (authorization or "").partition(" ")
+        response = await auth_change_password_interactor.execute(
+            session=session,
+            auth_service=auth_service,
+            redis_service=redis_service,
+            user=current_user,
+            data=body,
+            ip_address=request.client.host if request.client else "unknown",
+            access_token=access_token or None,
+        )
+        await commiter.commit()
+        return response
+    except InvalidCurrentPasswordError as error:
+        await commiter.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Текущий пароль указан неверно",
+        ) from error
+    except InactiveUserError as error:
+        await commiter.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Пользователь заблокирован или неактивен",
+        ) from error
+    except ChangePasswordRateLimitExceededError as error:
+        await commiter.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Слишком много попыток смены пароля",
+        ) from error
+    except NewPasswordSameAsOldError as error:
+        await commiter.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Новый пароль не должен совпадать со старым",
         ) from error
