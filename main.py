@@ -1,16 +1,51 @@
-# This is a sample Python script.
+from contextlib import asynccontextmanager
 
-# Press ⌃R to execute it or replace it with your code.
-# Press Double ⇧ to search everywhere for classes, files, tool windows, actions, and settings.
+from dishka.integrations import fastapi as fastapi_integration
+from fastapi import FastAPI, status
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+
+from source.api.api_v1.views.auth import router as auth_router
+from source.config.logging import setup_app_logging, setup_uvicorn_logging
+from source.config.settings import settings
+from source.db.db_helper import db_helper
+from source.ioc import setup_di
 
 
-def print_hi(name):
-    # Use a breakpoint in the code line below to debug your script.
-    print(f'Hi, {name}')  # Press ⌘F8 to toggle the breakpoint.
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    yield
+    await db_helper.dispose()
+    await app.state.dishka_container.close()
 
 
-# Press the green button in the gutter to run the script.
-if __name__ == '__main__':
-    print_hi('PyCharm')
+def create_app() -> FastAPI:
+    container = setup_di()
+    setup_app_logging()
+    setup_uvicorn_logging()
+    app = FastAPI(
+        title=settings.names.title,
+        default_response_class=ORJSONResponse,
+        lifespan=lifespan)
+    app.include_router(auth_router)
+    fastapi_integration.setup_dishka(setup_di(), app)
+    return app
 
-# See PyCharm help at https://www.jetbrains.com/help/pycharm/
+
+app = create_app()
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(
+    _request,
+    exc: RequestValidationError,
+) -> JSONResponse:
+    return JSONResponse(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        content={"detail": exc.errors()},
+    )
+
+
+@app.get("/health")
+async def health() -> dict[str, str]:
+    return {"status": "ok"}
