@@ -12,6 +12,7 @@ from source.interactors.auth_forgot_password import AuthForgotPasswordInteractor
 from source.interactors.auth_login import AuthLoginInteractor
 from source.interactors.auth_logout import AuthLogoutInteractor
 from source.interactors.auth_register import AuthRegisterInteractor
+from source.interactors.auth_reset_password import AuthResetPasswordInteractor
 from source.services.auth import AuthService
 from source.services.notifications import EmailService, TelegramNotificationService
 from source.services.redis import RedisService
@@ -43,6 +44,10 @@ class AppProvider(Provider):
     )
     auth_forgot_password_interactor = provide(
         AuthForgotPasswordInteractor,
+        scope=Scope.REQUEST,
+    )
+    auth_reset_password_interactor = provide(
+        AuthResetPasswordInteractor,
         scope=Scope.REQUEST,
     )
     redis_service = provide(

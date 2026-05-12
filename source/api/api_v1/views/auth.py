@@ -8,7 +8,10 @@ from source.db.models.user import User
 from source.errors.auth import (
     InactiveUserError,
     InvalidCredentialsError,
+    InvalidPasswordResetTokenError,
+    NewPasswordSameAsOldError,
     PasswordResetRateLimitExceededError,
+    PasswordResetUserNotFoundError,
     RefreshTokenAlreadyRevokedError,
     RefreshTokenNotFoundError,
     UserEmailAlreadyExistsError,
@@ -18,12 +21,14 @@ from source.interactors.auth_forgot_password import AuthForgotPasswordInteractor
 from source.interactors.auth_login import AuthLoginInteractor
 from source.interactors.auth_logout import AuthLogoutInteractor
 from source.interactors.auth_register import AuthRegisterInteractor
+from source.interactors.auth_reset_password import AuthResetPasswordInteractor
 from source.schemas.pydantic.auth import (
     AuthResponse,
     ForgotPasswordRequest,
     LogoutRequest,
     MessageResponse,
     RegisterAuthResponse,
+    ResetPasswordRequest,
     UserLoginRequest,
     UserRegisterRequest,
 )
@@ -213,4 +218,70 @@ async def forgot_password(
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail="Слишком много запросов на восстановление пароля",
+        ) from error
+
+
+@router.post(
+    "/reset-password",
+    response_model=MessageResponse,
+    status_code=status.HTTP_200_OK,
+    responses={
+        status.HTTP_400_BAD_REQUEST: {
+            "description": "Пароли не совпадают, пароль слишком слабый или совпадает со старым.",
+        },
+        status.HTTP_401_UNAUTHORIZED: {
+            "description": "Недействительный или истёкший токен восстановления.",
+        },
+        status.HTTP_403_FORBIDDEN: {
+            "description": "Пользователь заблокирован или неактивен.",
+        },
+        status.HTTP_404_NOT_FOUND: {
+            "description": "Пользователь не найден.",
+        },
+        status.HTTP_500_INTERNAL_SERVER_ERROR: {
+            "description": "Внутренняя ошибка сервера.",
+        },
+    },
+)
+@inject
+async def reset_password(
+    body: ResetPasswordRequest,
+    session: FromDishka[AsyncSession],
+    commiter: FromDishka[Commiter],
+    auth_service: FromDishka[AuthService],
+    redis_service: FromDishka[RedisService],
+    auth_reset_password_interactor: FromDishka[AuthResetPasswordInteractor],
+) -> MessageResponse:
+    try:
+        response = await auth_reset_password_interactor.execute(
+            session=session,
+            auth_service=auth_service,
+            redis_service=redis_service,
+            data=body,
+        )
+        await commiter.commit()
+        return response
+    except InvalidPasswordResetTokenError as error:
+        await commiter.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Недействительный или истёкший токен восстановления",
+        ) from error
+    except PasswordResetUserNotFoundError as error:
+        await commiter.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Пользователь не найден",
+        ) from error
+    except InactiveUserError as error:
+        await commiter.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Пользователь заблокирован или неактивен",
+        ) from error
+    except NewPasswordSameAsOldError as error:
+        await commiter.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Новый пароль совпадает со старым",
         ) from error

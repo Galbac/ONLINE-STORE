@@ -24,3 +24,15 @@ class RefreshTokenAlreadyRevokedError(Exception):
 
 class PasswordResetRateLimitExceededError(Exception):
     pass
+
+
+class InvalidPasswordResetTokenError(Exception):
+    pass
+
+
+class PasswordResetUserNotFoundError(Exception):
+    pass
+
+
+class NewPasswordSameAsOldError(Exception):
+    pass

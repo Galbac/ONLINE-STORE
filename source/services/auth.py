@@ -7,7 +7,7 @@ from urllib.parse import urlencode
 
 from jose import jwt
 from passlib.context import CryptContext
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from source.config.settings import settings
@@ -16,8 +16,11 @@ from source.db.models.refresh_token import RefreshToken
 from source.db.models.user import User
 from source.errors.auth import (
     InactiveUserError,
+    InvalidPasswordResetTokenError,
     InvalidCredentialsError,
+    NewPasswordSameAsOldError,
     PasswordResetRateLimitExceededError,
+    PasswordResetUserNotFoundError,
     RefreshTokenAlreadyRevokedError,
     RefreshTokenNotFoundError,
     UserEmailAlreadyExistsError,
@@ -28,6 +31,7 @@ from source.schemas.pydantic.auth import (
     ForgotPasswordRequest,
     MessageResponse,
     RegisterAuthResponse,
+    ResetPasswordRequest,
     UserLoginRequest,
     UserRegisterRequest,
     UserShortResponse,
@@ -37,6 +41,7 @@ from source.services.redis import RedisService
 
 
 PASSWORD_RESET_SUCCESS_MESSAGE = "Если пользователь найден, инструкция по восстановлению пароля будет отправлена"
+RESET_PASSWORD_SUCCESS_MESSAGE = "Пароль успешно изменён"
 
 
 class AuthService:
@@ -221,6 +226,42 @@ class AuthService:
             sha256,
         ).hexdigest()
 
+    async def reset_password(
+        self,
+        *,
+        session: AsyncSession,
+        redis_service: RedisService,
+        data: ResetPasswordRequest,
+    ) -> MessageResponse:
+        token_hash = self.hash_password_reset_token(data.token)
+        token_key = f"password_reset:token:{token_hash}"
+        token_payload = await redis_service.get(token_key)
+        if token_payload is None:
+            raise InvalidPasswordResetTokenError
+
+        payload = self._load_password_reset_payload(token_payload)
+        user_id = payload.get("user_id")
+        if not isinstance(user_id, int):
+            raise InvalidPasswordResetTokenError
+
+        user = await self._get_user_by_id(session=session, user_id=user_id)
+        if user is None:
+            raise PasswordResetUserNotFoundError
+        if not user.is_active:
+            raise InactiveUserError
+        if self.verify_password(data.new_password, user.password_hash):
+            raise NewPasswordSameAsOldError
+
+        user.password_hash = self.hash_password(data.new_password)
+        session.add(user)
+        await self._revoke_active_refresh_tokens(session=session, user_id=user.id)
+        await session.flush()
+
+        await redis_service.delete(token_key)
+        await redis_service.delete(f"password_reset:user:{user.id}")
+
+        return MessageResponse(message=RESET_PASSWORD_SUCCESS_MESSAGE)
+
     def create_access_token(self, *, user_id: int, role: UserRole) -> str:
         return self._create_token(
             user_id=user_id,
@@ -291,6 +332,15 @@ class AuthService:
         result = await session.execute(select(User).where(condition))
         return result.scalar_one_or_none()
 
+    async def _get_user_by_id(
+        self,
+        *,
+        session: AsyncSession,
+        user_id: int,
+    ) -> User | None:
+        result = await session.execute(select(User).where(User.id == user_id))
+        return result.scalar_one_or_none()
+
     def _normalize_login(self, login: str) -> str:
         normalized_login = login.strip()
         return normalized_login.lower() if "@" in normalized_login else normalized_login
@@ -315,6 +365,30 @@ class AuthService:
         if isinstance(value, bytes):
             return value.decode("utf-8")
         return value
+
+    def _load_password_reset_payload(self, value: str | bytes) -> dict:
+        try:
+            payload = json.loads(self._decode_redis_value(value))
+        except json.JSONDecodeError as error:
+            raise InvalidPasswordResetTokenError from error
+        if not isinstance(payload, dict):
+            raise InvalidPasswordResetTokenError
+        return payload
+
+    async def _revoke_active_refresh_tokens(
+        self,
+        *,
+        session: AsyncSession,
+        user_id: int,
+    ) -> None:
+        await session.execute(
+            update(RefreshToken)
+            .where(
+                RefreshToken.user_id == user_id,
+                RefreshToken.revoked_at.is_(None),
+            )
+            .values(revoked_at=datetime.now(UTC)),
+        )
 
     async def _store_refresh_token(
         self,
