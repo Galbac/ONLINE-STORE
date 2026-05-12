@@ -5,7 +5,7 @@ from fastapi import FastAPI, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
-from source.api.api_v1.views.auth import router as auth_router
+from source.api.routers.http import router as http_router
 from source.config.logging import setup_app_logging, setup_uvicorn_logging
 from source.config.settings import settings
 from source.db.db_helper import db_helper
@@ -25,10 +25,10 @@ def create_app() -> FastAPI:
     setup_uvicorn_logging()
     app = FastAPI(
         title=settings.names.title,
-        default_response_class=ORJSONResponse,
-        lifespan=lifespan)
-    app.include_router(auth_router)
-    fastapi_integration.setup_dishka(setup_di(), app)
+        lifespan=lifespan,
+    )
+    app.include_router(http_router)
+    fastapi_integration.setup_dishka(container, app)
     return app
 
 

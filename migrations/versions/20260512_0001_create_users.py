@@ -9,6 +9,7 @@ from collections.abc import Sequence
 
 import sqlalchemy as sa
 from alembic import op
+from sqlalchemy.dialects import postgresql
 
 
 revision: str = "20260512_0001"
@@ -29,7 +30,7 @@ def upgrade() -> None:
         sa.Column("password_hash", sa.String(length=255), nullable=False),
         sa.Column(
             "role",
-            user_role,
+            postgresql.ENUM("customer", name="user_role", create_type=False),
             server_default="customer",
             nullable=False,
         ),

@@ -1,5 +1,10 @@
+import os
 from datetime import tzinfo
+from pathlib import Path
+from typing import Optional
+from urllib.parse import quote_plus
 from zoneinfo import ZoneInfo
+
 from pydantic import BaseModel, Field, PostgresDsn
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -15,6 +20,7 @@ class ProjectName(BaseModel):
     path: str = ""
     slug: str = "grocery_store"
 
+
 class ApiV1Prefix(BaseModel):
     prefix: str = "/v1"
 
@@ -23,28 +29,88 @@ class ApiPrefix(BaseModel):
     prefix: str = "/api"
     v1: ApiV1Prefix = ApiV1Prefix()
 
-class DBSettings(BaseSettings):
-    url: PostgresDsn = Field(
-        default="postgresql+asyncpg://postgres:postgres@localhost:5432/grocery_store",
-        alias="DATABASE_URL",
-    )
-    test_url: PostgresDsn = Field(
-        default="postgresql+asyncpg://postgres:postgres@localhost:5432/grocery_store_test",
-        alias="TEST_DATABASE_URL",
-    )
-    echo: bool = Field(default=False, alias="DB_ECHO")
-    echo_pool: bool = Field(default=False, alias="DB_ECHO_POOL")
-    max_overflow: int = Field(default=10, alias="DB_MAX_OVERFLOW")
-    pool_size: int = Field(default=5, alias="DB_POOL_SIZE")
+
+class DbSettings(BaseModel):
+    url: str | PostgresDsn | None = None
+    test_url: str | PostgresDsn | None = None
+    echo: bool = False
+    echo_pool: bool = False
+    max_overflow: int = 10
+    pool_size: int = 5
     naming_convention: dict[str, str] = {
-        "ix": "ix_%(column_0_label)s",
+        "ix": "ix_%(table_name)s_%(column_0_name)s",
         "uq": "uq_%(table_name)s_%(column_0_name)s",
         "ck": "ck_%(table_name)s_%(constraint_name)s",
         "fk": "fk_%(table_name)s_%(column_0_name)s_%(referred_table_name)s",
         "pk": "pk_%(table_name)s",
     }
 
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    @staticmethod
+    def _read_secret_or_env(
+        secret_name: str,
+        env_var_name: str,
+        default: str = "postgres",
+    ) -> str:
+        run_secret = Path("/run/secrets") / secret_name
+        if secret_name and run_secret.exists() and run_secret.is_file():
+            return run_secret.read_text().strip()
+        return os.getenv(env_var_name, default)
+
+    @classmethod
+    def create_url(
+        cls,
+        user_secret_name: str,
+        password_secret_name: str,
+        db_name: Optional[str] = None,
+    ) -> str:
+        db = db_name or os.getenv("POSTGRES_DB", "postgres")
+        user = cls._read_secret_or_env(user_secret_name, "POSTGRES_USER", "postgres")
+        password = cls._read_secret_or_env(password_secret_name, "POSTGRES_PASSWORD", "postgres")
+        host = os.getenv("POSTGRES_HOST", "localhost")
+        port = os.getenv("POSTGRES_PORT", "5432")
+        return f"postgresql+asyncpg://{quote_plus(user)}:{quote_plus(password)}@{host}:{port}/{db}"
+
+    @classmethod
+    def create_test_url(
+        cls,
+        user_secret_name: str,
+        password_secret_name: str,
+    ) -> str:
+        return cls.create_url(
+            user_secret_name=user_secret_name,
+            password_secret_name=password_secret_name,
+            db_name="test_database",
+        )
+
+    def __init__(self, **kwargs):
+        user_secret_name = os.getenv("PSQL_USER_SECRET_NAME", "")
+        password_secret_name = os.getenv("PSQL_PASSWORD_SECRET_NAME", "")
+        kwargs.setdefault(
+            "url",
+            type(self).create_url(
+                user_secret_name=user_secret_name,
+                password_secret_name=password_secret_name,
+            ),
+        )
+        kwargs.setdefault(
+            "test_url",
+            type(self).create_test_url(
+                user_secret_name=user_secret_name,
+                password_secret_name=password_secret_name,
+            ),
+        )
+        super().__init__(**kwargs)
+
+
+class MiddlewareSettings(BaseModel):
+    cors_origins: list[str] = Field(default_factory=lambda: ["http://localhost", "http://localhost:3000"])
+    allow_credentials: bool = True
+    allow_methods: list[str] = Field(
+        default_factory=lambda: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    )
+    allow_headers: list[str] = Field(
+        default_factory=lambda: ["Authorization", "Content-Type", "X-Telegram-Init-Data"],
+    )
 
 
 class AuthSettings(BaseSettings):
@@ -65,6 +131,20 @@ class AuthSettings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 
+class SmtpSettings(BaseModel):
+    host: str = ""
+    port: int = 587
+    user: str = ""
+    password: str = ""
+    from_email: str = ""
+
+
+class WebSettings(BaseModel):
+    jwt_secret: str = ""
+    jwt_expiry_hours: int = 72
+    cabinet_base_url: str = ""
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=(".env.example", ".env"),
@@ -76,13 +156,15 @@ class Settings(BaseSettings):
     run: RunConfig = RunConfig()
     names: ProjectName = ProjectName()
     api: ApiPrefix = ApiPrefix()
-    db: DBSettings = DBSettings()
+    db: DbSettings = DbSettings()
     auth: AuthSettings = AuthSettings()
+    middleware: MiddlewareSettings = MiddlewareSettings()
+    smtp: SmtpSettings = SmtpSettings()
+    web: WebSettings = WebSettings()
 
     @property
     def tz(self) -> tzinfo:
         return ZoneInfo("Europe/Moscow")
-
 
 
 settings = Settings()
