@@ -15,6 +15,14 @@ class UserLoginRequest(BaseModel):
     password: str = Field(min_length=1)
 
 
+class LogoutRequest(BaseModel):
+    refresh_token: str = Field(min_length=1)
+
+
+class MessageResponse(BaseModel):
+    message: str
+
+
 class UserShortResponse(BaseModel):
     id: int
     name: str

@@ -13,6 +13,8 @@ from source.db.models.user import User
 from source.errors.auth import (
     InactiveUserError,
     InvalidCredentialsError,
+    RefreshTokenAlreadyRevokedError,
+    RefreshTokenNotFoundError,
     UserEmailAlreadyExistsError,
     UserPhoneAlreadyExistsError,
 )
@@ -60,6 +62,20 @@ class AuthService:
         await session.flush()
         await session.refresh(user)
 
+        access_token = self.create_access_token(
+            user_id=user.id,
+            role=user.role,
+        )
+        refresh_token = self.create_refresh_token(
+            user_id=user.id,
+            role=user.role,
+        )
+        await self._store_refresh_token(
+            session=session,
+            user_id=user.id,
+            refresh_token=refresh_token,
+        )
+
         return RegisterAuthResponse(
             id=user.id,
             name=user.name,
@@ -67,14 +83,8 @@ class AuthService:
             email=user.email,
             role=user.role,
             is_active=user.is_active,
-            access_token=self.create_access_token(
-                user_id=user.id,
-                role=user.role,
-            ),
-            refresh_token=self.create_refresh_token(
-                user_id=user.id,
-                role=user.role,
-            ),
+            access_token=access_token,
+            refresh_token=refresh_token,
         )
 
     async def login_user(
@@ -104,6 +114,26 @@ class AuthService:
             access_token=access_token,
             refresh_token=refresh_token,
         )
+
+    async def logout_user(
+        self,
+        *,
+        session: AsyncSession,
+        user: User,
+        refresh_token: str,
+    ) -> None:
+        token = await self._get_refresh_token(
+            session=session,
+            refresh_token=refresh_token,
+        )
+        if token is None or token.user_id != user.id:
+            raise RefreshTokenNotFoundError
+        if token.revoked_at is not None:
+            raise RefreshTokenAlreadyRevokedError
+
+        token.revoked_at = datetime.now(UTC)
+        session.add(token)
+        await session.flush()
 
     def create_access_token(self, *, user_id: int, role: UserRole) -> str:
         return self._create_token(
@@ -190,3 +220,15 @@ class AuthService:
             ),
         )
         await session.flush()
+
+    async def _get_refresh_token(
+        self,
+        *,
+        session: AsyncSession,
+        refresh_token: str,
+    ) -> RefreshToken | None:
+        token_hash = sha256(refresh_token.encode("utf-8")).hexdigest()
+        result = await session.execute(
+            select(RefreshToken).where(RefreshToken.token_hash == token_hash),
+        )
+        return result.scalar_one_or_none()
