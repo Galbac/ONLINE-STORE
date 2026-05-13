@@ -192,6 +192,12 @@ class UserDeleteSettings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 
+class ProfileSummarySettings(BaseSettings):
+    cache_ttl_seconds: int = Field(default=120, alias="PROFILE_SUMMARY_CACHE_TTL_SECONDS")
+
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=(".env.example", ".env"),
@@ -214,6 +220,7 @@ class Settings(BaseSettings):
     auth_me: AuthMeSettings = AuthMeSettings()
     user_me: UserMeSettings = UserMeSettings()
     user_delete: UserDeleteSettings = UserDeleteSettings()
+    profile_summary: ProfileSummarySettings = ProfileSummarySettings()
 
     @property
     def tz(self) -> tzinfo:

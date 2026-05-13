@@ -19,6 +19,7 @@ from source.schemas.pydantic.auth import MessageResponse
 from source.schemas.pydantic.user import UserMeDeleteRequest, UserMeResponse, UserMeUpdateRequest
 from source.services.auth import AuthService
 from source.services.auth_cache import AuthCacheService
+from source.services.profile_cache import ProfileCacheService
 from source.services.redis import RedisService
 from source.services.user import UserService
 from source.services.user_cache import UserCacheService
@@ -107,6 +108,7 @@ async def update_user_me(
     user_service: FromDishka[UserService] = None,
     user_cache_service: FromDishka[UserCacheService] = None,
     auth_cache_service: FromDishka[AuthCacheService] = None,
+    profile_cache_service: FromDishka[ProfileCacheService] = None,
 ) -> UserMeResponse:
     try:
         response = await user_service.update_current_user_profile(
@@ -114,6 +116,7 @@ async def update_user_me(
             redis_service=redis_service,
             user_cache_service=user_cache_service,
             auth_cache_service=auth_cache_service,
+            profile_cache_service=profile_cache_service,
             user_id=current_user.id,
             data=body,
         )
@@ -184,6 +187,7 @@ async def delete_user_me(
     user_service: FromDishka[UserService] = None,
     user_cache_service: FromDishka[UserCacheService] = None,
     auth_cache_service: FromDishka[AuthCacheService] = None,
+    profile_cache_service: FromDishka[ProfileCacheService] = None,
     auth_service: FromDishka[AuthService] = None,
 ) -> MessageResponse:
     try:
@@ -193,6 +197,7 @@ async def delete_user_me(
             redis_service=redis_service,
             user_cache_service=user_cache_service,
             auth_cache_service=auth_cache_service,
+            profile_cache_service=profile_cache_service,
             auth_service=auth_service,
             user_id=current_user.id,
             data=body,

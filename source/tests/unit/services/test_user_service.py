@@ -23,6 +23,7 @@ from source.db.models.refresh_token import RefreshToken
 from source.schemas.pydantic.user import UserMeDeleteRequest, UserMeResponse, UserMeUpdateRequest
 from source.services.auth_cache import AuthCacheService
 from source.services.auth import AuthService
+from source.services.profile_cache import ProfileCacheService
 from source.services.user import UserService
 from source.services.user_cache import UserCacheService
 
@@ -151,6 +152,7 @@ async def execute_update_current_user_profile(
         redis_service=redis_service or FakeRedisService(),
         user_cache_service=UserCacheService(),
         auth_cache_service=AuthCacheService(),
+        profile_cache_service=ProfileCacheService(),
         user_id=1,
         data=data,
     )
@@ -170,6 +172,7 @@ async def execute_delete_current_user_account(
         redis_service=redis_service,
         user_cache_service=UserCacheService(),
         auth_cache_service=AuthCacheService(),
+        profile_cache_service=ProfileCacheService(),
         auth_service=auth_service or AuthService(),
         user_id=1,
         data=data or UserMeDeleteRequest(password="StrongPassword123", confirm=True),
@@ -448,6 +451,7 @@ async def test_update_user_me_invalidates_redis_cache() -> None:
     redis_service = FakeRedisService()
     redis_service.values["users:me:1"] = "{}"
     redis_service.values["auth:me:user:1"] = "{}"
+    redis_service.values["profile:summary:1"] = "{}"
 
     await execute_update_current_user_profile(
         session=FakeSession(execute_results=[build_user()]),
@@ -457,8 +461,10 @@ async def test_update_user_me_invalidates_redis_cache() -> None:
 
     assert "users:me:1" in redis_service.deleted
     assert "auth:me:user:1" in redis_service.deleted
+    assert "profile:summary:1" in redis_service.deleted
     assert "users:me:1" not in redis_service.values
     assert "auth:me:user:1" not in redis_service.values
+    assert "profile:summary:1" not in redis_service.values
 
 
 @pytest.mark.asyncio
@@ -594,6 +600,7 @@ async def test_delete_user_me_invalidates_redis_cache() -> None:
     redis_service = FakeRedisService()
     redis_service.values["users:me:1"] = "{}"
     redis_service.values["auth:me:user:1"] = "{}"
+    redis_service.values["profile:summary:1"] = "{}"
 
     await execute_delete_current_user_account(
         session=FakeSession(execute_results=[build_user(password_hash=auth_service.hash_password("StrongPassword123"))]),
@@ -603,8 +610,10 @@ async def test_delete_user_me_invalidates_redis_cache() -> None:
 
     assert "users:me:1" in redis_service.deleted
     assert "auth:me:user:1" in redis_service.deleted
+    assert "profile:summary:1" in redis_service.deleted
     assert "users:me:1" not in redis_service.values
     assert "auth:me:user:1" not in redis_service.values
+    assert "profile:summary:1" not in redis_service.values
 
 
 @pytest.mark.asyncio

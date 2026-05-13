@@ -20,6 +20,7 @@ from source.errors.auth import (
 from source.schemas.pydantic.user import UserMeDeleteRequest, UserMeResponse, UserMeUpdateRequest
 from source.services.auth import AuthService
 from source.services.auth_cache import AuthCacheService
+from source.services.profile_cache import ProfileCacheService
 from source.services.redis import RedisService
 from source.services.user_cache import UserCacheService
 
@@ -62,6 +63,7 @@ class UserService:
         redis_service: RedisService,
         user_cache_service: UserCacheService,
         auth_cache_service: AuthCacheService,
+        profile_cache_service: ProfileCacheService,
         user_id: int,
         data: UserMeUpdateRequest,
     ) -> UserMeResponse:
@@ -111,6 +113,10 @@ class UserService:
             redis_service=redis_service,
             user_id=user.id,
         )
+        await profile_cache_service.delete_summary(
+            redis_service=redis_service,
+            user_id=user.id,
+        )
 
         return self._build_user_me_response(user)
 
@@ -121,6 +127,7 @@ class UserService:
         redis_service: RedisService,
         user_cache_service: UserCacheService,
         auth_cache_service: AuthCacheService,
+        profile_cache_service: ProfileCacheService,
         auth_service: AuthService,
         user_id: int,
         data: UserMeDeleteRequest,
@@ -155,6 +162,7 @@ class UserService:
         await self._delete_password_reset_tokens(redis_service=redis_service, user_id=user.id)
         await user_cache_service.delete_user_me_cache(redis_service=redis_service, user_id=user.id)
         await auth_cache_service.delete_current_user_cache(redis_service=redis_service, user_id=user.id)
+        await profile_cache_service.delete_summary(redis_service=redis_service, user_id=user.id)
         await self._blacklist_access_token_if_enabled(redis_service=redis_service, access_token=access_token)
 
     async def _get_user_by_id(
