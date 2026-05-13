@@ -185,6 +185,13 @@ class UserMeSettings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 
+class UserDeleteSettings(BaseSettings):
+    require_password: bool = Field(default=True, alias="USER_DELETE_REQUIRE_PASSWORD")
+    anonymize: bool = Field(default=False, alias="USER_DELETE_ANONYMIZE")
+
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=(".env.example", ".env"),
@@ -206,6 +213,7 @@ class Settings(BaseSettings):
     change_password: ChangePasswordSettings = ChangePasswordSettings()
     auth_me: AuthMeSettings = AuthMeSettings()
     user_me: UserMeSettings = UserMeSettings()
+    user_delete: UserDeleteSettings = UserDeleteSettings()
 
     @property
     def tz(self) -> tzinfo:

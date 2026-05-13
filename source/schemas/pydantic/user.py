@@ -34,6 +34,12 @@ class UserMeUpdateRequest(BaseModel):
             return value
         return str(value).lower()
 
+
+class UserMeDeleteRequest(BaseModel):
+    password: str = Field(min_length=1)
+    confirm: bool
+
+
 class UserMeResponse(BaseModel):
     id: int
     name: str

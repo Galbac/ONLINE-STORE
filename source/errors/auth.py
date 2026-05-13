@@ -52,3 +52,11 @@ class CurrentUserNotFoundError(Exception):
 
 class EmptyUserProfileUpdateError(Exception):
     pass
+
+
+class UserDeleteConfirmationRequiredError(Exception):
+    pass
+
+
+class ActiveOrdersExistError(Exception):
+    pass

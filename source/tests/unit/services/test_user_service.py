@@ -1,7 +1,8 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from fastapi import HTTPException
+from jose import jwt
 from pydantic import ValidationError
 
 from source.api.dependencies import resolve_access_token
@@ -11,11 +12,15 @@ from source.db.models.user import User
 from source.errors.auth import (
     CurrentUserNotFoundError,
     EmptyUserProfileUpdateError,
+    ActiveOrdersExistError,
+    InvalidCurrentPasswordError,
     InactiveUserError,
+    UserDeleteConfirmationRequiredError,
     UserEmailAlreadyExistsError,
     UserPhoneAlreadyExistsError,
 )
-from source.schemas.pydantic.user import UserMeResponse, UserMeUpdateRequest
+from source.db.models.refresh_token import RefreshToken
+from source.schemas.pydantic.user import UserMeDeleteRequest, UserMeResponse, UserMeUpdateRequest
 from source.services.auth_cache import AuthCacheService
 from source.services.auth import AuthService
 from source.services.user import UserService
@@ -31,15 +36,25 @@ class FakeScalarResult:
 
 
 class FakeSession:
-    def __init__(self, execute_results: list | None = None) -> None:
+    def __init__(self, execute_results: list | None = None, refresh_tokens: list[RefreshToken] | None = None) -> None:
         self.execute_results = execute_results or []
+        self.refresh_tokens = refresh_tokens or []
         self.executed_count = 0
         self.added = []
         self.flush_called = False
         self.refresh_called = False
+        self.deleted = []
+        self.revoked_refresh_tokens_count = 0
 
     async def execute(self, statement):
         self.executed_count += 1
+        if getattr(statement, "is_update", False):
+            now = datetime.now(UTC)
+            for refresh_token in self.refresh_tokens:
+                if refresh_token.revoked_at is None:
+                    refresh_token.revoked_at = now
+                    self.revoked_refresh_tokens_count += 1
+            return FakeScalarResult(None)
         value = self.execute_results.pop(0) if self.execute_results else None
         return FakeScalarResult(value)
 
@@ -51,6 +66,9 @@ class FakeSession:
 
     async def refresh(self, instance) -> None:
         self.refresh_called = True
+
+    async def delete(self, instance) -> None:
+        self.deleted.append(instance)
 
 
 class FakeRedisService:
@@ -76,19 +94,37 @@ class FakeRedisService:
         return key in self.values
 
 
-def build_user(*, is_active: bool = True) -> User:
+def build_user(
+    *,
+    is_active: bool = True,
+    is_deleted: bool = False,
+    password_hash: str = "password_hash",
+) -> User:
     user = User(
         name="Иван Иванов",
         phone="+79990000000",
         email="ivan@example.com",
-        password_hash="password_hash",
+        password_hash=password_hash,
         role=UserRole.CUSTOMER,
         is_active=is_active,
+        is_deleted=is_deleted,
     )
     user.id = 1
     user.created_date = datetime(2026, 5, 12, 10, 0, 0, tzinfo=UTC)
     user.updated_date = datetime(2026, 5, 12, 10, 0, 0, tzinfo=UTC)
+    user.deleted_at = None
     return user
+
+
+def build_refresh_token(*, revoked_at: datetime | None = None) -> RefreshToken:
+    refresh_token = RefreshToken(
+        user_id=1,
+        token_hash="refresh_token_hash",
+        expires_at=datetime.now(UTC) + timedelta(days=30),
+        revoked_at=revoked_at,
+    )
+    refresh_token.id = 1
+    return refresh_token
 
 
 async def execute_get_current_user_profile(
@@ -118,6 +154,28 @@ async def execute_update_current_user_profile(
         user_id=1,
         data=data,
     )
+
+
+async def execute_delete_current_user_account(
+    *,
+    session: FakeSession,
+    redis_service: FakeRedisService | None = None,
+    auth_service: AuthService | None = None,
+    data: UserMeDeleteRequest | None = None,
+    access_token: str | None = None,
+) -> FakeRedisService:
+    redis_service = redis_service or FakeRedisService()
+    await UserService().delete_current_user_account(
+        session=session,
+        redis_service=redis_service,
+        user_cache_service=UserCacheService(),
+        auth_cache_service=AuthCacheService(),
+        auth_service=auth_service or AuthService(),
+        user_id=1,
+        data=data or UserMeDeleteRequest(password="StrongPassword123", confirm=True),
+        access_token=access_token,
+    )
+    return redis_service
 
 
 @pytest.mark.asyncio
@@ -401,3 +459,192 @@ async def test_update_user_me_invalidates_redis_cache() -> None:
     assert "auth:me:user:1" in redis_service.deleted
     assert "users:me:1" not in redis_service.values
     assert "auth:me:user:1" not in redis_service.values
+
+
+@pytest.mark.asyncio
+async def test_delete_user_me_success_soft_delete() -> None:
+    auth_service = AuthService()
+    user = build_user(password_hash=auth_service.hash_password("StrongPassword123"))
+    session = FakeSession(execute_results=[user])
+
+    await execute_delete_current_user_account(session=session, auth_service=auth_service)
+
+    assert user.is_active is False
+    assert user.is_deleted is True
+    assert user.deleted_at is not None
+    assert session.flush_called is True
+    assert session.added[0] is user
+
+
+@pytest.mark.asyncio
+async def test_delete_user_me_without_access_token() -> None:
+    with pytest.raises(HTTPException) as exc_info:
+        await resolve_access_token(authorization=None, redis_service=FakeRedisService())
+
+    assert exc_info.value.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_delete_user_me_with_invalid_access_token() -> None:
+    with pytest.raises(HTTPException) as exc_info:
+        await resolve_access_token(authorization="Bearer invalid-token", redis_service=FakeRedisService())
+
+    assert exc_info.value.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_delete_user_me_with_refresh_token_instead_of_access_token() -> None:
+    refresh_token = AuthService().create_refresh_token(user_id=1, role=UserRole.CUSTOMER)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await resolve_access_token(authorization=f"Bearer {refresh_token}", redis_service=FakeRedisService())
+
+    assert exc_info.value.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_delete_user_me_without_confirm() -> None:
+    auth_service = AuthService()
+    user = build_user(password_hash=auth_service.hash_password("StrongPassword123"))
+
+    with pytest.raises(UserDeleteConfirmationRequiredError):
+        await execute_delete_current_user_account(
+            session=FakeSession(execute_results=[user]),
+            auth_service=auth_service,
+            data=UserMeDeleteRequest(password="StrongPassword123", confirm=False),
+        )
+
+
+@pytest.mark.asyncio
+async def test_delete_user_me_with_wrong_password() -> None:
+    auth_service = AuthService()
+    user = build_user(password_hash=auth_service.hash_password("StrongPassword123"))
+
+    with pytest.raises(InvalidCurrentPasswordError):
+        await execute_delete_current_user_account(
+            session=FakeSession(execute_results=[user]),
+            auth_service=auth_service,
+            data=UserMeDeleteRequest(password="WrongPassword123", confirm=True),
+        )
+
+
+@pytest.mark.asyncio
+async def test_delete_user_me_already_deleted_user() -> None:
+    auth_service = AuthService()
+    user = build_user(
+        is_active=False,
+        is_deleted=True,
+        password_hash=auth_service.hash_password("StrongPassword123"),
+    )
+
+    with pytest.raises(InactiveUserError):
+        await execute_delete_current_user_account(
+            session=FakeSession(execute_results=[user]),
+            auth_service=auth_service,
+        )
+
+
+@pytest.mark.asyncio
+async def test_delete_user_me_with_active_orders(monkeypatch) -> None:
+    async def has_active_orders(*args, **kwargs) -> bool:
+        return True
+
+    auth_service = AuthService()
+    user = build_user(password_hash=auth_service.hash_password("StrongPassword123"))
+    monkeypatch.setattr(UserService, "_has_active_orders", has_active_orders)
+
+    with pytest.raises(ActiveOrdersExistError):
+        await execute_delete_current_user_account(
+            session=FakeSession(execute_results=[user]),
+            auth_service=auth_service,
+        )
+
+
+@pytest.mark.asyncio
+async def test_delete_user_me_does_not_physically_delete_user() -> None:
+    auth_service = AuthService()
+    user = build_user(password_hash=auth_service.hash_password("StrongPassword123"))
+    session = FakeSession(execute_results=[user])
+
+    await execute_delete_current_user_account(session=session, auth_service=auth_service)
+
+    assert session.deleted == []
+
+
+@pytest.mark.asyncio
+async def test_delete_user_me_revokes_refresh_tokens() -> None:
+    auth_service = AuthService()
+    user = build_user(password_hash=auth_service.hash_password("StrongPassword123"))
+    active_refresh_token = build_refresh_token()
+    revoked_refresh_token = build_refresh_token(revoked_at=datetime.now(UTC))
+    session = FakeSession(
+        execute_results=[user],
+        refresh_tokens=[active_refresh_token, revoked_refresh_token],
+    )
+
+    await execute_delete_current_user_account(session=session, auth_service=auth_service)
+
+    assert session.revoked_refresh_tokens_count == 1
+    assert active_refresh_token.revoked_at is not None
+
+
+@pytest.mark.asyncio
+async def test_delete_user_me_invalidates_redis_cache() -> None:
+    auth_service = AuthService()
+    redis_service = FakeRedisService()
+    redis_service.values["users:me:1"] = "{}"
+    redis_service.values["auth:me:user:1"] = "{}"
+
+    await execute_delete_current_user_account(
+        session=FakeSession(execute_results=[build_user(password_hash=auth_service.hash_password("StrongPassword123"))]),
+        redis_service=redis_service,
+        auth_service=auth_service,
+    )
+
+    assert "users:me:1" in redis_service.deleted
+    assert "auth:me:user:1" in redis_service.deleted
+    assert "users:me:1" not in redis_service.values
+    assert "auth:me:user:1" not in redis_service.values
+
+
+@pytest.mark.asyncio
+async def test_delete_user_me_deletes_reset_password_tokens() -> None:
+    auth_service = AuthService()
+    redis_service = FakeRedisService()
+    redis_service.values["password_reset:user:1"] = "old-token-hash"
+    redis_service.values["password_reset:token:old-token-hash"] = "{}"
+
+    await execute_delete_current_user_account(
+        session=FakeSession(execute_results=[build_user(password_hash=auth_service.hash_password("StrongPassword123"))]),
+        redis_service=redis_service,
+        auth_service=auth_service,
+    )
+
+    assert "password_reset:user:1" in redis_service.deleted
+    assert "password_reset:token:old-token-hash" in redis_service.deleted
+    assert "password_reset:user:1" not in redis_service.values
+    assert "password_reset:token:old-token-hash" not in redis_service.values
+
+
+@pytest.mark.asyncio
+async def test_delete_user_me_blacklists_current_access_token_when_enabled(monkeypatch) -> None:
+    monkeypatch.setattr(settings.change_password, "jwt_access_blacklist_enabled", True)
+    auth_service = AuthService()
+    access_token = auth_service.create_access_token(user_id=1, role=UserRole.CUSTOMER)
+    payload = jwt.decode(
+        token=access_token,
+        key=settings.auth.jwt_secret_key,
+        algorithms=[settings.auth.jwt_algorithm],
+    )
+    redis_service = FakeRedisService()
+
+    await execute_delete_current_user_account(
+        session=FakeSession(execute_results=[build_user(password_hash=auth_service.hash_password("StrongPassword123"))]),
+        redis_service=redis_service,
+        auth_service=auth_service,
+        access_token=access_token,
+    )
+
+    blacklist_key = f"auth:blacklist:access:{payload['jti']}"
+    assert redis_service.values[blacklist_key] == "revoked"
+    assert redis_service.ttls[blacklist_key] > 0
