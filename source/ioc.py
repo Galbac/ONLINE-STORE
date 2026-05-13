@@ -18,6 +18,8 @@ from source.interactors.auth_reset_password import AuthResetPasswordInteractor
 from source.services.auth import AuthService
 from source.services.notifications import EmailService, TelegramNotificationService
 from source.services.redis import RedisService
+from source.services.user import UserService
+from source.services.user_cache import UserCacheService
 
 
 class AppProvider(Provider):
@@ -62,6 +64,14 @@ class AppProvider(Provider):
     )
     redis_service = provide(
         RedisService,
+        scope=Scope.REQUEST,
+    )
+    user_service = provide(
+        UserService,
+        scope=Scope.REQUEST,
+    )
+    user_cache_service = provide(
+        UserCacheService,
         scope=Scope.REQUEST,
     )
     email_service = provide(

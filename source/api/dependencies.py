@@ -66,14 +66,24 @@ async def resolve_access_token(
     if payload.get("role") is None:
         raise_unauthorized()
 
-    jti = payload.get("jti")
-    if settings.change_password.jwt_access_blacklist_enabled:
-        if not jti:
-            raise_unauthorized()
-        if redis_service is not None and await redis_service.exists(f"auth:blacklist:access:{jti}"):
-            raise_unauthorized()
+    await check_access_token_blacklist(payload=payload, redis_service=redis_service)
 
     return payload
+
+
+async def check_access_token_blacklist(
+    *,
+    payload: dict[str, Any],
+    redis_service: RedisService | None = None,
+) -> None:
+    if not settings.change_password.jwt_access_blacklist_enabled:
+        return
+
+    jti = payload.get("jti")
+    if not jti:
+        raise_unauthorized()
+    if redis_service is not None and await redis_service.exists(f"auth:blacklist:access:{jti}"):
+        raise_unauthorized()
 
 
 async def resolve_current_user(

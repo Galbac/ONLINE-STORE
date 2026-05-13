@@ -361,6 +361,7 @@ class AuthService:
         user_id: int,
     ) -> None:
         await redis_service.delete(f"auth:me:user:{user_id}")
+        await redis_service.delete(f"users:me:{user_id}")
 
     def create_access_token(self, *, user_id: int, role: UserRole) -> str:
         return self._create_token(
@@ -562,7 +563,7 @@ class AuthService:
         if ttl_seconds > 0:
             await redis_service.set(
                 f"auth:blacklist:access:{jti}",
-                "1",
+                "revoked",
                 ttl_seconds=ttl_seconds,
             )
 
