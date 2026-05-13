@@ -1,9 +1,38 @@
 from datetime import datetime
+import re
 
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field, field_validator
 
 from source.db.models.choises.enum import UserRole
 
+
+class UserMeUpdateRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=2, max_length=100)
+    phone: str | None = Field(default=None, min_length=5, max_length=32)
+    email: EmailStr | None = None
+
+    @field_validator("name", "phone", mode="before")
+    @classmethod
+    def strip_string(cls, value: str | None) -> str | None:
+        if isinstance(value, str):
+            return value.strip()
+        return value
+
+    @field_validator("phone")
+    @classmethod
+    def validate_phone(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        if re.fullmatch(r"\+?\d{5,15}", value) is None:
+            raise ValueError("Неверный формат телефона")
+        return value
+
+    @field_validator("email")
+    @classmethod
+    def normalize_email(cls, value: EmailStr | None) -> str | None:
+        if value is None:
+            return value
+        return str(value).lower()
 
 class UserMeResponse(BaseModel):
     id: int

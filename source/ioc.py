@@ -15,6 +15,7 @@ from source.interactors.auth_logout import AuthLogoutInteractor
 from source.interactors.auth_me import AuthMeInteractor
 from source.interactors.auth_register import AuthRegisterInteractor
 from source.interactors.auth_reset_password import AuthResetPasswordInteractor
+from source.services.auth_cache import AuthCacheService
 from source.services.auth import AuthService
 from source.services.notifications import EmailService, TelegramNotificationService
 from source.services.redis import RedisService
@@ -72,6 +73,10 @@ class AppProvider(Provider):
     )
     user_cache_service = provide(
         UserCacheService,
+        scope=Scope.REQUEST,
+    )
+    auth_cache_service = provide(
+        AuthCacheService,
         scope=Scope.REQUEST,
     )
     email_service = provide(

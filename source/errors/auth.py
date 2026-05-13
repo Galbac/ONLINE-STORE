@@ -48,3 +48,7 @@ class ChangePasswordRateLimitExceededError(Exception):
 
 class CurrentUserNotFoundError(Exception):
     pass
+
+
+class EmptyUserProfileUpdateError(Exception):
+    pass
