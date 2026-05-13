@@ -1,3 +1,5 @@
+from datetime import date
+
 from dishka.integrations.fastapi import FromDishka, inject
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -24,6 +26,8 @@ from source.schemas.pydantic.profile import (
     AddressListResponse,
     AddressResponse,
     AddressUpdateRequest,
+    ProfileOrderListQueryParams,
+    ProfileOrderListResponse,
     ProfileSummaryResponse,
 )
 from source.services.profile import ProfileService
@@ -31,6 +35,72 @@ from source.services.profile_cache import ProfileCacheService
 from source.services.redis import RedisService
 
 router = APIRouter(tags=["profile"])
+
+
+@router.get(
+    "/profile/orders",
+    response_model=ProfileOrderListResponse,
+    status_code=status.HTTP_200_OK,
+    responses={
+        status.HTTP_400_BAD_REQUEST: {
+            "description": "Неверные query params.",
+        },
+        status.HTTP_401_UNAUTHORIZED: {
+            "description": "Пользователь не авторизован или access_token недействителен.",
+        },
+        status.HTTP_403_FORBIDDEN: {
+            "description": "Пользователь заблокирован или удалён.",
+        },
+        status.HTTP_500_INTERNAL_SERVER_ERROR: {
+            "description": "Внутренняя ошибка сервера.",
+        },
+    },
+)
+@inject
+async def get_profile_orders(
+    current_user: User = Depends(get_current_user),
+    status_filter: str | None = Query(default=None, alias="status", max_length=50),
+    payment_status: str | None = Query(default=None, max_length=50),
+    delivery_type: str | None = Query(default=None, pattern="^(delivery|pickup)$"),
+    date_from: date | None = None,
+    date_to: date | None = None,
+    limit: int = Query(default=20, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    session: FromDishka[AsyncSession] = None,
+    redis_service: FromDishka[RedisService] = None,
+    profile_service: FromDishka[ProfileService] = None,
+    profile_cache_service: FromDishka[ProfileCacheService] = None,
+    user_repository: FromDishka[UserRepository] = None,
+    order_repository: FromDishka[OrderRepository] = None,
+) -> ProfileOrderListResponse:
+    try:
+        return await profile_service.get_user_orders(
+            session=session,
+            redis_service=redis_service,
+            profile_cache_service=profile_cache_service,
+            user_repository=user_repository,
+            order_repository=order_repository,
+            user_id=current_user.id,
+            query=ProfileOrderListQueryParams(
+                status=status_filter,
+                payment_status=payment_status,
+                delivery_type=delivery_type,
+                date_from=date_from,
+                date_to=date_to,
+                limit=limit,
+                offset=offset,
+            ),
+        )
+    except CurrentUserNotFoundError as error:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Пользователь не найден",
+        ) from error
+    except InactiveUserError as error:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Пользователь заблокирован или удалён",
+        ) from error
 
 
 @router.get(

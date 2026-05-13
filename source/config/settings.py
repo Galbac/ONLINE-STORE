@@ -206,6 +206,12 @@ class ProfileAddressesSettings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 
+class ProfileOrdersSettings(BaseSettings):
+    cache_ttl_seconds: int = Field(default=60, alias="PROFILE_ORDERS_CACHE_TTL_SECONDS")
+
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=(".env.example", ".env"),
@@ -230,6 +236,7 @@ class Settings(BaseSettings):
     user_delete: UserDeleteSettings = UserDeleteSettings()
     profile_summary: ProfileSummarySettings = ProfileSummarySettings()
     profile_addresses: ProfileAddressesSettings = ProfileAddressesSettings()
+    profile_orders: ProfileOrdersSettings = ProfileOrdersSettings()
 
     @property
     def tz(self) -> tzinfo:

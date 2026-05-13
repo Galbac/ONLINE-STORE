@@ -1,7 +1,7 @@
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 
-from pydantic import BaseModel, EmailStr, Field, field_validator
+from pydantic import BaseModel, EmailStr, Field, field_validator, model_validator
 
 from source.db.models.choises.enum import UserRole
 
@@ -131,8 +131,43 @@ class ProfileOrderShortResponse(BaseModel):
     id: int
     order_number: str
     status: str
+    payment_method: str | None = None
+    payment_status: str | None = None
+    delivery_type: str | None = None
     final_price: Decimal
+    items_count: int = 0
     created_at: datetime
+
+
+class ProfileOrderListQueryParams(BaseModel):
+    status: str | None = Field(default=None, max_length=50)
+    payment_status: str | None = Field(default=None, max_length=50)
+    delivery_type: str | None = Field(default=None, pattern="^(delivery|pickup)$")
+    date_from: date | None = None
+    date_to: date | None = None
+    limit: int = Field(default=20, ge=1, le=100)
+    offset: int = Field(default=0, ge=0)
+
+    @field_validator("status", "payment_status", "delivery_type", mode="before")
+    @classmethod
+    def normalize_string(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        normalized_value = value.strip()
+        return normalized_value or None
+
+    @model_validator(mode="after")
+    def validate_dates(self) -> "ProfileOrderListQueryParams":
+        if self.date_from is not None and self.date_to is not None and self.date_from > self.date_to:
+            raise ValueError("date_from must be less than or equal to date_to")
+        return self
+
+
+class ProfileOrderListResponse(BaseModel):
+    items: list[ProfileOrderShortResponse]
+    total: int
+    limit: int
+    offset: int
 
 
 class ProfileSummaryResponse(BaseModel):

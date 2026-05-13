@@ -20,14 +20,68 @@ from source.schemas.pydantic.profile import (
     AddressResponse,
     AddressUpdateRequest,
     ProfileStatsResponse,
+    ProfileOrderListQueryParams,
+    ProfileOrderListResponse,
     ProfileSummaryResponse,
     ProfileUserResponse,
 )
 from source.services.profile_cache import ProfileCacheService
 from source.services.redis import RedisService
+from source.utils.query_hash import build_query_hash
 
 
 class ProfileService:
+    async def get_user_orders(
+        self,
+        *,
+        session: AsyncSession,
+        redis_service: RedisService,
+        profile_cache_service: ProfileCacheService,
+        user_repository: UserRepository,
+        order_repository: OrderRepository,
+        user_id: int,
+        query: ProfileOrderListQueryParams,
+    ) -> ProfileOrderListResponse:
+        query_hash = build_query_hash(query.model_dump())
+        cached_orders = await profile_cache_service.get_orders(
+            redis_service=redis_service,
+            user_id=user_id,
+            query_hash=query_hash,
+        )
+        if cached_orders is not None:
+            return cached_orders
+
+        user = await user_repository.get_by_id(session=session, user_id=user_id)
+        if user is None:
+            raise CurrentUserNotFoundError
+        if not user.is_active or user.is_deleted:
+            raise InactiveUserError
+
+        items = await order_repository.get_by_user_id(
+            session=session,
+            user_id=user.id,
+            query=query,
+        )
+        total = await order_repository.count_by_user_id(
+            session=session,
+            user_id=user.id,
+            query=query,
+        )
+        response = ProfileOrderListResponse(
+            items=items,
+            total=total,
+            limit=query.limit,
+            offset=query.offset,
+        )
+        await profile_cache_service.set_orders(
+            redis_service=redis_service,
+            user_id=user.id,
+            query_hash=query_hash,
+            response=response,
+            ttl_seconds=settings.profile_orders.cache_ttl_seconds,
+        )
+        return response
+
     async def get_profile_summary(
         self,
         *,

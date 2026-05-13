@@ -24,6 +24,8 @@ from source.schemas.pydantic.profile import (
     AddressListResponse,
     AddressResponse,
     AddressUpdateRequest,
+    ProfileOrderListQueryParams,
+    ProfileOrderListResponse,
     ProfileAddressShortResponse,
     ProfileOrderShortResponse,
     ProfileSummaryResponse,
@@ -31,6 +33,7 @@ from source.schemas.pydantic.profile import (
 from source.services.auth import AuthService
 from source.services.profile import ProfileService
 from source.services.profile_cache import ProfileCacheService
+from source.utils.query_hash import build_query_hash
 
 
 class FakeRedisService:
@@ -198,29 +201,33 @@ class FakeAddressRepository:
 
 
 class FakeOrderRepository:
-    def __init__(self, *, has_active_orders_by_address: bool = False) -> None:
-        self.count = 12
+    def __init__(
+        self,
+        *,
+        has_active_orders_by_address: bool = False,
+        orders: list[ProfileOrderShortResponse] | None = None,
+    ) -> None:
         self.has_active_orders_by_address = has_active_orders_by_address
-        self.active_order = ProfileOrderShortResponse(
-            id=101,
-            order_number="ORD-101",
-            status="assembling",
-            final_price=Decimal("3250.50"),
-            created_at=datetime(2026, 5, 12, 10, 0, 0, tzinfo=UTC),
-        )
-        self.recent_orders = [
-            ProfileOrderShortResponse(
-                id=100,
-                order_number="ORD-100",
-                status="completed",
-                final_price=Decimal("2400.00"),
-                created_at=datetime(2026, 5, 10, 10, 0, 0, tzinfo=UTC),
-            ),
+        self.orders = orders if orders is not None else [
+            build_order(order_id=101, status="assembling", payment_status="paid", delivery_type="delivery"),
+            build_order(order_id=100, status="completed", payment_status="paid", delivery_type="pickup"),
         ]
+        self.count = len(self.orders)
+        self.requested_user_id: int | None = None
+        self.query: ProfileOrderListQueryParams | None = None
+        self.active_order = self.orders[0]
+        self.recent_orders = self.orders
         self.recent_limit: int | None = None
 
-    async def count_by_user_id(self, *, session, user_id: int) -> int:
-        return self.count
+    async def count_by_user_id(self, *, session, user_id: int, query: ProfileOrderListQueryParams | None = None) -> int:
+        return len(self._filter_orders(user_id=user_id, query=query))
+
+    async def get_by_user_id(self, *, session, user_id: int, query: ProfileOrderListQueryParams):
+        self.requested_user_id = user_id
+        self.query = query
+        filtered_orders = self._filter_orders(user_id=user_id, query=query)
+        filtered_orders.sort(key=lambda order: order.created_at, reverse=True)
+        return filtered_orders[query.offset : query.offset + query.limit]
 
     async def get_recent_by_user_id(self, *, session, user_id: int, limit: int = 5):
         self.recent_limit = limit
@@ -231,6 +238,27 @@ class FakeOrderRepository:
 
     async def has_active_orders_by_address_id(self, *, session, address_id: int) -> bool:
         return self.has_active_orders_by_address
+
+    def _filter_orders(
+        self,
+        *,
+        user_id: int,
+        query: ProfileOrderListQueryParams | None,
+    ) -> list[ProfileOrderShortResponse]:
+        filtered_orders = [order for order in self.orders if getattr(order, "user_id", user_id) == user_id]
+        if query is None:
+            return filtered_orders
+        if query.status is not None:
+            filtered_orders = [order for order in filtered_orders if order.status == query.status]
+        if query.payment_status is not None:
+            filtered_orders = [order for order in filtered_orders if order.payment_status == query.payment_status]
+        if query.delivery_type is not None:
+            filtered_orders = [order for order in filtered_orders if order.delivery_type == query.delivery_type]
+        if query.date_from is not None:
+            filtered_orders = [order for order in filtered_orders if order.created_at.date() >= query.date_from]
+        if query.date_to is not None:
+            filtered_orders = [order for order in filtered_orders if order.created_at.date() <= query.date_to]
+        return filtered_orders
 
 
 def build_user(*, user_id: int = 1, is_active: bool = True, is_deleted: bool = False) -> User:
@@ -281,6 +309,31 @@ def build_address(
     return address
 
 
+def build_order(
+    *,
+    order_id: int,
+    user_id: int = 1,
+    status: str = "assembling",
+    payment_status: str = "paid",
+    delivery_type: str = "delivery",
+    created_at: datetime | None = None,
+) -> ProfileOrderShortResponse:
+    created_at = created_at or datetime(2026, 5, 12, 10, 0, 0, tzinfo=UTC)
+    order = ProfileOrderShortResponse(
+        id=order_id,
+        order_number=f"ORD-{order_id}",
+        status=status,
+        payment_method="online",
+        payment_status=payment_status,
+        delivery_type=delivery_type,
+        final_price=Decimal("3250.50"),
+        items_count=8,
+        created_at=created_at,
+    )
+    object.__setattr__(order, "user_id", user_id)
+    return order
+
+
 async def execute_get_profile_summary(
     *,
     user_repository: FakeUserRepository,
@@ -297,6 +350,25 @@ async def execute_get_profile_summary(
         address_repository=address_repository or FakeAddressRepository(),
         order_repository=order_repository or FakeOrderRepository(),
         user_id=user_id,
+    )
+
+
+async def execute_get_user_orders(
+    *,
+    user_repository: FakeUserRepository,
+    redis_service: FakeRedisService | None = None,
+    order_repository: FakeOrderRepository | None = None,
+    user_id: int = 1,
+    query: ProfileOrderListQueryParams | None = None,
+) -> ProfileOrderListResponse:
+    return await ProfileService().get_user_orders(
+        session=object(),
+        redis_service=redis_service or FakeRedisService(),
+        profile_cache_service=ProfileCacheService(),
+        user_repository=user_repository,
+        order_repository=order_repository or FakeOrderRepository(),
+        user_id=user_id,
+        query=query or ProfileOrderListQueryParams(),
     )
 
 
@@ -404,12 +476,161 @@ async def test_get_profile_summary_from_postgresql_success() -> None:
 
     assert response.user.id == 1
     assert response.user.email == "ivan@example.com"
-    assert response.stats.orders_count == 12
+    assert response.stats.orders_count == 2
     assert response.stats.addresses_count == 2
     assert response.default_address is not None
     assert response.active_order is not None
-    assert response.recent_orders[0].order_number == "ORD-100"
+    assert response.recent_orders[0].order_number == "ORD-101"
     assert order_repository.recent_limit == 5
+
+
+@pytest.mark.asyncio
+async def test_get_profile_orders_from_postgresql_success() -> None:
+    response = await execute_get_user_orders(user_repository=FakeUserRepository(build_user()))
+
+    assert response.total == 2
+    assert response.limit == 20
+    assert response.offset == 0
+    assert response.items[0].id == 101
+    assert response.items[0].payment_method == "online"
+    assert response.items[0].items_count == 8
+
+
+@pytest.mark.asyncio
+async def test_get_profile_orders_from_redis_cache_success() -> None:
+    redis_service = FakeRedisService()
+    query = ProfileOrderListQueryParams()
+    query_hash = build_query_hash(query.model_dump())
+    cached_response = ProfileOrderListResponse(
+        items=[build_order(order_id=101)],
+        total=1,
+        limit=20,
+        offset=0,
+    )
+    redis_service.values[f"profile:orders:1:{query_hash}"] = cached_response.model_dump_json()
+    user_repository = FakeUserRepository(None)
+
+    response = await execute_get_user_orders(
+        user_repository=user_repository,
+        redis_service=redis_service,
+        query=query,
+    )
+
+    assert response.total == 1
+    assert user_repository.requested_user_id is None
+
+
+@pytest.mark.asyncio
+async def test_get_profile_orders_filter_by_status() -> None:
+    order_repository = FakeOrderRepository()
+
+    response = await execute_get_user_orders(
+        user_repository=FakeUserRepository(build_user()),
+        order_repository=order_repository,
+        query=ProfileOrderListQueryParams(status="completed"),
+    )
+
+    assert [order.status for order in response.items] == ["completed"]
+    assert order_repository.query is not None
+    assert order_repository.query.status == "completed"
+
+
+@pytest.mark.asyncio
+async def test_get_profile_orders_filter_by_payment_status() -> None:
+    order_repository = FakeOrderRepository(
+        orders=[
+            build_order(order_id=1, payment_status="paid"),
+            build_order(order_id=2, payment_status="pending"),
+        ],
+    )
+
+    response = await execute_get_user_orders(
+        user_repository=FakeUserRepository(build_user()),
+        order_repository=order_repository,
+        query=ProfileOrderListQueryParams(payment_status="pending"),
+    )
+
+    assert [order.payment_status for order in response.items] == ["pending"]
+
+
+@pytest.mark.asyncio
+async def test_get_profile_orders_filter_by_delivery_type() -> None:
+    response = await execute_get_user_orders(
+        user_repository=FakeUserRepository(build_user()),
+        query=ProfileOrderListQueryParams(delivery_type="pickup"),
+    )
+
+    assert [order.delivery_type for order in response.items] == ["pickup"]
+
+
+@pytest.mark.asyncio
+async def test_get_profile_orders_pagination() -> None:
+    order_repository = FakeOrderRepository(
+        orders=[
+            build_order(order_id=1, created_at=datetime(2026, 5, 13, 10, 0, 0, tzinfo=UTC)),
+            build_order(order_id=2, created_at=datetime(2026, 5, 12, 10, 0, 0, tzinfo=UTC)),
+            build_order(order_id=3, created_at=datetime(2026, 5, 11, 10, 0, 0, tzinfo=UTC)),
+        ],
+    )
+
+    response = await execute_get_user_orders(
+        user_repository=FakeUserRepository(build_user()),
+        order_repository=order_repository,
+        query=ProfileOrderListQueryParams(limit=1, offset=1),
+    )
+
+    assert response.total == 3
+    assert response.limit == 1
+    assert response.offset == 1
+    assert [order.id for order in response.items] == [2]
+
+
+@pytest.mark.asyncio
+async def test_get_profile_orders_uses_current_user_id_only() -> None:
+    order_repository = FakeOrderRepository(
+        orders=[
+            build_order(order_id=1, user_id=7),
+            build_order(order_id=2, user_id=1),
+        ],
+    )
+
+    response = await execute_get_user_orders(
+        user_repository=FakeUserRepository(build_user(user_id=7)),
+        order_repository=order_repository,
+        user_id=7,
+    )
+
+    assert order_repository.requested_user_id == 7
+    assert [order.id for order in response.items] == [1]
+
+
+@pytest.mark.asyncio
+async def test_get_profile_orders_without_access_token() -> None:
+    with pytest.raises(HTTPException) as exc_info:
+        await resolve_access_token(authorization=None, redis_service=FakeRedisService())
+
+    assert exc_info.value.status_code == 401
+
+
+def test_get_profile_orders_with_invalid_query_params() -> None:
+    with pytest.raises(ValidationError):
+        ProfileOrderListQueryParams(delivery_type="courier")
+
+
+@pytest.mark.asyncio
+async def test_get_profile_orders_response_is_cached_in_redis() -> None:
+    redis_service = FakeRedisService()
+    query = ProfileOrderListQueryParams(status="assembling")
+
+    await execute_get_user_orders(
+        user_repository=FakeUserRepository(build_user()),
+        redis_service=redis_service,
+        query=query,
+    )
+
+    cache_key = f"profile:orders:1:{build_query_hash(query.model_dump())}"
+    assert cache_key in redis_service.values
+    assert redis_service.ttls[cache_key] == settings.profile_orders.cache_ttl_seconds
 
 
 @pytest.mark.asyncio
