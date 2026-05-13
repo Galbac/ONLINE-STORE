@@ -11,6 +11,7 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-grocery_store}
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      REDIS_URL: redis://redis:6379/0
     ports:
       - "8000:8000"
     volumes:
@@ -18,6 +19,23 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - grocery_store_dev
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_dev_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
     networks:
       - grocery_store_dev
 
@@ -52,6 +70,7 @@ services:
 
 volumes:
   postgres_dev_data:
+  redis_dev_data:
 
 networks:
   grocery_store_dev:
