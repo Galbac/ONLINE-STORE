@@ -170,6 +170,40 @@ class ProfileOrderListResponse(BaseModel):
     offset: int
 
 
+class RepeatOrderRequest(BaseModel):
+    replace_cart: bool = False
+
+
+class CartItemResponse(BaseModel):
+    id: int
+    product_id: int
+    name: str
+    quantity: Decimal
+    unit: str
+    price: Decimal
+    total_price: Decimal
+
+
+class CartResponse(BaseModel):
+    id: int
+    items: list[CartItemResponse]
+    total_price: Decimal
+    discount_amount: Decimal = Decimal("0")
+    final_price: Decimal
+
+
+class RepeatOrderWarningResponse(BaseModel):
+    product_id: int
+    product_name: str
+    reason: str
+
+
+class RepeatOrderResponse(BaseModel):
+    message: str
+    cart: CartResponse
+    warnings: list[RepeatOrderWarningResponse]
+
+
 class ProfileSummaryResponse(BaseModel):
     user: ProfileUserResponse
     stats: ProfileStatsResponse

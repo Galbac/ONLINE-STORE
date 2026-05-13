@@ -1,7 +1,7 @@
 from datetime import date
 
 from dishka.integrations.fastapi import FromDishka, inject
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from source.api.dependencies import get_current_user
@@ -14,10 +14,18 @@ from source.errors.auth import (
     CurrentUserNotFoundError,
     EmptyUserProfileUpdateError,
     InactiveUserError,
+    OrderAccessDeniedError,
+    OrderItemsNotFoundError,
+    OrderNotFoundError,
+    RepeatOrderUnavailableError,
     UserAddressesLimitExceededError,
 )
 from source.repositories.address import AddressRepository
+from source.repositories.cart import CartRepository
+from source.repositories.cart_item import CartItemRepository
 from source.repositories.order import OrderRepository
+from source.repositories.order_item import OrderItemRepository
+from source.repositories.product import ProductRepository
 from source.repositories.user import UserRepository
 from source.schemas.pydantic.auth import MessageResponse
 from source.schemas.pydantic.profile import (
@@ -29,12 +37,86 @@ from source.schemas.pydantic.profile import (
     ProfileOrderListQueryParams,
     ProfileOrderListResponse,
     ProfileSummaryResponse,
+    RepeatOrderRequest,
+    RepeatOrderResponse,
 )
+from source.services.cart import CartService
+from source.services.cart_cache import CartCacheService
 from source.services.profile import ProfileService
 from source.services.profile_cache import ProfileCacheService
 from source.services.redis import RedisService
 
 router = APIRouter(tags=["profile"])
+
+
+@router.post(
+    "/profile/orders/{order_id}/repeat",
+    response_model=RepeatOrderResponse,
+    status_code=status.HTTP_200_OK,
+    responses={
+        status.HTTP_400_BAD_REQUEST: {"description": "Неверные данные."},
+        status.HTTP_401_UNAUTHORIZED: {"description": "Пользователь не авторизован."},
+        status.HTTP_403_FORBIDDEN: {"description": "Пользователь заблокирован или заказ чужой."},
+        status.HTTP_404_NOT_FOUND: {"description": "Заказ или товары заказа не найдены."},
+        status.HTTP_409_CONFLICT: {"description": "Все товары недоступны для повтора."},
+    },
+)
+@inject
+async def repeat_profile_order(
+    order_id: int,
+    body: RepeatOrderRequest = Body(default_factory=RepeatOrderRequest),
+    current_user: User = Depends(get_current_user),
+    session: FromDishka[AsyncSession] = None,
+    commiter: FromDishka[Commiter] = None,
+    redis_service: FromDishka[RedisService] = None,
+    profile_service: FromDishka[ProfileService] = None,
+    profile_cache_service: FromDishka[ProfileCacheService] = None,
+    cart_cache_service: FromDishka[CartCacheService] = None,
+    cart_service: FromDishka[CartService] = None,
+    user_repository: FromDishka[UserRepository] = None,
+    order_repository: FromDishka[OrderRepository] = None,
+    order_item_repository: FromDishka[OrderItemRepository] = None,
+    product_repository: FromDishka[ProductRepository] = None,
+    cart_repository: FromDishka[CartRepository] = None,
+    cart_item_repository: FromDishka[CartItemRepository] = None,
+) -> RepeatOrderResponse:
+    try:
+        response = await profile_service.repeat_order(
+            session=session,
+            redis_service=redis_service,
+            profile_cache_service=profile_cache_service,
+            cart_cache_service=cart_cache_service,
+            cart_service=cart_service,
+            user_repository=user_repository,
+            order_repository=order_repository,
+            order_item_repository=order_item_repository,
+            product_repository=product_repository,
+            cart_repository=cart_repository,
+            cart_item_repository=cart_item_repository,
+            user_id=current_user.id,
+            order_id=order_id,
+            data=body,
+        )
+        await commiter.commit()
+        return response
+    except CurrentUserNotFoundError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Пользователь не найден") from error
+    except OrderNotFoundError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Заказ не найден") from error
+    except OrderItemsNotFoundError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="В заказе нет товаров") from error
+    except OrderAccessDeniedError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Заказ принадлежит другому пользователю") from error
+    except InactiveUserError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Пользователь заблокирован или удалён") from error
+    except RepeatOrderUnavailableError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Все товары из заказа недоступны для повторения") from error
 
 
 @router.get(

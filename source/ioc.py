@@ -16,10 +16,16 @@ from source.interactors.auth_me import AuthMeInteractor
 from source.interactors.auth_register import AuthRegisterInteractor
 from source.interactors.auth_reset_password import AuthResetPasswordInteractor
 from source.repositories.address import AddressRepository
+from source.repositories.cart import CartRepository
+from source.repositories.cart_item import CartItemRepository
 from source.repositories.order import OrderRepository
+from source.repositories.order_item import OrderItemRepository
+from source.repositories.product import ProductRepository
 from source.repositories.user import UserRepository
 from source.services.auth_cache import AuthCacheService
 from source.services.auth import AuthService
+from source.services.cart import CartService
+from source.services.cart_cache import CartCacheService
 from source.services.notifications import EmailService, TelegramNotificationService
 from source.services.profile import ProfileService
 from source.services.profile_cache import ProfileCacheService
@@ -102,6 +108,30 @@ class AppProvider(Provider):
     )
     order_repository = provide(
         OrderRepository,
+        scope=Scope.REQUEST,
+    )
+    order_item_repository = provide(
+        OrderItemRepository,
+        scope=Scope.REQUEST,
+    )
+    product_repository = provide(
+        ProductRepository,
+        scope=Scope.REQUEST,
+    )
+    cart_repository = provide(
+        CartRepository,
+        scope=Scope.REQUEST,
+    )
+    cart_item_repository = provide(
+        CartItemRepository,
+        scope=Scope.REQUEST,
+    )
+    cart_service = provide(
+        CartService,
+        scope=Scope.REQUEST,
+    )
+    cart_cache_service = provide(
+        CartCacheService,
         scope=Scope.REQUEST,
     )
     email_service = provide(

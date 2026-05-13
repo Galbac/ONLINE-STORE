@@ -76,3 +76,19 @@ class AddressAccessDeniedError(Exception):
 
 class AddressActiveOrderExistsError(Exception):
     pass
+
+
+class OrderNotFoundError(Exception):
+    pass
+
+
+class OrderAccessDeniedError(Exception):
+    pass
+
+
+class OrderItemsNotFoundError(Exception):
+    pass
+
+
+class RepeatOrderUnavailableError(Exception):
+    pass
