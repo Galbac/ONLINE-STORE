@@ -9,12 +9,20 @@ from source.api.dependencies import resolve_access_token
 from source.config.settings import settings
 from source.db.models.choises.enum import UserRole
 from source.db.models.user import User
-from source.errors.auth import CurrentUserNotFoundError, InactiveUserError, UserAddressesLimitExceededError
+from source.errors.auth import (
+    AddressAccessDeniedError,
+    AddressNotFoundError,
+    CurrentUserNotFoundError,
+    EmptyUserProfileUpdateError,
+    InactiveUserError,
+    UserAddressesLimitExceededError,
+)
 from source.schemas.pydantic.profile import (
     AddressCreateRequest,
     AddressListQueryParams,
     AddressListResponse,
     AddressResponse,
+    AddressUpdateRequest,
     ProfileAddressShortResponse,
     ProfileOrderShortResponse,
     ProfileSummaryResponse,
@@ -81,6 +89,7 @@ class FakeAddressRepository:
         self.include_deleted: bool | None = None
         self.created_user_id: int | None = None
         self.unset_default_called = False
+        self.updated_address_id: int | None = None
 
     async def get_default_by_user_id(self, *, session, user_id: int):
         return self.default_address
@@ -133,8 +142,29 @@ class FakeAddressRepository:
             created_at=datetime(2026, 5, 13, 10, 0, 0, tzinfo=UTC),
             updated_at=datetime(2026, 5, 13, 10, 0, 0, tzinfo=UTC),
         )
+        object.__setattr__(address, "user_id", user_id)
+        object.__setattr__(address, "is_deleted", False)
         self.addresses.append(address)
         return address
+
+    async def get_by_id(self, *, session, address_id: int):
+        for address in self.addresses:
+            if address.id == address_id:
+                return address
+        return None
+
+    async def update(self, *, session, address, data: AddressUpdateRequest) -> AddressResponse:
+        self.updated_address_id = address.id
+        updated_address = address.model_copy(update=data.model_dump(exclude_unset=True))
+        if hasattr(address, "user_id"):
+            object.__setattr__(updated_address, "user_id", address.user_id)
+        if hasattr(address, "is_deleted"):
+            object.__setattr__(updated_address, "is_deleted", address.is_deleted)
+        self.addresses = [
+            updated_address if item.id == address.id else item
+            for item in self.addresses
+        ]
+        return updated_address
 
 
 class FakeOrderRepository:
@@ -190,11 +220,13 @@ def build_address(
     *,
     address_id: int,
     title: str = "Дом",
+    user_id: int = 1,
     is_default: bool = False,
+    is_deleted: bool = False,
     created_at: datetime | None = None,
 ) -> AddressResponse:
     created_at = created_at or datetime(2026, 5, 12, 10, 0, 0, tzinfo=UTC)
-    return AddressResponse(
+    address = AddressResponse(
         id=address_id,
         title=title,
         city="Москва",
@@ -210,6 +242,9 @@ def build_address(
         created_at=created_at,
         updated_at=created_at,
     )
+    object.__setattr__(address, "user_id", user_id)
+    object.__setattr__(address, "is_deleted", is_deleted)
+    return address
 
 
 async def execute_get_profile_summary(
@@ -278,6 +313,27 @@ async def execute_create_address(
             comment="Позвонить за 10 минут",
             is_default=False,
         ),
+    )
+
+
+async def execute_update_address(
+    *,
+    user_repository: FakeUserRepository,
+    redis_service: FakeRedisService | None = None,
+    address_repository: FakeAddressRepository | None = None,
+    user_id: int = 1,
+    address_id: int = 1,
+    data: AddressUpdateRequest | None = None,
+) -> AddressResponse:
+    return await ProfileService().update_address(
+        session=object(),
+        redis_service=redis_service or FakeRedisService(),
+        profile_cache_service=ProfileCacheService(),
+        user_repository=user_repository,
+        address_repository=address_repository or FakeAddressRepository(),
+        user_id=user_id,
+        address_id=address_id,
+        data=data or AddressUpdateRequest(title="Работа"),
     )
 
 
@@ -646,6 +702,140 @@ async def test_create_profile_address_invalidates_redis_cache() -> None:
         user_repository=FakeUserRepository(build_user()),
         redis_service=redis_service,
         address_repository=FakeAddressRepository(addresses=[]),
+    )
+
+    assert "profile:addresses:1:include_deleted:false:limit:50:offset:0" in redis_service.deleted
+    assert "profile:summary:1" in redis_service.deleted
+
+
+@pytest.mark.asyncio
+async def test_update_profile_address_success() -> None:
+    address_repository = FakeAddressRepository(addresses=[build_address(address_id=1)])
+
+    response = await execute_update_address(
+        user_repository=FakeUserRepository(build_user()),
+        address_repository=address_repository,
+        data=AddressUpdateRequest(
+            title="Работа",
+            city="Москва",
+            street="Арбат",
+            house="20",
+            building=None,
+            apartment="8",
+            entrance="1",
+            floor="3",
+            intercom="8",
+            comment="Вход со двора",
+        ),
+    )
+
+    assert response.id == 1
+    assert response.title == "Работа"
+    assert response.street == "Арбат"
+    assert response.house == "20"
+    assert address_repository.updated_address_id == 1
+
+
+@pytest.mark.asyncio
+async def test_update_profile_address_set_default_success() -> None:
+    address_repository = FakeAddressRepository(
+        addresses=[
+            build_address(address_id=1, is_default=False),
+            build_address(address_id=2, is_default=True),
+        ],
+    )
+
+    response = await execute_update_address(
+        user_repository=FakeUserRepository(build_user()),
+        address_repository=address_repository,
+        data=AddressUpdateRequest(is_default=True),
+    )
+
+    assert response.is_default is True
+    assert address_repository.unset_default_called is True
+
+
+@pytest.mark.asyncio
+async def test_update_profile_address_with_default_unsets_other_defaults() -> None:
+    address_repository = FakeAddressRepository(
+        addresses=[
+            build_address(address_id=1, is_default=False),
+            build_address(address_id=2, is_default=True),
+        ],
+    )
+
+    await execute_update_address(
+        user_repository=FakeUserRepository(build_user()),
+        address_repository=address_repository,
+        data=AddressUpdateRequest(is_default=True),
+    )
+
+    other_address = next(address for address in address_repository.addresses if address.id == 2)
+    assert other_address.is_default is False
+
+
+@pytest.mark.asyncio
+async def test_update_profile_address_without_access_token() -> None:
+    with pytest.raises(HTTPException) as exc_info:
+        await resolve_access_token(authorization=None, redis_service=FakeRedisService())
+
+    assert exc_info.value.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_update_profile_address_not_found() -> None:
+    with pytest.raises(AddressNotFoundError):
+        await execute_update_address(
+            user_repository=FakeUserRepository(build_user()),
+            address_repository=FakeAddressRepository(addresses=[]),
+        )
+
+
+@pytest.mark.asyncio
+async def test_update_profile_address_access_denied() -> None:
+    with pytest.raises(AddressAccessDeniedError):
+        await execute_update_address(
+            user_repository=FakeUserRepository(build_user(user_id=1)),
+            address_repository=FakeAddressRepository(addresses=[build_address(address_id=1, user_id=2)]),
+        )
+
+
+@pytest.mark.asyncio
+async def test_update_profile_address_without_fields() -> None:
+    with pytest.raises(EmptyUserProfileUpdateError):
+        await execute_update_address(
+            user_repository=FakeUserRepository(build_user()),
+            data=AddressUpdateRequest(),
+        )
+
+
+@pytest.mark.asyncio
+async def test_update_profile_address_ignores_body_user_id() -> None:
+    address_repository = FakeAddressRepository(addresses=[build_address(address_id=1, user_id=7)])
+    data = AddressUpdateRequest.model_validate({"title": "Работа", "user_id": 999})
+
+    await execute_update_address(
+        user_repository=FakeUserRepository(build_user(user_id=7)),
+        address_repository=address_repository,
+        user_id=7,
+        data=data,
+    )
+
+    updated_address = address_repository.addresses[0]
+    assert updated_address.user_id == 7
+    assert updated_address.title == "Работа"
+
+
+@pytest.mark.asyncio
+async def test_update_profile_address_invalidates_redis_cache() -> None:
+    redis_service = FakeRedisService()
+    redis_service.values["profile:addresses:1:include_deleted:false:limit:50:offset:0"] = "{}"
+    redis_service.values["profile:summary:1"] = "{}"
+
+    await execute_update_address(
+        user_repository=FakeUserRepository(build_user()),
+        redis_service=redis_service,
+        address_repository=FakeAddressRepository(addresses=[build_address(address_id=1)]),
     )
 
     assert "profile:addresses:1:include_deleted:false:limit:50:offset:0" in redis_service.deleted

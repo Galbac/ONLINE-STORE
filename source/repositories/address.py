@@ -2,7 +2,12 @@ from sqlalchemy import desc, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from source.db.models.address import Address
-from source.schemas.pydantic.profile import AddressCreateRequest, AddressResponse, ProfileAddressShortResponse
+from source.schemas.pydantic.profile import (
+    AddressCreateRequest,
+    AddressResponse,
+    AddressUpdateRequest,
+    ProfileAddressShortResponse,
+)
 
 
 class AddressRepository:
@@ -69,6 +74,15 @@ class AddressRepository:
             for address in result.scalars().all()
         ]
 
+    async def get_by_id(
+        self,
+        *,
+        session: AsyncSession,
+        address_id: int,
+    ) -> Address | None:
+        result = await session.execute(select(Address).where(Address.id == address_id))
+        return result.scalar_one_or_none()
+
     async def unset_default_by_user_id(
         self,
         *,
@@ -108,6 +122,22 @@ class AddressRepository:
             is_default=is_default,
             is_deleted=False,
         )
+        session.add(address)
+        await session.flush()
+        await session.refresh(address)
+        return self._build_address_response(address)
+
+    async def update(
+        self,
+        *,
+        session: AsyncSession,
+        address: Address,
+        data: AddressUpdateRequest,
+    ) -> AddressResponse:
+        update_data = data.model_dump(exclude_unset=True)
+        for field_name, value in update_data.items():
+            setattr(address, field_name, value)
+
         session.add(address)
         await session.flush()
         await session.refresh(address)

@@ -86,6 +86,40 @@ class AddressCreateRequest(BaseModel):
         return normalized_value or None
 
 
+class AddressUpdateRequest(BaseModel):
+    title: str | None = Field(default=None, max_length=100)
+    city: str | None = Field(default=None, min_length=1, max_length=100)
+    street: str | None = Field(default=None, min_length=1, max_length=150)
+    house: str | None = Field(default=None, min_length=1, max_length=50)
+    building: str | None = Field(default=None, max_length=50)
+    apartment: str | None = Field(default=None, max_length=50)
+    entrance: str | None = Field(default=None, max_length=50)
+    floor: str | None = Field(default=None, max_length=50)
+    intercom: str | None = Field(default=None, max_length=50)
+    comment: str | None = Field(default=None, max_length=500)
+    is_default: bool | None = None
+
+    @field_validator(
+        "title",
+        "city",
+        "street",
+        "house",
+        "building",
+        "apartment",
+        "entrance",
+        "floor",
+        "intercom",
+        "comment",
+        mode="before",
+    )
+    @classmethod
+    def normalize_string(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        normalized_value = " ".join(value.strip().split())
+        return normalized_value or None
+
+
 class AddressListResponse(BaseModel):
     items: list[AddressResponse]
     total: int

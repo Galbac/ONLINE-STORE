@@ -1,7 +1,14 @@
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from source.config.settings import settings
-from source.errors.auth import CurrentUserNotFoundError, InactiveUserError, UserAddressesLimitExceededError
+from source.errors.auth import (
+    AddressAccessDeniedError,
+    AddressNotFoundError,
+    CurrentUserNotFoundError,
+    EmptyUserProfileUpdateError,
+    InactiveUserError,
+    UserAddressesLimitExceededError,
+)
 from source.repositories.address import AddressRepository
 from source.repositories.order import OrderRepository
 from source.repositories.user import UserRepository
@@ -10,6 +17,7 @@ from source.schemas.pydantic.profile import (
     AddressListQueryParams,
     AddressListResponse,
     AddressResponse,
+    AddressUpdateRequest,
     ProfileStatsResponse,
     ProfileSummaryResponse,
     ProfileUserResponse,
@@ -88,6 +96,69 @@ class ProfileService:
             user_id=user.id,
             response=response,
             ttl_seconds=settings.profile_summary.cache_ttl_seconds,
+        )
+        return response
+
+    async def update_address(
+        self,
+        *,
+        session: AsyncSession,
+        redis_service: RedisService,
+        profile_cache_service: ProfileCacheService,
+        user_repository: UserRepository,
+        address_repository: AddressRepository,
+        user_id: int,
+        address_id: int,
+        data: AddressUpdateRequest,
+    ) -> AddressResponse:
+        update_data = data.model_dump(exclude_unset=True)
+        if not update_data:
+            raise EmptyUserProfileUpdateError
+
+        user = await user_repository.get_by_id(session=session, user_id=user_id)
+        if user is None:
+            raise CurrentUserNotFoundError
+        if not user.is_active or user.is_deleted:
+            raise InactiveUserError
+
+        address = await address_repository.get_by_id(
+            session=session,
+            address_id=address_id,
+        )
+        if address is None:
+            raise AddressNotFoundError
+        if address.user_id != user.id:
+            raise AddressAccessDeniedError
+        if address.is_deleted:
+            raise AddressNotFoundError
+
+        requested_default = update_data.get("is_default")
+        if requested_default is True:
+            await address_repository.unset_default_by_user_id(
+                session=session,
+                user_id=user.id,
+            )
+        elif requested_default is False and address.is_default:
+            addresses_count = await address_repository.count_by_user_id(
+                session=session,
+                user_id=user.id,
+                include_deleted=False,
+            )
+            if addresses_count <= 1:
+                data = data.model_copy(update={"is_default": True})
+
+        response = await address_repository.update(
+            session=session,
+            address=address,
+            data=data,
+        )
+        await profile_cache_service.invalidate_addresses(
+            redis_service=redis_service,
+            user_id=user.id,
+        )
+        await profile_cache_service.delete_summary(
+            redis_service=redis_service,
+            user_id=user.id,
         )
         return response
 

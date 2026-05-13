@@ -64,3 +64,11 @@ class ActiveOrdersExistError(Exception):
 
 class UserAddressesLimitExceededError(Exception):
     pass
+
+
+class AddressNotFoundError(Exception):
+    pass
+
+
+class AddressAccessDeniedError(Exception):
+    pass
