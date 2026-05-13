@@ -16,6 +16,11 @@ class RedisService:
     async def delete(self, key: str) -> None:
         await self._redis.delete(key)
 
+    async def delete_by_pattern(self, pattern: str) -> None:
+        keys = [key async for key in self._redis.scan_iter(match=pattern)]
+        if keys:
+            await self._redis.delete(*keys)
+
     async def exists(self, key: str) -> bool:
         return bool(await self._redis.exists(key))
 

@@ -1,10 +1,14 @@
-from source.schemas.pydantic.profile import ProfileSummaryResponse
+from source.schemas.pydantic.profile import AddressListResponse, ProfileSummaryResponse
 from source.services.redis import RedisService
 
 
 class ProfileCacheService:
     def _summary_key(self, user_id: int) -> str:
         return f"profile:summary:{user_id}"
+
+    def _addresses_key(self, *, user_id: int, include_deleted: bool, limit: int, offset: int) -> str:
+        include_deleted_value = str(include_deleted).lower()
+        return f"profile:addresses:{user_id}:include_deleted:{include_deleted_value}:limit:{limit}:offset:{offset}"
 
     async def get_summary(
         self,
@@ -40,3 +44,56 @@ class ProfileCacheService:
         user_id: int,
     ) -> None:
         await redis_service.delete(self._summary_key(user_id))
+
+    async def get_addresses(
+        self,
+        *,
+        redis_service: RedisService,
+        user_id: int,
+        include_deleted: bool,
+        limit: int,
+        offset: int,
+    ) -> AddressListResponse | None:
+        cached_addresses = await redis_service.get(
+            self._addresses_key(
+                user_id=user_id,
+                include_deleted=include_deleted,
+                limit=limit,
+                offset=offset,
+            ),
+        )
+        if cached_addresses is None:
+            return None
+        if isinstance(cached_addresses, bytes):
+            cached_addresses = cached_addresses.decode("utf-8")
+        return AddressListResponse.model_validate_json(cached_addresses)
+
+    async def set_addresses(
+        self,
+        *,
+        redis_service: RedisService,
+        user_id: int,
+        include_deleted: bool,
+        limit: int,
+        offset: int,
+        response: AddressListResponse,
+        ttl_seconds: int,
+    ) -> None:
+        await redis_service.set(
+            self._addresses_key(
+                user_id=user_id,
+                include_deleted=include_deleted,
+                limit=limit,
+                offset=offset,
+            ),
+            response.model_dump_json(),
+            ttl_seconds=ttl_seconds,
+        )
+
+    async def invalidate_addresses(
+        self,
+        *,
+        redis_service: RedisService,
+        user_id: int,
+    ) -> None:
+        await redis_service.delete_by_pattern(f"profile:addresses:{user_id}:*")

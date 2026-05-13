@@ -6,6 +6,8 @@ from source.repositories.address import AddressRepository
 from source.repositories.order import OrderRepository
 from source.repositories.user import UserRepository
 from source.schemas.pydantic.profile import (
+    AddressListQueryParams,
+    AddressListResponse,
     ProfileStatsResponse,
     ProfileSummaryResponse,
     ProfileUserResponse,
@@ -84,5 +86,61 @@ class ProfileService:
             user_id=user.id,
             response=response,
             ttl_seconds=settings.profile_summary.cache_ttl_seconds,
+        )
+        return response
+
+    async def get_user_addresses(
+        self,
+        *,
+        session: AsyncSession,
+        redis_service: RedisService,
+        profile_cache_service: ProfileCacheService,
+        user_repository: UserRepository,
+        address_repository: AddressRepository,
+        user_id: int,
+        query: AddressListQueryParams,
+    ) -> AddressListResponse:
+        cached_addresses = await profile_cache_service.get_addresses(
+            redis_service=redis_service,
+            user_id=user_id,
+            include_deleted=query.include_deleted,
+            limit=query.limit,
+            offset=query.offset,
+        )
+        if cached_addresses is not None:
+            return cached_addresses
+
+        user = await user_repository.get_by_id(session=session, user_id=user_id)
+        if user is None:
+            raise CurrentUserNotFoundError
+        if not user.is_active or user.is_deleted:
+            raise InactiveUserError
+
+        items = await address_repository.get_by_user_id(
+            session=session,
+            user_id=user.id,
+            include_deleted=query.include_deleted,
+            limit=query.limit,
+            offset=query.offset,
+        )
+        total = await address_repository.count_by_user_id(
+            session=session,
+            user_id=user.id,
+            include_deleted=query.include_deleted,
+        )
+        response = AddressListResponse(
+            items=items,
+            total=total,
+            limit=query.limit,
+            offset=query.offset,
+        )
+        await profile_cache_service.set_addresses(
+            redis_service=redis_service,
+            user_id=user.id,
+            include_deleted=query.include_deleted,
+            limit=query.limit,
+            offset=query.offset,
+            response=response,
+            ttl_seconds=settings.profile_addresses.cache_ttl_seconds,
         )
         return response

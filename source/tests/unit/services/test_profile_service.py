@@ -10,6 +10,9 @@ from source.db.models.choises.enum import UserRole
 from source.db.models.user import User
 from source.errors.auth import CurrentUserNotFoundError, InactiveUserError
 from source.schemas.pydantic.profile import (
+    AddressListQueryParams,
+    AddressListResponse,
+    AddressResponse,
     ProfileAddressShortResponse,
     ProfileOrderShortResponse,
     ProfileSummaryResponse,
@@ -38,6 +41,12 @@ class FakeRedisService:
         self.values.pop(key, None)
         self.ttls.pop(key, None)
 
+    async def delete_by_pattern(self, pattern: str) -> None:
+        prefix = pattern.removesuffix("*")
+        keys = [key for key in self.values if key.startswith(prefix)]
+        for key in keys:
+            await self.delete(key)
+
     async def exists(self, key: str) -> bool:
         return key in self.values
 
@@ -53,7 +62,7 @@ class FakeUserRepository:
 
 
 class FakeAddressRepository:
-    def __init__(self) -> None:
+    def __init__(self, addresses: list[AddressResponse] | None = None) -> None:
         self.default_address = ProfileAddressShortResponse(
             id=5,
             city="Москва",
@@ -61,13 +70,39 @@ class FakeAddressRepository:
             house="10",
             apartment="15",
         )
-        self.count = 2
+        self.addresses = addresses if addresses is not None else [
+            build_address(address_id=5, is_default=True),
+            build_address(address_id=4, is_default=False),
+        ]
+        self.count = len(self.addresses)
+        self.requested_user_id: int | None = None
+        self.include_deleted: bool | None = None
 
     async def get_default_by_user_id(self, *, session, user_id: int):
         return self.default_address
 
-    async def count_by_user_id(self, *, session, user_id: int) -> int:
-        return self.count
+    async def count_by_user_id(self, *, session, user_id: int, include_deleted: bool = False) -> int:
+        return len(self._visible_addresses(include_deleted=include_deleted))
+
+    async def get_by_user_id(
+        self,
+        *,
+        session,
+        user_id: int,
+        include_deleted: bool = False,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[AddressResponse]:
+        self.requested_user_id = user_id
+        self.include_deleted = include_deleted
+        visible_addresses = self._visible_addresses(include_deleted=include_deleted)
+        visible_addresses.sort(key=lambda address: (not address.is_default, -address.created_at.timestamp()))
+        return visible_addresses[offset : offset + limit]
+
+    def _visible_addresses(self, *, include_deleted: bool) -> list[AddressResponse]:
+        if include_deleted:
+            return list(self.addresses)
+        return [address for address in self.addresses if "deleted" not in (address.title or "").lower()]
 
 
 class FakeOrderRepository:
@@ -119,6 +154,32 @@ def build_user(*, user_id: int = 1, is_active: bool = True, is_deleted: bool = F
     return user
 
 
+def build_address(
+    *,
+    address_id: int,
+    title: str = "Дом",
+    is_default: bool = False,
+    created_at: datetime | None = None,
+) -> AddressResponse:
+    created_at = created_at or datetime(2026, 5, 12, 10, 0, 0, tzinfo=UTC)
+    return AddressResponse(
+        id=address_id,
+        title=title,
+        city="Москва",
+        street="Тверская",
+        house="10",
+        building="1",
+        apartment="15",
+        entrance="2",
+        floor="5",
+        intercom="15К",
+        comment="Позвонить за 10 минут",
+        is_default=is_default,
+        created_at=created_at,
+        updated_at=created_at,
+    )
+
+
 async def execute_get_profile_summary(
     *,
     user_repository: FakeUserRepository,
@@ -135,6 +196,25 @@ async def execute_get_profile_summary(
         address_repository=address_repository or FakeAddressRepository(),
         order_repository=order_repository or FakeOrderRepository(),
         user_id=user_id,
+    )
+
+
+async def execute_get_user_addresses(
+    *,
+    user_repository: FakeUserRepository,
+    redis_service: FakeRedisService | None = None,
+    address_repository: FakeAddressRepository | None = None,
+    user_id: int = 1,
+    query: AddressListQueryParams | None = None,
+) -> AddressListResponse:
+    return await ProfileService().get_user_addresses(
+        session=object(),
+        redis_service=redis_service or FakeRedisService(),
+        profile_cache_service=ProfileCacheService(),
+        user_repository=user_repository,
+        address_repository=address_repository or FakeAddressRepository(),
+        user_id=user_id,
+        query=query or AddressListQueryParams(),
     )
 
 
@@ -261,3 +341,136 @@ async def test_get_profile_summary_response_is_cached_in_redis() -> None:
 
     assert "profile:summary:1" in redis_service.values
     assert redis_service.ttls["profile:summary:1"] == settings.profile_summary.cache_ttl_seconds
+
+
+@pytest.mark.asyncio
+async def test_get_profile_addresses_from_postgresql_success() -> None:
+    response = await execute_get_user_addresses(user_repository=FakeUserRepository(build_user()))
+
+    assert response.total == 2
+    assert response.limit == 50
+    assert response.offset == 0
+    assert response.items[0].id == 5
+    assert response.items[0].is_default is True
+
+
+@pytest.mark.asyncio
+async def test_get_profile_addresses_from_redis_cache_success() -> None:
+    redis_service = FakeRedisService()
+    cached_response = AddressListResponse(
+        items=[build_address(address_id=5, is_default=True)],
+        total=1,
+        limit=50,
+        offset=0,
+    )
+    redis_service.values[
+        "profile:addresses:1:include_deleted:false:limit:50:offset:0"
+    ] = cached_response.model_dump_json()
+    user_repository = FakeUserRepository(None)
+
+    response = await execute_get_user_addresses(
+        user_repository=user_repository,
+        redis_service=redis_service,
+    )
+
+    assert response.total == 1
+    assert user_repository.requested_user_id is None
+
+
+@pytest.mark.asyncio
+async def test_get_profile_addresses_uses_current_user_id_only() -> None:
+    address_repository = FakeAddressRepository()
+
+    await execute_get_user_addresses(
+        user_repository=FakeUserRepository(build_user(user_id=7)),
+        address_repository=address_repository,
+        user_id=7,
+    )
+
+    assert address_repository.requested_user_id == 7
+
+
+@pytest.mark.asyncio
+async def test_get_profile_addresses_excludes_deleted_by_default() -> None:
+    address_repository = FakeAddressRepository(
+        addresses=[
+            build_address(address_id=1, title="Дом"),
+            build_address(address_id=2, title="Deleted address"),
+        ],
+    )
+
+    response = await execute_get_user_addresses(
+        user_repository=FakeUserRepository(build_user()),
+        address_repository=address_repository,
+    )
+
+    assert [address.id for address in response.items] == [1]
+    assert response.total == 1
+    assert address_repository.include_deleted is False
+
+
+@pytest.mark.asyncio
+async def test_get_profile_addresses_include_deleted() -> None:
+    address_repository = FakeAddressRepository(
+        addresses=[
+            build_address(address_id=1, title="Дом"),
+            build_address(address_id=2, title="Deleted address"),
+        ],
+    )
+
+    response = await execute_get_user_addresses(
+        user_repository=FakeUserRepository(build_user()),
+        address_repository=address_repository,
+        query=AddressListQueryParams(include_deleted=True),
+    )
+
+    assert [address.id for address in response.items] == [1, 2]
+    assert response.total == 2
+
+
+@pytest.mark.asyncio
+async def test_get_profile_addresses_default_address_first() -> None:
+    address_repository = FakeAddressRepository(
+        addresses=[
+            build_address(address_id=1, is_default=False, created_at=datetime(2026, 5, 13, 10, 0, 0, tzinfo=UTC)),
+            build_address(address_id=2, is_default=True, created_at=datetime(2026, 5, 10, 10, 0, 0, tzinfo=UTC)),
+        ],
+    )
+
+    response = await execute_get_user_addresses(
+        user_repository=FakeUserRepository(build_user()),
+        address_repository=address_repository,
+    )
+
+    assert response.items[0].id == 2
+    assert response.items[0].is_default is True
+
+
+@pytest.mark.asyncio
+async def test_get_profile_addresses_without_access_token() -> None:
+    with pytest.raises(HTTPException) as exc_info:
+        await resolve_access_token(authorization=None, redis_service=FakeRedisService())
+
+    assert exc_info.value.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_get_profile_addresses_with_invalid_access_token() -> None:
+    with pytest.raises(HTTPException) as exc_info:
+        await resolve_access_token(authorization="Bearer invalid-token", redis_service=FakeRedisService())
+
+    assert exc_info.value.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_get_profile_addresses_response_is_cached_in_redis() -> None:
+    redis_service = FakeRedisService()
+
+    await execute_get_user_addresses(
+        user_repository=FakeUserRepository(build_user()),
+        redis_service=redis_service,
+    )
+
+    cache_key = "profile:addresses:1:include_deleted:false:limit:50:offset:0"
+    assert cache_key in redis_service.values
+    assert redis_service.ttls[cache_key] == settings.profile_addresses.cache_ttl_seconds
