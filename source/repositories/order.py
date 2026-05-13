@@ -28,3 +28,11 @@ class OrderRepository:
         user_id: int,
     ) -> ProfileOrderShortResponse | None:
         return None
+
+    async def has_active_orders_by_address_id(
+        self,
+        *,
+        session: AsyncSession,
+        address_id: int,
+    ) -> bool:
+        return False

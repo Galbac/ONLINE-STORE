@@ -3,6 +3,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from source.config.settings import settings
 from source.errors.auth import (
     AddressAccessDeniedError,
+    AddressActiveOrderExistsError,
     AddressNotFoundError,
     CurrentUserNotFoundError,
     EmptyUserProfileUpdateError,
@@ -98,6 +99,64 @@ class ProfileService:
             ttl_seconds=settings.profile_summary.cache_ttl_seconds,
         )
         return response
+
+    async def delete_address(
+        self,
+        *,
+        session: AsyncSession,
+        redis_service: RedisService,
+        profile_cache_service: ProfileCacheService,
+        user_repository: UserRepository,
+        address_repository: AddressRepository,
+        order_repository: OrderRepository,
+        user_id: int,
+        address_id: int,
+    ) -> None:
+        user = await user_repository.get_by_id(session=session, user_id=user_id)
+        if user is None:
+            raise CurrentUserNotFoundError
+        if not user.is_active or user.is_deleted:
+            raise InactiveUserError
+
+        address = await address_repository.get_by_id(
+            session=session,
+            address_id=address_id,
+        )
+        if address is None:
+            raise AddressNotFoundError
+        if address.user_id != user.id:
+            raise AddressAccessDeniedError
+        if address.is_deleted:
+            raise AddressNotFoundError
+
+        if await order_repository.has_active_orders_by_address_id(
+            session=session,
+            address_id=address.id,
+        ):
+            raise AddressActiveOrderExistsError
+
+        was_default = address.is_default
+        await address_repository.soft_delete(session=session, address=address)
+        if was_default:
+            next_default_address = await address_repository.get_first_active_by_user_id(
+                session=session,
+                user_id=user.id,
+                exclude_address_id=address.id,
+            )
+            if next_default_address is not None:
+                await address_repository.set_default(
+                    session=session,
+                    address=next_default_address,
+                )
+
+        await profile_cache_service.invalidate_addresses(
+            redis_service=redis_service,
+            user_id=user.id,
+        )
+        await profile_cache_service.delete_summary(
+            redis_service=redis_service,
+            user_id=user.id,
+        )
 
     async def update_address(
         self,

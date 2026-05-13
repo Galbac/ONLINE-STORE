@@ -1,6 +1,9 @@
+from datetime import datetime
+
 from sqlalchemy import desc, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from source.config.settings import settings
 from source.db.models.address import Address
 from source.schemas.pydantic.profile import (
     AddressCreateRequest,
@@ -142,6 +145,48 @@ class AddressRepository:
         await session.flush()
         await session.refresh(address)
         return self._build_address_response(address)
+
+    async def soft_delete(
+        self,
+        *,
+        session: AsyncSession,
+        address: Address,
+    ) -> None:
+        now = datetime.now(settings.tz)
+        address.is_deleted = True
+        address.deleted_at = now
+        address.is_default = False
+        address.updated_date = now
+        session.add(address)
+        await session.flush()
+
+    async def get_first_active_by_user_id(
+        self,
+        *,
+        session: AsyncSession,
+        user_id: int,
+        exclude_address_id: int | None = None,
+    ) -> Address | None:
+        statement = select(Address).where(
+            Address.user_id == user_id,
+            Address.is_deleted.is_(False),
+        )
+        if exclude_address_id is not None:
+            statement = statement.where(Address.id != exclude_address_id)
+        statement = statement.order_by(desc(Address.created_date)).limit(1)
+        result = await session.execute(statement)
+        return result.scalar_one_or_none()
+
+    async def set_default(
+        self,
+        *,
+        session: AsyncSession,
+        address: Address,
+    ) -> None:
+        address.is_default = True
+        address.updated_date = datetime.now(settings.tz)
+        session.add(address)
+        await session.flush()
 
     def _build_address_response(self, address: Address) -> AddressResponse:
         return AddressResponse(

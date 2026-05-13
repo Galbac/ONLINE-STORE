@@ -11,6 +11,7 @@ from source.db.models.choises.enum import UserRole
 from source.db.models.user import User
 from source.errors.auth import (
     AddressAccessDeniedError,
+    AddressActiveOrderExistsError,
     AddressNotFoundError,
     CurrentUserNotFoundError,
     EmptyUserProfileUpdateError,
@@ -90,6 +91,8 @@ class FakeAddressRepository:
         self.created_user_id: int | None = None
         self.unset_default_called = False
         self.updated_address_id: int | None = None
+        self.soft_deleted_address_id: int | None = None
+        self.default_address_id: int | None = None
 
     async def get_default_by_user_id(self, *, session, user_id: int):
         return self.default_address
@@ -166,10 +169,38 @@ class FakeAddressRepository:
         ]
         return updated_address
 
+    async def soft_delete(self, *, session, address) -> None:
+        self.soft_deleted_address_id = address.id
+        object.__setattr__(address, "is_deleted", True)
+        updated_address = address.model_copy(update={"is_default": False})
+        object.__setattr__(updated_address, "user_id", address.user_id)
+        object.__setattr__(updated_address, "is_deleted", True)
+        self.addresses = [
+            updated_address if item.id == address.id else item
+            for item in self.addresses
+        ]
+
+    async def get_first_active_by_user_id(self, *, session, user_id: int, exclude_address_id: int | None = None):
+        for address in self.addresses:
+            if address.user_id == user_id and not address.is_deleted and address.id != exclude_address_id:
+                return address
+        return None
+
+    async def set_default(self, *, session, address) -> None:
+        self.default_address_id = address.id
+        updated_address = address.model_copy(update={"is_default": True})
+        object.__setattr__(updated_address, "user_id", address.user_id)
+        object.__setattr__(updated_address, "is_deleted", address.is_deleted)
+        self.addresses = [
+            updated_address if item.id == address.id else item
+            for item in self.addresses
+        ]
+
 
 class FakeOrderRepository:
-    def __init__(self) -> None:
+    def __init__(self, *, has_active_orders_by_address: bool = False) -> None:
         self.count = 12
+        self.has_active_orders_by_address = has_active_orders_by_address
         self.active_order = ProfileOrderShortResponse(
             id=101,
             order_number="ORD-101",
@@ -197,6 +228,9 @@ class FakeOrderRepository:
 
     async def get_active_by_user_id(self, *, session, user_id: int):
         return self.active_order
+
+    async def has_active_orders_by_address_id(self, *, session, address_id: int) -> bool:
+        return self.has_active_orders_by_address
 
 
 def build_user(*, user_id: int = 1, is_active: bool = True, is_deleted: bool = False) -> User:
@@ -334,6 +368,27 @@ async def execute_update_address(
         user_id=user_id,
         address_id=address_id,
         data=data or AddressUpdateRequest(title="Работа"),
+    )
+
+
+async def execute_delete_address(
+    *,
+    user_repository: FakeUserRepository,
+    redis_service: FakeRedisService | None = None,
+    address_repository: FakeAddressRepository | None = None,
+    order_repository: FakeOrderRepository | None = None,
+    user_id: int = 1,
+    address_id: int = 1,
+) -> None:
+    await ProfileService().delete_address(
+        session=object(),
+        redis_service=redis_service or FakeRedisService(),
+        profile_cache_service=ProfileCacheService(),
+        user_repository=user_repository,
+        address_repository=address_repository or FakeAddressRepository(),
+        order_repository=order_repository or FakeOrderRepository(),
+        user_id=user_id,
+        address_id=address_id,
     )
 
 
@@ -833,6 +888,109 @@ async def test_update_profile_address_invalidates_redis_cache() -> None:
     redis_service.values["profile:summary:1"] = "{}"
 
     await execute_update_address(
+        user_repository=FakeUserRepository(build_user()),
+        redis_service=redis_service,
+        address_repository=FakeAddressRepository(addresses=[build_address(address_id=1)]),
+    )
+
+    assert "profile:addresses:1:include_deleted:false:limit:50:offset:0" in redis_service.deleted
+    assert "profile:summary:1" in redis_service.deleted
+
+
+@pytest.mark.asyncio
+async def test_delete_profile_address_soft_delete_success() -> None:
+    address_repository = FakeAddressRepository(addresses=[build_address(address_id=1)])
+
+    await execute_delete_address(
+        user_repository=FakeUserRepository(build_user()),
+        address_repository=address_repository,
+    )
+
+    assert address_repository.soft_deleted_address_id == 1
+    assert address_repository.addresses[0].is_deleted is True
+
+
+@pytest.mark.asyncio
+async def test_delete_profile_address_without_access_token() -> None:
+    with pytest.raises(HTTPException) as exc_info:
+        await resolve_access_token(authorization=None, redis_service=FakeRedisService())
+
+    assert exc_info.value.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_delete_profile_address_not_found() -> None:
+    with pytest.raises(AddressNotFoundError):
+        await execute_delete_address(
+            user_repository=FakeUserRepository(build_user()),
+            address_repository=FakeAddressRepository(addresses=[]),
+        )
+
+
+@pytest.mark.asyncio
+async def test_delete_profile_address_access_denied() -> None:
+    with pytest.raises(AddressAccessDeniedError):
+        await execute_delete_address(
+            user_repository=FakeUserRepository(build_user(user_id=1)),
+            address_repository=FakeAddressRepository(addresses=[build_address(address_id=1, user_id=2)]),
+        )
+
+
+@pytest.mark.asyncio
+async def test_delete_profile_address_already_deleted() -> None:
+    with pytest.raises(AddressNotFoundError):
+        await execute_delete_address(
+            user_repository=FakeUserRepository(build_user()),
+            address_repository=FakeAddressRepository(addresses=[build_address(address_id=1, is_deleted=True)]),
+        )
+
+
+@pytest.mark.asyncio
+async def test_delete_profile_default_address_assigns_another_default() -> None:
+    address_repository = FakeAddressRepository(
+        addresses=[
+            build_address(address_id=1, is_default=True),
+            build_address(address_id=2, is_default=False),
+        ],
+    )
+
+    await execute_delete_address(
+        user_repository=FakeUserRepository(build_user()),
+        address_repository=address_repository,
+    )
+
+    assert address_repository.default_address_id == 2
+
+
+@pytest.mark.asyncio
+async def test_delete_profile_default_address_without_other_addresses() -> None:
+    address_repository = FakeAddressRepository(addresses=[build_address(address_id=1, is_default=True)])
+
+    await execute_delete_address(
+        user_repository=FakeUserRepository(build_user()),
+        address_repository=address_repository,
+    )
+
+    assert address_repository.default_address_id is None
+
+
+@pytest.mark.asyncio
+async def test_delete_profile_address_with_active_order() -> None:
+    with pytest.raises(AddressActiveOrderExistsError):
+        await execute_delete_address(
+            user_repository=FakeUserRepository(build_user()),
+            address_repository=FakeAddressRepository(addresses=[build_address(address_id=1)]),
+            order_repository=FakeOrderRepository(has_active_orders_by_address=True),
+        )
+
+
+@pytest.mark.asyncio
+async def test_delete_profile_address_invalidates_redis_cache() -> None:
+    redis_service = FakeRedisService()
+    redis_service.values["profile:addresses:1:include_deleted:false:limit:50:offset:0"] = "{}"
+    redis_service.values["profile:summary:1"] = "{}"
+
+    await execute_delete_address(
         user_repository=FakeUserRepository(build_user()),
         redis_service=redis_service,
         address_repository=FakeAddressRepository(addresses=[build_address(address_id=1)]),

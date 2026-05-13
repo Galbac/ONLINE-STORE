@@ -201,6 +201,7 @@ class ProfileSummarySettings(BaseSettings):
 class ProfileAddressesSettings(BaseSettings):
     cache_ttl_seconds: int = Field(default=120, alias="PROFILE_ADDRESSES_CACHE_TTL_SECONDS")
     user_addresses_limit: int = Field(default=20, alias="USER_ADDRESSES_LIMIT")
+    address_delete_soft: bool = Field(default=True, alias="ADDRESS_DELETE_SOFT")
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

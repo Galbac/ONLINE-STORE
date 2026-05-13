@@ -72,3 +72,7 @@ class AddressNotFoundError(Exception):
 
 class AddressAccessDeniedError(Exception):
     pass
+
+
+class AddressActiveOrderExistsError(Exception):
+    pass
