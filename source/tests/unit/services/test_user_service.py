@@ -20,6 +20,7 @@ from source.errors.auth import (
     UserPhoneAlreadyExistsError,
 )
 from source.db.models.refresh_token import RefreshToken
+from source.repositories.user import UserRepository
 from source.schemas.pydantic.user import UserMeDeleteRequest, UserMeResponse, UserMeUpdateRequest
 from source.services.auth_cache import AuthCacheService
 from source.services.auth import AuthService
@@ -97,6 +98,7 @@ class FakeRedisService:
 
 def build_user(
     *,
+    user_id: int = 1,
     is_active: bool = True,
     is_deleted: bool = False,
     password_hash: str = "password_hash",
@@ -110,7 +112,7 @@ def build_user(
         is_active=is_active,
         is_deleted=is_deleted,
     )
-    user.id = 1
+    user.id = user_id
     user.created_date = datetime(2026, 5, 12, 10, 0, 0, tzinfo=UTC)
     user.updated_date = datetime(2026, 5, 12, 10, 0, 0, tzinfo=UTC)
     user.deleted_at = None
@@ -153,6 +155,7 @@ async def execute_update_current_user_profile(
         user_cache_service=UserCacheService(),
         auth_cache_service=AuthCacheService(),
         profile_cache_service=ProfileCacheService(),
+        user_repository=UserRepository(),
         user_id=1,
         data=data,
     )
@@ -381,7 +384,7 @@ def test_update_user_me_with_invalid_email() -> None:
 async def test_update_user_me_with_existing_phone() -> None:
     with pytest.raises(UserPhoneAlreadyExistsError):
         await execute_update_current_user_profile(
-            session=FakeSession(execute_results=[build_user(), 2]),
+            session=FakeSession(execute_results=[build_user(), build_user(user_id=2)]),
             data=UserMeUpdateRequest(phone="+79991112233"),
         )
 
@@ -390,7 +393,7 @@ async def test_update_user_me_with_existing_phone() -> None:
 async def test_update_user_me_with_existing_email() -> None:
     with pytest.raises(UserEmailAlreadyExistsError):
         await execute_update_current_user_profile(
-            session=FakeSession(execute_results=[build_user(), 2]),
+            session=FakeSession(execute_results=[build_user(), build_user(user_id=2)]),
             data=UserMeUpdateRequest(email="ivan.petrov@example.com"),
         )
 

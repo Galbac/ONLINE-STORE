@@ -18,6 +18,7 @@ from source.errors.auth import (
     UserPhoneAlreadyExistsError,
 )
 from source.schemas.pydantic.user import UserMeDeleteRequest, UserMeResponse, UserMeUpdateRequest
+from source.repositories.user import UserRepository
 from source.services.auth import AuthService
 from source.services.auth_cache import AuthCacheService
 from source.services.profile_cache import ProfileCacheService
@@ -64,6 +65,7 @@ class UserService:
         user_cache_service: UserCacheService,
         auth_cache_service: AuthCacheService,
         profile_cache_service: ProfileCacheService,
+        user_repository: UserRepository,
         user_id: int,
         data: UserMeUpdateRequest,
     ) -> UserMeResponse:
@@ -71,7 +73,7 @@ class UserService:
         if not update_data:
             raise EmptyUserProfileUpdateError
 
-        user = await self._get_user_by_id(session=session, user_id=user_id)
+        user = await user_repository.get_by_id(session=session, user_id=user_id)
         if user is None:
             raise CurrentUserNotFoundError
         if not user.is_active or user.is_deleted:
@@ -79,21 +81,23 @@ class UserService:
 
         phone = update_data.get("phone")
         if phone is not None and phone != user.phone:
-            await self._ensure_phone_is_unique(
+            existing_user = await user_repository.get_by_phone(
                 session=session,
                 phone=phone,
-                current_user_id=user.id,
             )
+            if existing_user is not None and existing_user.id != user.id:
+                raise UserPhoneAlreadyExistsError
             user.phone = phone
 
         email = update_data.get("email")
         if "email" in update_data and email != user.email:
             if email is not None:
-                await self._ensure_email_is_unique(
+                existing_user = await user_repository.get_by_email(
                     session=session,
                     email=email,
-                    current_user_id=user.id,
                 )
+                if existing_user is not None and existing_user.id != user.id:
+                    raise UserEmailAlreadyExistsError
             user.email = email
 
         name = update_data.get("name")
@@ -101,9 +105,7 @@ class UserService:
             user.name = name
 
         user.updated_date = datetime.now(settings.tz)
-        session.add(user)
-        await session.flush()
-        await session.refresh(user)
+        user = await user_repository.update(session=session, user=user)
 
         await user_cache_service.delete_user_me_cache(
             redis_service=redis_service,

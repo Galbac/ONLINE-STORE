@@ -17,6 +17,7 @@ from source.errors.auth import (
 )
 from source.schemas.pydantic.auth import MessageResponse
 from source.schemas.pydantic.user import UserMeDeleteRequest, UserMeResponse, UserMeUpdateRequest
+from source.repositories.user import UserRepository
 from source.services.auth import AuthService
 from source.services.auth_cache import AuthCacheService
 from source.services.profile_cache import ProfileCacheService
@@ -109,6 +110,7 @@ async def update_user_me(
     user_cache_service: FromDishka[UserCacheService] = None,
     auth_cache_service: FromDishka[AuthCacheService] = None,
     profile_cache_service: FromDishka[ProfileCacheService] = None,
+    user_repository: FromDishka[UserRepository] = None,
 ) -> UserMeResponse:
     try:
         response = await user_service.update_current_user_profile(
@@ -117,6 +119,7 @@ async def update_user_me(
             user_cache_service=user_cache_service,
             auth_cache_service=auth_cache_service,
             profile_cache_service=profile_cache_service,
+            user_repository=user_repository,
             user_id=current_user.id,
             data=body,
         )

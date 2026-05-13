@@ -1,9 +1,9 @@
 from datetime import datetime
-import re
 
 from pydantic import BaseModel, EmailStr, Field, field_validator
 
 from source.db.models.choises.enum import UserRole
+from source.utils.user_profile import normalize_email, validate_phone
 
 
 class UserMeUpdateRequest(BaseModel):
@@ -23,16 +23,14 @@ class UserMeUpdateRequest(BaseModel):
     def validate_phone(cls, value: str | None) -> str | None:
         if value is None:
             return value
-        if re.fullmatch(r"\+?\d{5,15}", value) is None:
-            raise ValueError("Неверный формат телефона")
-        return value
+        return validate_phone(value)
 
     @field_validator("email")
     @classmethod
     def normalize_email(cls, value: EmailStr | None) -> str | None:
         if value is None:
             return value
-        return str(value).lower()
+        return normalize_email(value)
 
 
 class UserMeDeleteRequest(BaseModel):
