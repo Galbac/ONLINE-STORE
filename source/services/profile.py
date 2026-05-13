@@ -1,13 +1,15 @@
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from source.config.settings import settings
-from source.errors.auth import CurrentUserNotFoundError, InactiveUserError
+from source.errors.auth import CurrentUserNotFoundError, InactiveUserError, UserAddressesLimitExceededError
 from source.repositories.address import AddressRepository
 from source.repositories.order import OrderRepository
 from source.repositories.user import UserRepository
 from source.schemas.pydantic.profile import (
+    AddressCreateRequest,
     AddressListQueryParams,
     AddressListResponse,
+    AddressResponse,
     ProfileStatsResponse,
     ProfileSummaryResponse,
     ProfileUserResponse,
@@ -86,6 +88,54 @@ class ProfileService:
             user_id=user.id,
             response=response,
             ttl_seconds=settings.profile_summary.cache_ttl_seconds,
+        )
+        return response
+
+    async def create_address(
+        self,
+        *,
+        session: AsyncSession,
+        redis_service: RedisService,
+        profile_cache_service: ProfileCacheService,
+        user_repository: UserRepository,
+        address_repository: AddressRepository,
+        user_id: int,
+        data: AddressCreateRequest,
+    ) -> AddressResponse:
+        user = await user_repository.get_by_id(session=session, user_id=user_id)
+        if user is None:
+            raise CurrentUserNotFoundError
+        if not user.is_active or user.is_deleted:
+            raise InactiveUserError
+
+        addresses_count = await address_repository.count_by_user_id(
+            session=session,
+            user_id=user.id,
+            include_deleted=False,
+        )
+        if addresses_count >= settings.profile_addresses.user_addresses_limit:
+            raise UserAddressesLimitExceededError
+
+        is_default = data.is_default or addresses_count == 0
+        if is_default:
+            await address_repository.unset_default_by_user_id(
+                session=session,
+                user_id=user.id,
+            )
+
+        response = await address_repository.create(
+            session=session,
+            user_id=user.id,
+            data=data,
+            is_default=is_default,
+        )
+        await profile_cache_service.invalidate_addresses(
+            redis_service=redis_service,
+            user_id=user.id,
+        )
+        await profile_cache_service.delete_summary(
+            redis_service=redis_service,
+            user_id=user.id,
         )
         return response
 

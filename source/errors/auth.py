@@ -60,3 +60,7 @@ class UserDeleteConfirmationRequiredError(Exception):
 
 class ActiveOrdersExistError(Exception):
     pass
+
+
+class UserAddressesLimitExceededError(Exception):
+    pass

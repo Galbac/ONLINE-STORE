@@ -3,13 +3,15 @@ from decimal import Decimal
 
 import pytest
 from fastapi import HTTPException
+from pydantic import ValidationError
 
 from source.api.dependencies import resolve_access_token
 from source.config.settings import settings
 from source.db.models.choises.enum import UserRole
 from source.db.models.user import User
-from source.errors.auth import CurrentUserNotFoundError, InactiveUserError
+from source.errors.auth import CurrentUserNotFoundError, InactiveUserError, UserAddressesLimitExceededError
 from source.schemas.pydantic.profile import (
+    AddressCreateRequest,
     AddressListQueryParams,
     AddressListResponse,
     AddressResponse,
@@ -77,6 +79,8 @@ class FakeAddressRepository:
         self.count = len(self.addresses)
         self.requested_user_id: int | None = None
         self.include_deleted: bool | None = None
+        self.created_user_id: int | None = None
+        self.unset_default_called = False
 
     async def get_default_by_user_id(self, *, session, user_id: int):
         return self.default_address
@@ -103,6 +107,34 @@ class FakeAddressRepository:
         if include_deleted:
             return list(self.addresses)
         return [address for address in self.addresses if "deleted" not in (address.title or "").lower()]
+
+    async def unset_default_by_user_id(self, *, session, user_id: int) -> None:
+        self.unset_default_called = True
+        self.addresses = [
+            address.model_copy(update={"is_default": False})
+            for address in self.addresses
+        ]
+
+    async def create(self, *, session, user_id: int, data: AddressCreateRequest, is_default: bool) -> AddressResponse:
+        self.created_user_id = user_id
+        address = AddressResponse(
+            id=len(self.addresses) + 1,
+            title=data.title,
+            city=data.city,
+            street=data.street,
+            house=data.house,
+            building=data.building,
+            apartment=data.apartment,
+            entrance=data.entrance,
+            floor=data.floor,
+            intercom=data.intercom,
+            comment=data.comment,
+            is_default=is_default,
+            created_at=datetime(2026, 5, 13, 10, 0, 0, tzinfo=UTC),
+            updated_at=datetime(2026, 5, 13, 10, 0, 0, tzinfo=UTC),
+        )
+        self.addresses.append(address)
+        return address
 
 
 class FakeOrderRepository:
@@ -215,6 +247,37 @@ async def execute_get_user_addresses(
         address_repository=address_repository or FakeAddressRepository(),
         user_id=user_id,
         query=query or AddressListQueryParams(),
+    )
+
+
+async def execute_create_address(
+    *,
+    user_repository: FakeUserRepository,
+    redis_service: FakeRedisService | None = None,
+    address_repository: FakeAddressRepository | None = None,
+    user_id: int = 1,
+    data: AddressCreateRequest | None = None,
+) -> AddressResponse:
+    return await ProfileService().create_address(
+        session=object(),
+        redis_service=redis_service or FakeRedisService(),
+        profile_cache_service=ProfileCacheService(),
+        user_repository=user_repository,
+        address_repository=address_repository or FakeAddressRepository(),
+        user_id=user_id,
+        data=data or AddressCreateRequest(
+            title="Дом",
+            city="Москва",
+            street="Тверская",
+            house="10",
+            building="1",
+            apartment="15",
+            entrance="2",
+            floor="5",
+            intercom="15К",
+            comment="Позвонить за 10 минут",
+            is_default=False,
+        ),
     )
 
 
@@ -474,3 +537,116 @@ async def test_get_profile_addresses_response_is_cached_in_redis() -> None:
     cache_key = "profile:addresses:1:include_deleted:false:limit:50:offset:0"
     assert cache_key in redis_service.values
     assert redis_service.ttls[cache_key] == settings.profile_addresses.cache_ttl_seconds
+
+
+@pytest.mark.asyncio
+async def test_create_profile_address_success() -> None:
+    address_repository = FakeAddressRepository(addresses=[build_address(address_id=1)])
+
+    response = await execute_create_address(
+        user_repository=FakeUserRepository(build_user()),
+        address_repository=address_repository,
+    )
+
+    assert response.id == 2
+    assert response.city == "Москва"
+    assert response.street == "Тверская"
+    assert response.house == "10"
+    assert address_repository.created_user_id == 1
+
+
+@pytest.mark.asyncio
+async def test_create_profile_address_first_address_becomes_default() -> None:
+    address_repository = FakeAddressRepository(addresses=[])
+
+    response = await execute_create_address(
+        user_repository=FakeUserRepository(build_user()),
+        address_repository=address_repository,
+        data=AddressCreateRequest(city="Москва", street="Тверская", house="10"),
+    )
+
+    assert response.is_default is True
+    assert address_repository.unset_default_called is True
+
+
+@pytest.mark.asyncio
+async def test_create_profile_address_with_default_unsets_other_defaults() -> None:
+    address_repository = FakeAddressRepository(addresses=[build_address(address_id=1, is_default=True)])
+
+    response = await execute_create_address(
+        user_repository=FakeUserRepository(build_user()),
+        address_repository=address_repository,
+        data=AddressCreateRequest(city="Москва", street="Тверская", house="10", is_default=True),
+    )
+
+    assert response.is_default is True
+    assert address_repository.unset_default_called is True
+    assert address_repository.addresses[0].is_default is False
+
+
+@pytest.mark.asyncio
+async def test_create_profile_address_without_access_token() -> None:
+    with pytest.raises(HTTPException) as exc_info:
+        await resolve_access_token(authorization=None, redis_service=FakeRedisService())
+
+    assert exc_info.value.status_code == 401
+
+
+def test_create_profile_address_with_empty_city() -> None:
+    with pytest.raises(ValidationError):
+        AddressCreateRequest(city="   ", street="Тверская", house="10")
+
+
+def test_create_profile_address_with_empty_street() -> None:
+    with pytest.raises(ValidationError):
+        AddressCreateRequest(city="Москва", street="   ", house="10")
+
+
+def test_create_profile_address_with_empty_house() -> None:
+    with pytest.raises(ValidationError):
+        AddressCreateRequest(city="Москва", street="Тверская", house="   ")
+
+
+@pytest.mark.asyncio
+async def test_create_profile_address_limit_exceeded(monkeypatch) -> None:
+    monkeypatch.setattr(settings.profile_addresses, "user_addresses_limit", 1)
+    address_repository = FakeAddressRepository(addresses=[build_address(address_id=1)])
+
+    with pytest.raises(UserAddressesLimitExceededError):
+        await execute_create_address(
+            user_repository=FakeUserRepository(build_user()),
+            address_repository=address_repository,
+        )
+
+
+@pytest.mark.asyncio
+async def test_create_profile_address_ignores_body_user_id() -> None:
+    address_repository = FakeAddressRepository(addresses=[])
+    data = AddressCreateRequest.model_validate(
+        {"city": "Москва", "street": "Тверская", "house": "10", "user_id": 999},
+    )
+
+    await execute_create_address(
+        user_repository=FakeUserRepository(build_user(user_id=7)),
+        address_repository=address_repository,
+        user_id=7,
+        data=data,
+    )
+
+    assert address_repository.created_user_id == 7
+
+
+@pytest.mark.asyncio
+async def test_create_profile_address_invalidates_redis_cache() -> None:
+    redis_service = FakeRedisService()
+    redis_service.values["profile:addresses:1:include_deleted:false:limit:50:offset:0"] = "{}"
+    redis_service.values["profile:summary:1"] = "{}"
+
+    await execute_create_address(
+        user_repository=FakeUserRepository(build_user()),
+        redis_service=redis_service,
+        address_repository=FakeAddressRepository(addresses=[]),
+    )
+
+    assert "profile:addresses:1:include_deleted:false:limit:50:offset:0" in redis_service.deleted
+    assert "profile:summary:1" in redis_service.deleted

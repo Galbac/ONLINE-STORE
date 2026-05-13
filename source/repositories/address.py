@@ -1,8 +1,8 @@
-from sqlalchemy import desc, func, select
+from sqlalchemy import desc, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from source.db.models.address import Address
-from source.schemas.pydantic.profile import AddressResponse, ProfileAddressShortResponse
+from source.schemas.pydantic.profile import AddressCreateRequest, AddressResponse, ProfileAddressShortResponse
 
 
 class AddressRepository:
@@ -68,6 +68,50 @@ class AddressRepository:
             self._build_address_response(address)
             for address in result.scalars().all()
         ]
+
+    async def unset_default_by_user_id(
+        self,
+        *,
+        session: AsyncSession,
+        user_id: int,
+    ) -> None:
+        await session.execute(
+            update(Address)
+            .where(
+                Address.user_id == user_id,
+                Address.is_default.is_(True),
+                Address.is_deleted.is_(False),
+            )
+            .values(is_default=False),
+        )
+
+    async def create(
+        self,
+        *,
+        session: AsyncSession,
+        user_id: int,
+        data: AddressCreateRequest,
+        is_default: bool,
+    ) -> AddressResponse:
+        address = Address(
+            user_id=user_id,
+            title=data.title,
+            city=data.city,
+            street=data.street,
+            house=data.house,
+            building=data.building,
+            apartment=data.apartment,
+            entrance=data.entrance,
+            floor=data.floor,
+            intercom=data.intercom,
+            comment=data.comment,
+            is_default=is_default,
+            is_deleted=False,
+        )
+        session.add(address)
+        await session.flush()
+        await session.refresh(address)
+        return self._build_address_response(address)
 
     def _build_address_response(self, address: Address) -> AddressResponse:
         return AddressResponse(
