@@ -27,3 +27,17 @@ class ProductRepository:
             ),
         )
         return int(result.scalar_one())
+
+    async def count_active_grouped_by_category(self, *, session: AsyncSession) -> dict[int, int]:
+        result = await session.execute(
+            select(Product.category_id, func.count(Product.id))
+            .where(
+                Product.category_id.is_not(None),
+                Product.is_active.is_(True),
+            )
+            .group_by(Product.category_id),
+        )
+        return {
+            int(category_id): int(products_count)
+            for category_id, products_count in result.all()
+        }

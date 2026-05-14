@@ -1,14 +1,64 @@
 from dishka.integrations.fastapi import FromDishka, inject
-from fastapi import APIRouter, Query, status
+from fastapi import APIRouter, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from source.config.settings import settings
+from source.errors.category import CategoryNotFoundError
 from source.repositories.category import CategoryRepository
-from source.schemas.pydantic.category import CategoryListQueryParams, CategoryListResponse
+from source.schemas.pydantic.category import (
+    CategoryListQueryParams,
+    CategoryListResponse,
+    CategoryTreeQueryParams,
+    CategoryTreeResponse,
+)
 from source.services.category import CategoryService
 from source.services.category_cache import CategoryCacheService
 from source.services.redis import RedisService
 
 router = APIRouter(tags=["categories"])
+
+
+@router.get(
+    "/categories/tree",
+    response_model=CategoryTreeResponse,
+    response_model_exclude_none=True,
+    status_code=status.HTTP_200_OK,
+    responses={
+        status.HTTP_400_BAD_REQUEST: {"description": "Неверные query params."},
+        status.HTTP_404_NOT_FOUND: {"description": "root_id не найден или категория неактивна."},
+        status.HTTP_500_INTERNAL_SERVER_ERROR: {"description": "Внутренняя ошибка сервера."},
+    },
+)
+@inject
+async def get_category_tree(
+    include_empty: bool = False,
+    max_depth: int = Query(default=settings.categories.tree_max_depth_default, ge=1, le=10),
+    root_id: int | None = Query(default=None, ge=1),
+    with_products_count: bool = True,
+    session: FromDishka[AsyncSession] = None,
+    redis_service: FromDishka[RedisService] = None,
+    category_service: FromDishka[CategoryService] = None,
+    category_cache_service: FromDishka[CategoryCacheService] = None,
+    category_repository: FromDishka[CategoryRepository] = None,
+) -> CategoryTreeResponse:
+    try:
+        return await category_service.get_category_tree(
+            session=session,
+            redis_service=redis_service,
+            category_cache_service=category_cache_service,
+            category_repository=category_repository,
+            query=CategoryTreeQueryParams(
+                include_empty=include_empty,
+                max_depth=max_depth,
+                root_id=root_id,
+                with_products_count=with_products_count,
+            ),
+        )
+    except CategoryNotFoundError as error:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Категория не найдена",
+        ) from error
 
 
 @router.get(

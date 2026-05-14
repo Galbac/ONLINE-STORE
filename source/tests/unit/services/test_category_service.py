@@ -4,7 +4,14 @@ import pytest
 from pydantic import ValidationError
 
 from source.config.settings import settings
-from source.schemas.pydantic.category import CategoryListQueryParams, CategoryListResponse, CategoryShortResponse
+from source.errors.category import CategoryNotFoundError
+from source.schemas.pydantic.category import (
+    CategoryListQueryParams,
+    CategoryListResponse,
+    CategoryShortResponse,
+    CategoryTreeQueryParams,
+    CategoryTreeResponse,
+)
 from source.services.category import CategoryService
 from source.services.category_cache import CategoryCacheService
 from source.utils.query_hash import build_query_hash
@@ -40,6 +47,8 @@ class FakeCategoryRepository:
             build_category(category_id=1, name="Фрукты", slug="frukty", sort_order=10, products_count=120),
         ]
         self.query: CategoryListQueryParams | None = None
+        self.get_active_all_calls = 0
+        self.get_active_by_id_calls = 0
 
     async def get_active_list(self, *, session, query: CategoryListQueryParams):
         self.query = query
@@ -52,6 +61,23 @@ class FakeCategoryRepository:
 
     async def count_active(self, *, session, query: CategoryListQueryParams) -> int:
         return len(self._filter_categories(query=query))
+
+    async def get_active_all(self, *, session):
+        self.get_active_all_calls += 1
+        categories = [
+            category
+            for category in self.categories
+            if category.is_active and not category.is_deleted
+        ]
+        categories.sort(key=lambda category: (category.sort_order, category.name))
+        return [build_category_response(category) for category in categories]
+
+    async def get_active_by_id(self, *, session, category_id: int):
+        self.get_active_by_id_calls += 1
+        for category in self.categories:
+            if category.id == category_id and category.is_active and not category.is_deleted:
+                return build_category_response(category)
+        return None
 
     def _filter_categories(self, *, query: CategoryListQueryParams) -> list[object]:
         categories = [
@@ -116,6 +142,21 @@ async def execute_get_categories(
         category_cache_service=CategoryCacheService(),
         category_repository=category_repository or FakeCategoryRepository(),
         query=query or CategoryListQueryParams(),
+    )
+
+
+async def execute_get_category_tree(
+    *,
+    redis_service: FakeRedisService | None = None,
+    category_repository: FakeCategoryRepository | None = None,
+    query: CategoryTreeQueryParams | None = None,
+) -> CategoryTreeResponse:
+    return await CategoryService().get_category_tree(
+        session=object(),
+        redis_service=redis_service or FakeRedisService(),
+        category_cache_service=CategoryCacheService(),
+        category_repository=category_repository or FakeCategoryRepository(),
+        query=query or CategoryTreeQueryParams(),
     )
 
 
@@ -281,3 +322,211 @@ async def test_get_categories_response_is_cached_in_redis() -> None:
     cache_key = f"categories:list:{build_query_hash(query.model_dump())}"
     assert cache_key in redis_service.values
     assert redis_service.ttls[cache_key] == settings.categories.cache_ttl_seconds
+
+
+@pytest.mark.asyncio
+async def test_get_category_tree_from_postgresql_success() -> None:
+    response = await execute_get_category_tree(
+        category_repository=FakeCategoryRepository(
+            categories=[
+                build_category(category_id=1, name="Фрукты", slug="frukty", parent_id=None, products_count=10),
+                build_category(category_id=11, name="Яблоки", slug="yabloki", parent_id=1, products_count=25),
+            ],
+        ),
+    )
+
+    assert len(response.items) == 1
+    assert response.items[0].id == 1
+    assert response.items[0].products_count == 10
+    assert response.items[0].children[0].id == 11
+
+
+@pytest.mark.asyncio
+async def test_get_category_tree_from_redis_cache_success() -> None:
+    redis_service = FakeRedisService()
+    query = CategoryTreeQueryParams()
+    query_hash = build_query_hash(query.model_dump())
+    cached_response = CategoryTreeResponse(
+        items=[
+            {
+                "id": 1,
+                "name": "Фрукты",
+                "slug": "frukty",
+                "parent_id": None,
+                "image_url": "/media/categories/frukty.png",
+                "sort_order": 10,
+                "products_count": 120,
+                "children": [],
+            },
+        ],
+    )
+    redis_service.values[f"categories:tree:{query_hash}"] = cached_response.model_dump_json()
+    category_repository = FakeCategoryRepository(categories=[])
+
+    response = await execute_get_category_tree(
+        redis_service=redis_service,
+        category_repository=category_repository,
+        query=query,
+    )
+
+    assert response.items[0].id == 1
+    assert category_repository.get_active_all_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_get_category_tree_builds_tree_by_parent_id() -> None:
+    response = await execute_get_category_tree(
+        category_repository=FakeCategoryRepository(
+            categories=[
+                build_category(category_id=1, name="Фрукты", slug="frukty"),
+                build_category(category_id=11, name="Яблоки", slug="yabloki", parent_id=1),
+                build_category(category_id=111, name="Красные", slug="krasnye", parent_id=11),
+            ],
+        ),
+    )
+
+    assert response.items[0].id == 1
+    assert response.items[0].children[0].id == 11
+    assert response.items[0].children[0].children[0].id == 111
+
+
+@pytest.mark.asyncio
+async def test_get_category_tree_with_root_id_returns_subtree() -> None:
+    category_repository = FakeCategoryRepository(
+        categories=[
+            build_category(category_id=1, name="Фрукты", slug="frukty"),
+            build_category(category_id=11, name="Яблоки", slug="yabloki", parent_id=1),
+            build_category(category_id=12, name="Груши", slug="grushi", parent_id=1),
+        ],
+    )
+
+    response = await execute_get_category_tree(
+        category_repository=category_repository,
+        query=CategoryTreeQueryParams(root_id=11),
+    )
+
+    assert [category.id for category in response.items] == [11]
+    assert category_repository.get_active_by_id_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_get_category_tree_root_id_not_found() -> None:
+    with pytest.raises(CategoryNotFoundError):
+        await execute_get_category_tree(
+            category_repository=FakeCategoryRepository(categories=[]),
+            query=CategoryTreeQueryParams(root_id=999),
+        )
+
+
+@pytest.mark.asyncio
+async def test_get_category_tree_max_depth_limits_children() -> None:
+    response = await execute_get_category_tree(
+        category_repository=FakeCategoryRepository(
+            categories=[
+                build_category(category_id=1, name="Фрукты", slug="frukty"),
+                build_category(category_id=11, name="Яблоки", slug="yabloki", parent_id=1),
+                build_category(category_id=111, name="Красные", slug="krasnye", parent_id=11),
+            ],
+        ),
+        query=CategoryTreeQueryParams(max_depth=2),
+    )
+
+    assert response.items[0].children[0].id == 11
+    assert response.items[0].children[0].children == []
+
+
+@pytest.mark.asyncio
+async def test_get_category_tree_include_empty_false_excludes_empty_branches() -> None:
+    response = await execute_get_category_tree(
+        category_repository=FakeCategoryRepository(
+            categories=[
+                build_category(category_id=1, name="Фрукты", slug="frukty", products_count=0),
+                build_category(category_id=11, name="Яблоки", slug="yabloki", parent_id=1, products_count=12),
+                build_category(category_id=2, name="Пустая", slug="empty", products_count=0),
+            ],
+        ),
+    )
+
+    assert [category.id for category in response.items] == [1]
+    assert response.items[0].children[0].id == 11
+
+
+@pytest.mark.asyncio
+async def test_get_category_tree_sorts_each_level_by_sort_order_and_name() -> None:
+    response = await execute_get_category_tree(
+        category_repository=FakeCategoryRepository(
+            categories=[
+                build_category(category_id=1, name="Фрукты", slug="frukty", sort_order=20),
+                build_category(category_id=2, name="Овощи", slug="ovoshchi", sort_order=10),
+                build_category(category_id=21, name="Томаты", slug="tomaty", parent_id=2, sort_order=20),
+                build_category(category_id=22, name="Огурцы", slug="ogurtsy", parent_id=2, sort_order=10),
+            ],
+        ),
+    )
+
+    assert [category.id for category in response.items] == [2, 1]
+    assert [category.id for category in response.items[0].children] == [22, 21]
+
+
+@pytest.mark.asyncio
+async def test_get_category_tree_excludes_inactive_categories() -> None:
+    response = await execute_get_category_tree(
+        category_repository=FakeCategoryRepository(
+            categories=[
+                build_category(category_id=1, name="Фрукты", slug="frukty"),
+                build_category(category_id=2, name="Скрытая", slug="hidden", is_active=False),
+            ],
+        ),
+    )
+
+    assert [category.id for category in response.items] == [1]
+
+
+@pytest.mark.asyncio
+async def test_get_category_tree_excludes_deleted_categories() -> None:
+    response = await execute_get_category_tree(
+        category_repository=FakeCategoryRepository(
+            categories=[
+                build_category(category_id=1, name="Фрукты", slug="frukty"),
+                build_category(category_id=2, name="Удалённая", slug="deleted", is_deleted=True),
+            ],
+        ),
+    )
+
+    assert [category.id for category in response.items] == [1]
+
+
+@pytest.mark.asyncio
+async def test_get_category_tree_without_products_count() -> None:
+    response = await execute_get_category_tree(
+        query=CategoryTreeQueryParams(with_products_count=False),
+    )
+
+    assert response.items[0].products_count is None
+
+
+@pytest.mark.asyncio
+async def test_get_category_tree_response_is_cached_in_redis() -> None:
+    redis_service = FakeRedisService()
+    query = CategoryTreeQueryParams(root_id=1, max_depth=2)
+
+    await execute_get_category_tree(redis_service=redis_service, query=query)
+
+    cache_key = f"categories:tree:{build_query_hash(query.model_dump())}"
+    assert cache_key in redis_service.values
+    assert redis_service.ttls[cache_key] == settings.categories.tree_cache_ttl_seconds
+
+
+@pytest.mark.asyncio
+async def test_get_category_tree_uses_single_active_all_query_without_n_plus_one() -> None:
+    category_repository = FakeCategoryRepository(
+        categories=[
+            build_category(category_id=1, name="Фрукты", slug="frukty"),
+            build_category(category_id=11, name="Яблоки", slug="yabloki", parent_id=1),
+            build_category(category_id=12, name="Груши", slug="grushi", parent_id=1),
+        ],
+    )
+
+    await execute_get_category_tree(category_repository=category_repository)
+
+    assert category_repository.get_active_all_calls == 1

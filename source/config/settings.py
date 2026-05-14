@@ -220,6 +220,8 @@ class CartSettings(BaseSettings):
 
 class CategoriesSettings(BaseSettings):
     cache_ttl_seconds: int = Field(default=600, alias="CATEGORIES_LIST_CACHE_TTL_SECONDS")
+    tree_cache_ttl_seconds: int = Field(default=600, alias="CATEGORIES_TREE_CACHE_TTL_SECONDS")
+    tree_max_depth_default: int = Field(default=3, alias="CATEGORIES_TREE_MAX_DEPTH_DEFAULT")
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
