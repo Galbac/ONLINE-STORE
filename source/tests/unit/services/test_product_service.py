@@ -26,6 +26,8 @@ from source.schemas.pydantic.product import (
     ProductSearchQueryParams,
     ProductSearchResponse,
     ProductSeoResponse,
+    ProductSimilarQueryParams,
+    ProductSimilarResponse,
     ProductShortResponse,
 )
 from source.services.product import ProductService
@@ -141,6 +143,27 @@ class FakeProductRepository:
         ]
         products = sorted(products, key=lambda product: (-product.popularity, product.name))
         return [build_product_response(product) for product in products[:limit]]
+
+    async def get_similar_by_category(
+        self,
+        *,
+        session,
+        product_id: int,
+        category_id: int | None,
+        query: ProductSimilarQueryParams,
+    ):
+        products = [
+            product
+            for product in self.products
+            if product.id != product_id
+            and product.is_active
+            and not product.is_deleted
+            and (category_id is None or product.category_id == category_id)
+        ]
+        if query.in_stock:
+            products = [product for product in products if product.is_available and product.stock_quantity > 0]
+        products = sorted(products, key=lambda product: (-product.popularity, product.created_at, product.name))
+        return [build_product_response(product) for product in products[: query.limit]]
 
     async def get_active_list(self, *, session, query: ProductListQueryParams, category_ids: set[int] | None = None):
         self.query = query
@@ -607,6 +630,23 @@ async def execute_get_new_products(
         product_repository=product_repository or FakeProductRepository(),
         category_repository=category_repository or FakeCategoryRepository(),
         query=query or ProductNewQueryParams(),
+    )
+
+
+async def execute_get_similar_products(
+    *,
+    redis_service: FakeRedisService | None = None,
+    product_repository: FakeProductRepository | None = None,
+    product_id: int = 55,
+    query: ProductSimilarQueryParams | None = None,
+) -> ProductSimilarResponse:
+    return await ProductService().get_similar_products(
+        session=object(),
+        redis_service=redis_service or FakeRedisService(),
+        product_cache_service=ProductCacheService(),
+        product_repository=product_repository or FakeProductRepository(),
+        product_id=product_id,
+        query=query or ProductSimilarQueryParams(),
     )
 
 
@@ -1628,6 +1668,155 @@ async def test_get_new_products_response_is_cached_in_redis() -> None:
     cache_key = f"products:new:{build_query_hash(query.model_dump())}"
     assert cache_key in redis_service.values
     assert redis_service.ttls[cache_key] == settings.products.new_cache_ttl_seconds
+
+
+@pytest.mark.asyncio
+async def test_get_similar_products_success() -> None:
+    response = await execute_get_similar_products(
+        product_repository=FakeProductRepository(
+            products=[
+                build_product(product_id=55, name="Яблоки красные", slug="red-apples", category_id=11),
+                build_product(product_id=56, name="Яблоки зелёные", slug="green-apples", category_id=11),
+            ],
+        ),
+    )
+
+    assert response.total == 1
+    assert response.items[0].id == 56
+
+
+@pytest.mark.asyncio
+async def test_get_similar_products_excludes_source_product() -> None:
+    response = await execute_get_similar_products(
+        product_repository=FakeProductRepository(
+            products=[
+                build_product(product_id=55, name="Исходный", slug="source", category_id=11),
+                build_product(product_id=56, name="Похожий", slug="similar", category_id=11),
+            ],
+        ),
+    )
+
+    assert 55 not in {product.id for product in response.items}
+
+
+@pytest.mark.asyncio
+async def test_get_similar_products_source_not_found() -> None:
+    with pytest.raises(ProductNotFoundError):
+        await execute_get_similar_products(
+            product_repository=FakeProductRepository(products=[]),
+            product_id=999,
+        )
+
+
+@pytest.mark.asyncio
+async def test_get_similar_products_excludes_inactive_products() -> None:
+    response = await execute_get_similar_products(
+        product_repository=FakeProductRepository(
+            products=[
+                build_product(product_id=55, name="Исходный", slug="source", category_id=11),
+                build_product(product_id=56, name="Скрытый", slug="inactive", category_id=11, is_active=False),
+                build_product(product_id=57, name="Активный", slug="active", category_id=11),
+            ],
+        ),
+    )
+
+    assert [product.id for product in response.items] == [57]
+
+
+@pytest.mark.asyncio
+async def test_get_similar_products_excludes_deleted_products() -> None:
+    response = await execute_get_similar_products(
+        product_repository=FakeProductRepository(
+            products=[
+                build_product(product_id=55, name="Исходный", slug="source", category_id=11),
+                build_product(product_id=56, name="Удалённый", slug="deleted", category_id=11, is_deleted=True),
+                build_product(product_id=57, name="Активный", slug="active", category_id=11),
+            ],
+        ),
+    )
+
+    assert [product.id for product in response.items] == [57]
+
+
+@pytest.mark.asyncio
+async def test_get_similar_products_in_stock_true_excludes_unavailable() -> None:
+    response = await execute_get_similar_products(
+        product_repository=FakeProductRepository(
+            products=[
+                build_product(product_id=55, name="Исходный", slug="source", category_id=11),
+                build_product(product_id=56, name="Нет", slug="out-stock", category_id=11, stock_quantity=Decimal("0")),
+                build_product(product_id=57, name="Есть", slug="in-stock", category_id=11),
+            ],
+        ),
+    )
+
+    assert [product.id for product in response.items] == [57]
+
+
+@pytest.mark.asyncio
+async def test_get_similar_products_limit_works() -> None:
+    response = await execute_get_similar_products(
+        product_repository=FakeProductRepository(
+            products=[
+                build_product(product_id=55, name="Исходный", slug="source", category_id=11),
+                build_product(product_id=56, name="A", slug="a", category_id=11, popularity=30),
+                build_product(product_id=57, name="B", slug="b", category_id=11, popularity=20),
+            ],
+        ),
+        query=ProductSimilarQueryParams(limit=1),
+    )
+
+    assert response.total == 1
+    assert [product.id for product in response.items] == [56]
+
+
+@pytest.mark.asyncio
+async def test_get_similar_products_uses_same_category() -> None:
+    response = await execute_get_similar_products(
+        product_repository=FakeProductRepository(
+            products=[
+                build_product(product_id=55, name="Исходный", slug="source", category_id=11),
+                build_product(product_id=56, name="Та же категория", slug="same", category_id=11),
+                build_product(product_id=57, name="Другая категория", slug="other", category_id=1),
+            ],
+        ),
+    )
+
+    assert [product.id for product in response.items] == [56]
+
+
+@pytest.mark.asyncio
+async def test_get_similar_products_response_is_cached_in_redis() -> None:
+    redis_service = FakeRedisService()
+    query = ProductSimilarQueryParams(limit=2)
+
+    await execute_get_similar_products(redis_service=redis_service, query=query)
+
+    cache_key = f"products:similar:55:{build_query_hash(query.model_dump())}"
+    assert cache_key in redis_service.values
+    assert redis_service.ttls[cache_key] == settings.products.similar_cache_ttl_seconds
+
+
+@pytest.mark.asyncio
+async def test_get_similar_products_from_redis_cache_success() -> None:
+    redis_service = FakeRedisService()
+    query = ProductSimilarQueryParams()
+    query_hash = build_query_hash(query.model_dump())
+    cached_response = ProductSimilarResponse(
+        items=[build_product_response(build_product(product_id=56, name="Похожий", slug="similar", category_id=11))],
+        total=1,
+    )
+    redis_service.values[f"products:similar:55:{query_hash}"] = cached_response.model_dump_json()
+    product_repository = FakeProductRepository(products=[])
+
+    response = await execute_get_similar_products(
+        redis_service=redis_service,
+        product_repository=product_repository,
+        query=query,
+    )
+
+    assert response.total == 1
+    assert response.items[0].id == 56
 
 
 @pytest.mark.asyncio

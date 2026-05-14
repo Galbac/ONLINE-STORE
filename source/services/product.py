@@ -22,6 +22,8 @@ from source.schemas.pydantic.product import (
     ProductPopularResponse,
     ProductSearchQueryParams,
     ProductSearchResponse,
+    ProductSimilarQueryParams,
+    ProductSimilarResponse,
 )
 from source.services.product_cache import ProductCacheService
 from source.services.redis import RedisService
@@ -337,6 +339,45 @@ class ProductService:
             query_hash=query_hash,
             response=response,
             ttl_seconds=settings.products.new_cache_ttl_seconds,
+        )
+        return response
+
+    async def get_similar_products(
+        self,
+        *,
+        session: AsyncSession,
+        redis_service: RedisService,
+        product_cache_service: ProductCacheService,
+        product_repository: ProductRepository,
+        product_id: int,
+        query: ProductSimilarQueryParams,
+    ) -> ProductSimilarResponse:
+        query_hash = build_query_hash(query.model_dump())
+        cached_products = await product_cache_service.get_similar(
+            redis_service=redis_service,
+            product_id=product_id,
+            query_hash=query_hash,
+        )
+        if cached_products is not None:
+            return cached_products
+
+        product = await product_repository.get_active_by_id(session=session, product_id=product_id)
+        if product is None:
+            raise ProductNotFoundError
+
+        items = await product_repository.get_similar_by_category(
+            session=session,
+            product_id=product.id,
+            category_id=product.category.id if product.category is not None else None,
+            query=query,
+        )
+        response = ProductSimilarResponse(items=items, total=len(items))
+        await product_cache_service.set_similar(
+            redis_service=redis_service,
+            product_id=product_id,
+            query_hash=query_hash,
+            response=response,
+            ttl_seconds=settings.products.similar_cache_ttl_seconds,
         )
         return response
 

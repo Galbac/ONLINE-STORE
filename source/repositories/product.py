@@ -13,6 +13,7 @@ from source.schemas.pydantic.product import (
     ProductNewQueryParams,
     ProductPopularQueryParams,
     ProductSearchQueryParams,
+    ProductSimilarQueryParams,
     ProductSeoResponse,
     ProductShortResponse,
 )
@@ -407,6 +408,38 @@ class ProductRepository:
         )
         if category_id is not None:
             statement = statement.where(Product.category_id == category_id)
+        result = await session.execute(statement)
+        return [
+            self._build_product_response(product=product, category=category)
+            for product, category in result.all()
+        ]
+
+    async def get_similar_by_category(
+        self,
+        *,
+        session: AsyncSession,
+        product_id: int,
+        category_id: int | None,
+        query: ProductSimilarQueryParams,
+    ) -> list[ProductShortResponse]:
+        statement = (
+            select(Product, Category)
+            .outerjoin(Category, Product.category_id == Category.id)
+            .where(
+                Product.id != product_id,
+                Product.is_active.is_(True),
+                Product.is_deleted.is_(False),
+            )
+            .order_by(Product.popularity.desc(), desc(Product.created_date), Product.name.asc())
+            .limit(query.limit)
+        )
+        if category_id is not None:
+            statement = statement.where(Product.category_id == category_id)
+        if query.in_stock:
+            statement = statement.where(
+                Product.is_available.is_(True),
+                Product.stock_quantity > 0,
+            )
         result = await session.execute(statement)
         return [
             self._build_product_response(product=product, category=category)

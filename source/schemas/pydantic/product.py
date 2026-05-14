@@ -87,6 +87,11 @@ class ProductNewQueryParams(BaseModel):
     days: int = Field(default=30, ge=1)
 
 
+class ProductSimilarQueryParams(BaseModel):
+    limit: int = Field(default=8, ge=1, le=50)
+    in_stock: bool = True
+
+
 class ProductCategoryShortResponse(BaseModel):
     id: int
     name: str
@@ -232,5 +237,10 @@ class ProductDiscountedResponse(BaseModel):
 
 
 class ProductNewResponse(BaseModel):
+    items: list[ProductShortResponse]
+    total: int
+
+
+class ProductSimilarResponse(BaseModel):
     items: list[ProductShortResponse]
     total: int

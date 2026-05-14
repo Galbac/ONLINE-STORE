@@ -25,6 +25,8 @@ from source.schemas.pydantic.product import (
     ProductSearchQueryParams,
     ProductSearchResponse,
     ProductSearchSort,
+    ProductSimilarQueryParams,
+    ProductSimilarResponse,
     ProductSort,
     ProductType,
 )
@@ -245,6 +247,46 @@ def _normalize_required_search_query(query: str | None) -> str:
             detail="Поисковый запрос слишком короткий",
         )
     return normalized_query
+
+
+@router.get(
+    "/products/{product_id}/similar",
+    response_model=ProductSimilarResponse,
+    status_code=status.HTTP_200_OK,
+    responses={
+        status.HTTP_400_BAD_REQUEST: {"description": "Неверный product_id или query params."},
+        status.HTTP_404_NOT_FOUND: {"description": "Исходный товар не найден."},
+        status.HTTP_500_INTERNAL_SERVER_ERROR: {"description": "Внутренняя ошибка сервера."},
+    },
+)
+@inject
+async def get_similar_products(
+    product_id: int = Path(ge=1),
+    limit: int = Query(default=settings.products.similar_default_limit, ge=1, le=50),
+    in_stock: bool = True,
+    session: FromDishka[AsyncSession] = None,
+    redis_service: FromDishka[RedisService] = None,
+    product_service: FromDishka[ProductService] = None,
+    product_cache_service: FromDishka[ProductCacheService] = None,
+    product_repository: FromDishka[ProductRepository] = None,
+) -> ProductSimilarResponse:
+    try:
+        return await product_service.get_similar_products(
+            session=session,
+            redis_service=redis_service,
+            product_cache_service=product_cache_service,
+            product_repository=product_repository,
+            product_id=product_id,
+            query=ProductSimilarQueryParams(
+                limit=limit,
+                in_stock=in_stock,
+            ),
+        )
+    except ProductNotFoundError as error:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Исходный товар не найден",
+        ) from error
 
 
 @router.get(

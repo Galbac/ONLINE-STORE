@@ -5,6 +5,7 @@ from source.schemas.pydantic.product import (
     ProductNewResponse,
     ProductPopularResponse,
     ProductSearchResponse,
+    ProductSimilarResponse,
 )
 from source.services.redis import RedisService
 
@@ -30,6 +31,9 @@ class ProductCacheService:
 
     def _new_key(self, query_hash: str) -> str:
         return f"products:new:{query_hash}"
+
+    def _similar_key(self, *, product_id: int, query_hash: str) -> str:
+        return f"products:similar:{product_id}:{query_hash}"
 
     async def get_list(
         self,
@@ -239,6 +243,43 @@ class ProductCacheService:
 
     async def invalidate_new(self, *, redis_service: RedisService) -> None:
         await redis_service.delete_by_pattern("products:new:*")
+
+    async def get_similar(
+        self,
+        *,
+        redis_service: RedisService,
+        product_id: int,
+        query_hash: str,
+    ) -> ProductSimilarResponse | None:
+        cached_products = await redis_service.get(
+            self._similar_key(product_id=product_id, query_hash=query_hash),
+        )
+        if cached_products is None:
+            return None
+        if isinstance(cached_products, bytes):
+            cached_products = cached_products.decode("utf-8")
+        return ProductSimilarResponse.model_validate_json(cached_products)
+
+    async def set_similar(
+        self,
+        *,
+        redis_service: RedisService,
+        product_id: int,
+        query_hash: str,
+        response: ProductSimilarResponse,
+        ttl_seconds: int,
+    ) -> None:
+        await redis_service.set(
+            self._similar_key(product_id=product_id, query_hash=query_hash),
+            response.model_dump_json(),
+            ttl_seconds=ttl_seconds,
+        )
+
+    async def invalidate_similar(self, *, redis_service: RedisService, product_id: int | None = None) -> None:
+        if product_id is not None:
+            await redis_service.delete_by_pattern(f"products:similar:{product_id}:*")
+            return
+        await redis_service.delete_by_pattern("products:similar:*")
 
     async def invalidate_product(self, *, redis_service: RedisService, product_id: int, slug: str | None = None) -> None:
         await redis_service.delete_by_pattern(f"products:detail:{product_id}:*")
