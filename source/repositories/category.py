@@ -113,6 +113,25 @@ class CategoryRepository:
             return None
         return self._build_category_detail_response(category=category)
 
+    async def get_active_by_slug(
+        self,
+        *,
+        session: AsyncSession,
+        slug: str,
+    ) -> CategoryDetailResponse | None:
+        result = await session.execute(
+            select(Category)
+            .where(
+                Category.slug == slug,
+                Category.is_active.is_(True),
+                Category.is_deleted.is_(False),
+            )
+        )
+        category = result.scalar_one_or_none()
+        if category is None:
+            return None
+        return self._build_category_detail_response(category=category)
+
     async def get_active_children(
         self,
         *,

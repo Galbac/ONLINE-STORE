@@ -12,6 +12,9 @@ class CategoryCacheService:
     def _detail_key(self, *, category_id: int, query_hash: str) -> str:
         return f"categories:detail:{category_id}:{query_hash}"
 
+    def _slug_key(self, *, slug: str, query_hash: str) -> str:
+        return f"categories:slug:{slug}:{query_hash}"
+
     async def get_list(
         self,
         *,
@@ -93,6 +96,37 @@ class CategoryCacheService:
     ) -> None:
         await redis_service.set(
             self._detail_key(category_id=category_id, query_hash=query_hash),
+            response.model_dump_json(),
+            ttl_seconds=ttl_seconds,
+        )
+
+    async def get_by_slug(
+        self,
+        *,
+        redis_service: RedisService,
+        slug: str,
+        query_hash: str,
+    ) -> CategoryDetailResponse | None:
+        cached_category = await redis_service.get(
+            self._slug_key(slug=slug, query_hash=query_hash),
+        )
+        if cached_category is None:
+            return None
+        if isinstance(cached_category, bytes):
+            cached_category = cached_category.decode("utf-8")
+        return CategoryDetailResponse.model_validate_json(cached_category)
+
+    async def set_by_slug(
+        self,
+        *,
+        redis_service: RedisService,
+        slug: str,
+        query_hash: str,
+        response: CategoryDetailResponse,
+        ttl_seconds: int,
+    ) -> None:
+        await redis_service.set(
+            self._slug_key(slug=slug, query_hash=query_hash),
             response.model_dump_json(),
             ttl_seconds=ttl_seconds,
         )

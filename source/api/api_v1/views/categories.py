@@ -17,6 +17,7 @@ from source.schemas.pydantic.category import (
 from source.services.category import CategoryService
 from source.services.category_cache import CategoryCacheService
 from source.services.redis import RedisService
+from source.utils.slug import normalize_slug, validate_slug
 
 router = APIRouter(tags=["categories"])
 
@@ -54,6 +55,57 @@ async def get_category_tree(
                 include_empty=include_empty,
                 max_depth=max_depth,
                 root_id=root_id,
+                with_products_count=with_products_count,
+            ),
+        )
+    except CategoryNotFoundError as error:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Категория не найдена",
+        ) from error
+
+
+@router.get(
+    "/categories/slug/{slug}",
+    response_model=CategoryDetailResponse,
+    response_model_exclude_none=True,
+    status_code=status.HTTP_200_OK,
+    responses={
+        status.HTTP_400_BAD_REQUEST: {"description": "Неверный slug или query params."},
+        status.HTTP_404_NOT_FOUND: {"description": "Категория не найдена."},
+        status.HTTP_500_INTERNAL_SERVER_ERROR: {"description": "Внутренняя ошибка сервера."},
+    },
+)
+@inject
+async def get_category_by_slug(
+    slug: str = Path(min_length=2, max_length=150),
+    with_children: bool = True,
+    with_breadcrumbs: bool = True,
+    with_products_count: bool = True,
+    session: FromDishka[AsyncSession] = None,
+    redis_service: FromDishka[RedisService] = None,
+    category_service: FromDishka[CategoryService] = None,
+    category_cache_service: FromDishka[CategoryCacheService] = None,
+    category_repository: FromDishka[CategoryRepository] = None,
+    product_repository: FromDishka[ProductRepository] = None,
+) -> CategoryDetailResponse:
+    normalized_slug = normalize_slug(slug)
+    if not validate_slug(normalized_slug):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Неверный slug",
+        )
+    try:
+        return await category_service.get_category_by_slug(
+            session=session,
+            redis_service=redis_service,
+            category_cache_service=category_cache_service,
+            category_repository=category_repository,
+            product_repository=product_repository,
+            slug=normalized_slug,
+            query=CategoryDetailQueryParams(
+                with_children=with_children,
+                with_breadcrumbs=with_breadcrumbs,
                 with_products_count=with_products_count,
             ),
         )

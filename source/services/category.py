@@ -18,9 +18,51 @@ from source.schemas.pydantic.category import (
 from source.services.category_cache import CategoryCacheService
 from source.services.redis import RedisService
 from source.utils.query_hash import build_query_hash
+from source.utils.slug import normalize_slug
 
 
 class CategoryService:
+    async def get_category_by_slug(
+        self,
+        *,
+        session: AsyncSession,
+        redis_service: RedisService,
+        category_cache_service: CategoryCacheService,
+        category_repository: CategoryRepository,
+        product_repository: ProductRepository,
+        slug: str,
+        query: CategoryDetailQueryParams,
+    ) -> CategoryDetailResponse:
+        normalized_slug = normalize_slug(slug)
+        query_hash = build_query_hash(query.model_dump())
+        cached_category = await category_cache_service.get_by_slug(
+            redis_service=redis_service,
+            slug=normalized_slug,
+            query_hash=query_hash,
+        )
+        if cached_category is not None:
+            return cached_category
+
+        category = await category_repository.get_active_by_slug(session=session, slug=normalized_slug)
+        if category is None:
+            raise CategoryNotFoundError
+
+        response = await self._build_detail_response(
+            session=session,
+            category_repository=category_repository,
+            product_repository=product_repository,
+            category=category,
+            query=query,
+        )
+        await category_cache_service.set_by_slug(
+            redis_service=redis_service,
+            slug=normalized_slug,
+            query_hash=query_hash,
+            response=response,
+            ttl_seconds=settings.categories.slug_cache_ttl_seconds,
+        )
+        return response
+
     async def get_category_by_id(
         self,
         *,
@@ -45,6 +87,31 @@ class CategoryService:
         if category is None:
             raise CategoryNotFoundError
 
+        response = await self._build_detail_response(
+            session=session,
+            category_repository=category_repository,
+            product_repository=product_repository,
+            category=category,
+            query=query,
+        )
+        await category_cache_service.set_detail(
+            redis_service=redis_service,
+            category_id=category.id,
+            query_hash=query_hash,
+            response=response,
+            ttl_seconds=settings.categories.detail_cache_ttl_seconds,
+        )
+        return response
+
+    async def _build_detail_response(
+        self,
+        *,
+        session: AsyncSession,
+        category_repository: CategoryRepository,
+        product_repository: ProductRepository,
+        category: CategoryDetailResponse,
+        query: CategoryDetailQueryParams,
+    ) -> CategoryDetailResponse:
         products_count = None
         if query.with_products_count:
             products_count = await product_repository.count_active_by_category_id(
@@ -67,13 +134,6 @@ class CategoryService:
                     category_id=category.id,
                 ) if query.with_breadcrumbs else None,
             },
-        )
-        await category_cache_service.set_detail(
-            redis_service=redis_service,
-            category_id=category.id,
-            query_hash=query_hash,
-            response=response,
-            ttl_seconds=settings.categories.detail_cache_ttl_seconds,
         )
         return response
 
