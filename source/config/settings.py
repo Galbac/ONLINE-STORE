@@ -218,6 +218,12 @@ class CartSettings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 
+class CategoriesSettings(BaseSettings):
+    cache_ttl_seconds: int = Field(default=600, alias="CATEGORIES_LIST_CACHE_TTL_SECONDS")
+
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=(".env.example", ".env"),
@@ -244,6 +250,7 @@ class Settings(BaseSettings):
     profile_addresses: ProfileAddressesSettings = ProfileAddressesSettings()
     profile_orders: ProfileOrdersSettings = ProfileOrdersSettings()
     cart: CartSettings = CartSettings()
+    categories: CategoriesSettings = CategoriesSettings()
 
     @property
     def tz(self) -> tzinfo:

@@ -18,6 +18,7 @@ from source.interactors.auth_reset_password import AuthResetPasswordInteractor
 from source.repositories.address import AddressRepository
 from source.repositories.cart import CartRepository
 from source.repositories.cart_item import CartItemRepository
+from source.repositories.category import CategoryRepository
 from source.repositories.order import OrderRepository
 from source.repositories.order_item import OrderItemRepository
 from source.repositories.product import ProductRepository
@@ -26,6 +27,8 @@ from source.services.auth_cache import AuthCacheService
 from source.services.auth import AuthService
 from source.services.cart import CartService
 from source.services.cart_cache import CartCacheService
+from source.services.category import CategoryService
+from source.services.category_cache import CategoryCacheService
 from source.services.notifications import EmailService, TelegramNotificationService
 from source.services.profile import ProfileService
 from source.services.profile_cache import ProfileCacheService
@@ -98,6 +101,14 @@ class AppProvider(Provider):
         ProfileCacheService,
         scope=Scope.REQUEST,
     )
+    category_service = provide(
+        CategoryService,
+        scope=Scope.REQUEST,
+    )
+    category_cache_service = provide(
+        CategoryCacheService,
+        scope=Scope.REQUEST,
+    )
     user_repository = provide(
         UserRepository,
         scope=Scope.REQUEST,
@@ -124,6 +135,10 @@ class AppProvider(Provider):
     )
     cart_item_repository = provide(
         CartItemRepository,
+        scope=Scope.REQUEST,
+    )
+    category_repository = provide(
+        CategoryRepository,
         scope=Scope.REQUEST,
     )
     cart_service = provide(
