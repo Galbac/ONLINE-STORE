@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from sqlalchemy import case, desc, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -8,6 +10,7 @@ from source.schemas.pydantic.product import (
     ProductDetailResponse,
     ProductDiscountedQueryParams,
     ProductListQueryParams,
+    ProductNewQueryParams,
     ProductPopularQueryParams,
     ProductSearchQueryParams,
     ProductSeoResponse,
@@ -168,6 +171,31 @@ class ProductRepository:
             )
         return statement
 
+    def _new_statement(
+        self,
+        *,
+        query: ProductNewQueryParams,
+        category_ids: set[int] | None,
+        created_from: datetime,
+    ):
+        statement = (
+            select(Product, Category)
+            .outerjoin(Category, Product.category_id == Category.id)
+            .where(
+                Product.is_active.is_(True),
+                Product.is_deleted.is_(False),
+                Product.created_date >= created_from,
+            )
+        )
+        if category_ids is not None:
+            statement = statement.where(Product.category_id.in_(category_ids))
+        if query.in_stock:
+            statement = statement.where(
+                Product.is_available.is_(True),
+                Product.stock_quantity > 0,
+            )
+        return statement
+
     def _apply_discounted_sort(self, statement, *, query: ProductDiscountedQueryParams):
         match query.sort:
             case "price_asc":
@@ -288,6 +316,24 @@ class ProductRepository:
         products_subquery = self._discounted_statement(query=query, category_ids=category_ids).subquery()
         result = await session.execute(select(func.count()).select_from(products_subquery))
         return int(result.scalar_one())
+
+    async def get_new_active(
+        self,
+        *,
+        session: AsyncSession,
+        query: ProductNewQueryParams,
+        created_from: datetime,
+        category_ids: set[int] | None = None,
+    ) -> list[ProductShortResponse]:
+        result = await session.execute(
+            self._new_statement(query=query, category_ids=category_ids, created_from=created_from)
+            .order_by(desc(Product.created_date), Product.name.asc())
+            .limit(query.limit),
+        )
+        return [
+            self._build_product_response(product=product, category=category)
+            for product, category in result.all()
+        ]
 
     async def get_by_id(
         self,
@@ -421,6 +467,7 @@ class ProductRepository:
                 stock_quantity=product.stock_quantity,
             ),
             category=product_category,
+            created_at=product.created_date,
         )
 
     def _build_product_detail_response(self, *, product: Product, category: Category | None) -> ProductDetailResponse:

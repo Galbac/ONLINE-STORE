@@ -19,6 +19,8 @@ from source.schemas.pydantic.product import (
     ProductImageResponse,
     ProductListQueryParams,
     ProductListResponse,
+    ProductNewQueryParams,
+    ProductNewResponse,
     ProductPopularQueryParams,
     ProductPopularResponse,
     ProductSearchQueryParams,
@@ -217,6 +219,28 @@ class FakeProductRepository:
         category_ids: set[int] | None = None,
     ):
         return len(self._filter_discounted_products(query=query, category_ids=category_ids))
+
+    async def get_new_active(
+        self,
+        *,
+        session,
+        query: ProductNewQueryParams,
+        created_from: datetime,
+        category_ids: set[int] | None = None,
+    ):
+        products = [
+            product
+            for product in self.products
+            if product.is_active
+            and not product.is_deleted
+            and product.created_at >= created_from
+        ]
+        if category_ids is not None:
+            products = [product for product in products if product.category_id in category_ids]
+        if query.in_stock:
+            products = [product for product in products if product.is_available and product.stock_quantity > 0]
+        products = sorted(products, key=lambda product: (product.created_at, product.name), reverse=True)
+        return [build_product_response(product) for product in products[: query.limit]]
 
     def _filter_products(self, *, query: ProductListQueryParams, category_ids: set[int] | None) -> list[object]:
         products = [
@@ -465,6 +489,7 @@ def build_product_response(product) -> ProductShortResponse:
             stock_quantity=product.stock_quantity,
         ),
         category=product.category,
+        created_at=product.created_at,
     )
 
 
@@ -565,6 +590,23 @@ async def execute_get_discounted_products(
         product_repository=product_repository or FakeProductRepository(),
         category_repository=category_repository or FakeCategoryRepository(),
         query=query or ProductDiscountedQueryParams(),
+    )
+
+
+async def execute_get_new_products(
+    *,
+    redis_service: FakeRedisService | None = None,
+    product_repository: FakeProductRepository | None = None,
+    category_repository: FakeCategoryRepository | None = None,
+    query: ProductNewQueryParams | None = None,
+) -> ProductNewResponse:
+    return await ProductService().get_new_products(
+        session=object(),
+        redis_service=redis_service or FakeRedisService(),
+        product_cache_service=ProductCacheService(),
+        product_repository=product_repository or FakeProductRepository(),
+        category_repository=category_repository or FakeCategoryRepository(),
+        query=query or ProductNewQueryParams(),
     )
 
 
@@ -1436,6 +1478,156 @@ async def test_discounted_cache_invalidates_on_discount_change() -> None:
     await ProductCacheService().invalidate_discounted(redis_service=redis_service)
 
     assert redis_service.deleted_patterns == ["products:discounted:*"]
+
+
+@pytest.mark.asyncio
+async def test_get_new_products_success() -> None:
+    response = await execute_get_new_products(
+        product_repository=FakeProductRepository(
+            products=[
+                build_product(product_id=90, name="Груши сезонные", slug="grushi-sezonnye", category_id=11),
+                build_product(
+                    product_id=91,
+                    name="Старый товар",
+                    slug="old-product",
+                    category_id=11,
+                    created_at=datetime(2026, 1, 1, tzinfo=UTC),
+                ),
+            ],
+        ),
+    )
+
+    assert response.total == 1
+    assert response.items[0].id == 90
+    assert response.items[0].created_at == datetime(2026, 5, 12, 10, 0, 0, tzinfo=UTC)
+
+
+@pytest.mark.asyncio
+async def test_get_new_products_sort_created_at_desc() -> None:
+    response = await execute_get_new_products(
+        product_repository=FakeProductRepository(
+            products=[
+                build_product(product_id=1, name="Old", slug="old", category_id=11, created_at=datetime(2026, 5, 1, tzinfo=UTC)),
+                build_product(product_id=2, name="New", slug="new", category_id=11, created_at=datetime(2026, 5, 13, tzinfo=UTC)),
+            ],
+        ),
+        query=ProductNewQueryParams(days=30, in_stock=False),
+    )
+
+    assert [product.id for product in response.items] == [2, 1]
+
+
+@pytest.mark.asyncio
+async def test_get_new_products_limit_works() -> None:
+    response = await execute_get_new_products(
+        product_repository=FakeProductRepository(
+            products=[
+                build_product(product_id=1, name="A", slug="a", category_id=11, created_at=datetime(2026, 5, 13, tzinfo=UTC)),
+                build_product(product_id=2, name="B", slug="b", category_id=11, created_at=datetime(2026, 5, 12, tzinfo=UTC)),
+            ],
+        ),
+        query=ProductNewQueryParams(limit=1, in_stock=False),
+    )
+
+    assert response.total == 1
+    assert [product.id for product in response.items] == [1]
+
+
+@pytest.mark.asyncio
+async def test_get_new_products_days_works() -> None:
+    response = await execute_get_new_products(
+        product_repository=FakeProductRepository(
+            products=[
+                build_product(product_id=1, name="Today", slug="today", category_id=11, created_at=datetime(2026, 5, 14, tzinfo=UTC)),
+                build_product(product_id=2, name="Earlier", slug="earlier", category_id=11, created_at=datetime(2026, 5, 10, tzinfo=UTC)),
+            ],
+        ),
+        query=ProductNewQueryParams(days=2, in_stock=False),
+    )
+
+    assert [product.id for product in response.items] == [1]
+
+
+@pytest.mark.asyncio
+async def test_get_new_products_filter_category_id() -> None:
+    category_repository = FakeCategoryRepository(
+        categories=[
+            build_category(category_id=5, name="Фрукты", slug="frukty"),
+            build_category(category_id=15, name="Яблоки", slug="yabloki", parent_id=5),
+        ],
+    )
+    response = await execute_get_new_products(
+        category_repository=category_repository,
+        product_repository=FakeProductRepository(
+            products=[
+                build_product(product_id=55, name="Яблоки", slug="apples", category_id=15),
+                build_product(product_id=56, name="Овощи", slug="vegetables", category_id=9),
+            ],
+        ),
+        query=ProductNewQueryParams(category_id=5),
+    )
+
+    assert [product.id for product in response.items] == [55]
+
+
+@pytest.mark.asyncio
+async def test_get_new_products_in_stock_true_excludes_unavailable() -> None:
+    response = await execute_get_new_products(
+        product_repository=FakeProductRepository(
+            products=[
+                build_product(product_id=55, name="Есть", slug="in-stock", category_id=11),
+                build_product(
+                    product_id=56,
+                    name="Нет",
+                    slug="out-stock",
+                    category_id=11,
+                    stock_quantity=Decimal("0"),
+                ),
+            ],
+        ),
+    )
+
+    assert [product.id for product in response.items] == [55]
+
+
+@pytest.mark.asyncio
+async def test_get_new_products_excludes_inactive_products() -> None:
+    response = await execute_get_new_products(
+        product_repository=FakeProductRepository(
+            products=[
+                build_product(product_id=55, name="Активный", slug="active", category_id=11),
+                build_product(product_id=56, name="Скрытый", slug="inactive", category_id=11, is_active=False),
+            ],
+        ),
+    )
+
+    assert [product.id for product in response.items] == [55]
+
+
+@pytest.mark.asyncio
+async def test_get_new_products_excludes_deleted_products() -> None:
+    response = await execute_get_new_products(
+        product_repository=FakeProductRepository(
+            products=[
+                build_product(product_id=55, name="Активный", slug="active", category_id=11),
+                build_product(product_id=56, name="Удалённый", slug="deleted", category_id=11, is_deleted=True),
+            ],
+        ),
+    )
+
+    assert [product.id for product in response.items] == [55]
+
+
+@pytest.mark.asyncio
+async def test_get_new_products_response_is_cached_in_redis() -> None:
+    redis_service = FakeRedisService()
+    query = ProductNewQueryParams(limit=2, days=7)
+
+    await execute_get_new_products(redis_service=redis_service, query=query)
+
+    cache_key = f"products:new:{build_query_hash(query.model_dump())}"
+    assert cache_key in redis_service.values
+    assert redis_service.ttls[cache_key] == settings.products.new_cache_ttl_seconds
 
 
 @pytest.mark.asyncio

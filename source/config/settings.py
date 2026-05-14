@@ -238,6 +238,9 @@ class ProductsSettings(BaseSettings):
     popular_cache_ttl_seconds: int = Field(default=600, alias="PRODUCT_POPULAR_CACHE_TTL_SECONDS")
     popular_default_limit: int = Field(default=12, alias="PRODUCT_POPULAR_DEFAULT_LIMIT")
     discounted_cache_ttl_seconds: int = Field(default=120, alias="PRODUCT_DISCOUNTED_CACHE_TTL_SECONDS")
+    new_cache_ttl_seconds: int = Field(default=600, alias="PRODUCT_NEW_CACHE_TTL_SECONDS")
+    new_default_limit: int = Field(default=12, alias="PRODUCT_NEW_DEFAULT_LIMIT")
+    new_default_days: int = Field(default=30, alias="PRODUCT_NEW_DEFAULT_DAYS")
     list_default_limit: int = Field(default=24, alias="PRODUCTS_LIST_DEFAULT_LIMIT")
     list_max_limit: int = Field(default=100, alias="PRODUCTS_LIST_MAX_LIMIT")
 

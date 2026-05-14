@@ -1,3 +1,5 @@
+from datetime import datetime, timedelta
+
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from source.config.settings import settings
@@ -14,6 +16,8 @@ from source.schemas.pydantic.product import (
     ProductDiscountedResponse,
     ProductListQueryParams,
     ProductListResponse,
+    ProductNewQueryParams,
+    ProductNewResponse,
     ProductPopularQueryParams,
     ProductPopularResponse,
     ProductSearchQueryParams,
@@ -294,6 +298,45 @@ class ProductService:
             query_hash=query_hash,
             response=response,
             ttl_seconds=settings.products.discounted_cache_ttl_seconds,
+        )
+        return response
+
+    async def get_new_products(
+        self,
+        *,
+        session: AsyncSession,
+        redis_service: RedisService,
+        product_cache_service: ProductCacheService,
+        product_repository: ProductRepository,
+        category_repository: CategoryRepository,
+        query: ProductNewQueryParams,
+    ) -> ProductNewResponse:
+        query_hash = build_query_hash(query.model_dump())
+        cached_products = await product_cache_service.get_new(
+            redis_service=redis_service,
+            query_hash=query_hash,
+        )
+        if cached_products is not None:
+            return cached_products
+
+        category_ids = await self._resolve_category_ids_by_id(
+            session=session,
+            category_repository=category_repository,
+            category_id=query.category_id,
+        )
+        created_from = datetime.now(settings.tz) - timedelta(days=query.days)
+        items = await product_repository.get_new_active(
+            session=session,
+            query=query,
+            created_from=created_from,
+            category_ids=category_ids,
+        )
+        response = ProductNewResponse(items=items, total=len(items))
+        await product_cache_service.set_new(
+            redis_service=redis_service,
+            query_hash=query_hash,
+            response=response,
+            ttl_seconds=settings.products.new_cache_ttl_seconds,
         )
         return response
 

@@ -1,6 +1,7 @@
 from decimal import Decimal
 from math import ceil
 from typing import Literal
+from datetime import datetime
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -79,6 +80,13 @@ class ProductDiscountedQueryParams(BaseModel):
         return (self.page - 1) * self.limit
 
 
+class ProductNewQueryParams(BaseModel):
+    limit: int = Field(default=12, ge=1, le=100)
+    category_id: int | None = Field(default=None, ge=1)
+    in_stock: bool = True
+    days: int = Field(default=30, ge=1)
+
+
 class ProductCategoryShortResponse(BaseModel):
     id: int
     name: str
@@ -98,6 +106,7 @@ class ProductShortResponse(BaseModel):
     is_available: bool
     stock_display: str
     category: ProductCategoryShortResponse | None = None
+    created_at: datetime | None = None
 
 
 class ProductImageResponse(BaseModel):
@@ -220,3 +229,8 @@ class ProductDiscountedResponse(BaseModel):
             limit=limit,
             pages=ceil(total / limit) if total else 0,
         )
+
+
+class ProductNewResponse(BaseModel):
+    items: list[ProductShortResponse]
+    total: int
