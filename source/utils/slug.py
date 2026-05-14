@@ -1,7 +1,7 @@
 import re
 
 
-SLUG_PATTERN = re.compile(r"^[a-z0-9_-]{2,150}$")
+SLUG_PATTERN = re.compile(r"^[a-z0-9_-]{2,200}$")
 
 
 def normalize_slug(slug: str) -> str:

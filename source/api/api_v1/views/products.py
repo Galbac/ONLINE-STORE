@@ -21,8 +21,61 @@ from source.schemas.pydantic.product import (
 from source.services.product import ProductService
 from source.services.product_cache import ProductCacheService
 from source.services.redis import RedisService
+from source.utils.slug import normalize_slug, validate_slug
 
 router = APIRouter(tags=["products"])
+
+
+@router.get(
+    "/products/slug/{slug}",
+    response_model=ProductDetailResponse,
+    response_model_exclude_none=True,
+    status_code=status.HTTP_200_OK,
+    responses={
+        status.HTTP_400_BAD_REQUEST: {"description": "Неверный slug или query params."},
+        status.HTTP_404_NOT_FOUND: {"description": "Товар не найден."},
+        status.HTTP_500_INTERNAL_SERVER_ERROR: {"description": "Внутренняя ошибка сервера."},
+    },
+)
+@inject
+async def get_product_by_slug(
+    slug: str = Path(min_length=2, max_length=200),
+    with_similar: bool = False,
+    with_breadcrumbs: bool = True,
+    session: FromDishka[AsyncSession] = None,
+    redis_service: FromDishka[RedisService] = None,
+    product_service: FromDishka[ProductService] = None,
+    product_cache_service: FromDishka[ProductCacheService] = None,
+    product_repository: FromDishka[ProductRepository] = None,
+    product_image_repository: FromDishka[ProductImageRepository] = None,
+    category_repository: FromDishka[CategoryRepository] = None,
+) -> ProductDetailResponse:
+    normalized_slug = normalize_slug(slug)
+    if not validate_slug(normalized_slug):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Неверный slug",
+        )
+
+    try:
+        return await product_service.get_product_by_slug(
+            session=session,
+            redis_service=redis_service,
+            product_cache_service=product_cache_service,
+            product_repository=product_repository,
+            product_image_repository=product_image_repository,
+            category_repository=category_repository,
+            slug=normalized_slug,
+            query=ProductDetailQueryParams(
+                with_similar=with_similar,
+                with_breadcrumbs=with_breadcrumbs,
+            ),
+        )
+    except ProductNotFoundError as error:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Товар не найден",
+        ) from error
 
 
 @router.get(

@@ -125,6 +125,27 @@ class ProductRepository:
         product, category = row
         return self._build_product_detail_response(product=product, category=category)
 
+    async def get_active_by_slug(
+        self,
+        *,
+        session: AsyncSession,
+        slug: str,
+    ) -> ProductDetailResponse | None:
+        result = await session.execute(
+            select(Product, Category)
+            .outerjoin(Category, Product.category_id == Category.id)
+            .where(
+                Product.slug == slug,
+                Product.is_active.is_(True),
+                Product.is_deleted.is_(False),
+            ),
+        )
+        row = result.one_or_none()
+        if row is None:
+            return None
+        product, category = row
+        return self._build_product_detail_response(product=product, category=category)
+
     async def get_similar_active(
         self,
         *,

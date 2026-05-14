@@ -45,37 +45,13 @@ class ProductService:
         if product is None:
             raise ProductNotFoundError
 
-        breadcrumbs = None
-        if query.with_breadcrumbs and product.category is not None:
-            breadcrumbs = [
-                ProductBreadcrumbResponse(
-                    id=breadcrumb.id,
-                    name=breadcrumb.name,
-                    slug=breadcrumb.slug,
-                )
-                for breadcrumb in await category_repository.get_parent_chain(
-                    session=session,
-                    category_id=product.category.id,
-                )
-            ]
-
-        similar = None
-        if query.with_similar:
-            similar = await product_repository.get_similar_active(
-                session=session,
-                product_id=product.id,
-                category_id=product.category.id if product.category is not None else None,
-            )
-
-        response = product.model_copy(
-            update={
-                "images": await product_image_repository.get_by_product_id(
-                    session=session,
-                    product_id=product.id,
-                ),
-                "breadcrumbs": breadcrumbs,
-                "similar": similar,
-            },
+        response = await self._build_product_detail_response(
+            session=session,
+            product=product,
+            query=query,
+            product_repository=product_repository,
+            product_image_repository=product_image_repository,
+            category_repository=category_repository,
         )
         await product_cache_service.set_detail(
             redis_service=redis_service,
@@ -83,6 +59,49 @@ class ProductService:
             query_hash=query_hash,
             response=response,
             ttl_seconds=settings.products.detail_cache_ttl_seconds,
+        )
+        return response
+
+    async def get_product_by_slug(
+        self,
+        *,
+        session: AsyncSession,
+        redis_service: RedisService,
+        product_cache_service: ProductCacheService,
+        product_repository: ProductRepository,
+        product_image_repository: ProductImageRepository,
+        category_repository: CategoryRepository,
+        slug: str,
+        query: ProductDetailQueryParams,
+    ) -> ProductDetailResponse:
+        normalized_slug = normalize_slug(slug)
+        query_hash = build_query_hash(query.model_dump())
+        cached_product = await product_cache_service.get_by_slug(
+            redis_service=redis_service,
+            slug=normalized_slug,
+            query_hash=query_hash,
+        )
+        if cached_product is not None:
+            return cached_product
+
+        product = await product_repository.get_active_by_slug(session=session, slug=normalized_slug)
+        if product is None:
+            raise ProductNotFoundError
+
+        response = await self._build_product_detail_response(
+            session=session,
+            product=product,
+            query=query,
+            product_repository=product_repository,
+            product_image_repository=product_image_repository,
+            category_repository=category_repository,
+        )
+        await product_cache_service.set_by_slug(
+            redis_service=redis_service,
+            slug=normalized_slug,
+            query_hash=query_hash,
+            response=response,
+            ttl_seconds=settings.products.slug_cache_ttl_seconds,
         )
         return response
 
@@ -172,3 +191,46 @@ class ProductService:
             category_ids.update(child_ids)
             pending_ids.extend(child_ids)
         return category_ids
+
+    async def _build_product_detail_response(
+        self,
+        *,
+        session: AsyncSession,
+        product: ProductDetailResponse,
+        query: ProductDetailQueryParams,
+        product_repository: ProductRepository,
+        product_image_repository: ProductImageRepository,
+        category_repository: CategoryRepository,
+    ) -> ProductDetailResponse:
+        breadcrumbs = None
+        if query.with_breadcrumbs and product.category is not None:
+            breadcrumbs = [
+                ProductBreadcrumbResponse(
+                    id=breadcrumb.id,
+                    name=breadcrumb.name,
+                    slug=breadcrumb.slug,
+                )
+                for breadcrumb in await category_repository.get_parent_chain(
+                    session=session,
+                    category_id=product.category.id,
+                )
+            ]
+
+        similar = None
+        if query.with_similar:
+            similar = await product_repository.get_similar_active(
+                session=session,
+                product_id=product.id,
+                category_id=product.category.id if product.category is not None else None,
+            )
+
+        return product.model_copy(
+            update={
+                "images": await product_image_repository.get_by_product_id(
+                    session=session,
+                    product_id=product.id,
+                ),
+                "breadcrumbs": breadcrumbs,
+                "similar": similar,
+            },
+        )

@@ -9,6 +9,9 @@ class ProductCacheService:
     def _detail_key(self, *, product_id: int, query_hash: str) -> str:
         return f"products:detail:{product_id}:{query_hash}"
 
+    def _slug_key(self, *, slug: str, query_hash: str) -> str:
+        return f"products:slug:{slug}:{query_hash}"
+
     async def get_list(
         self,
         *,
@@ -63,6 +66,37 @@ class ProductCacheService:
     ) -> None:
         await redis_service.set(
             self._detail_key(product_id=product_id, query_hash=query_hash),
+            response.model_dump_json(),
+            ttl_seconds=ttl_seconds,
+        )
+
+    async def get_by_slug(
+        self,
+        *,
+        redis_service: RedisService,
+        slug: str,
+        query_hash: str,
+    ) -> ProductDetailResponse | None:
+        cached_product = await redis_service.get(
+            self._slug_key(slug=slug, query_hash=query_hash),
+        )
+        if cached_product is None:
+            return None
+        if isinstance(cached_product, bytes):
+            cached_product = cached_product.decode("utf-8")
+        return ProductDetailResponse.model_validate_json(cached_product)
+
+    async def set_by_slug(
+        self,
+        *,
+        redis_service: RedisService,
+        slug: str,
+        query_hash: str,
+        response: ProductDetailResponse,
+        ttl_seconds: int,
+    ) -> None:
+        await redis_service.set(
+            self._slug_key(slug=slug, query_hash=query_hash),
             response.model_dump_json(),
             ttl_seconds=ttl_seconds,
         )

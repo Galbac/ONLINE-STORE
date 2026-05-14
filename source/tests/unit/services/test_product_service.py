@@ -24,6 +24,7 @@ from source.services.product import ProductService
 from source.services.product_cache import ProductCacheService
 from source.utils.product import build_detailed_stock_display, build_stock_display, calculate_discount_percent
 from source.utils.query_hash import build_query_hash
+from source.utils.slug import normalize_slug, validate_slug
 
 
 class FakeRedisService:
@@ -102,10 +103,18 @@ class FakeProductRepository:
         ]
         self.query: ProductListQueryParams | None = None
         self.category_ids: set[int] | None = None
+        self.requested_slug: str | None = None
 
     async def get_active_by_id(self, *, session, product_id: int):
         for product in self.products:
             if product.id == product_id and product.is_active and not product.is_deleted:
+                return build_product_detail_response(product)
+        return None
+
+    async def get_active_by_slug(self, *, session, slug: str):
+        self.requested_slug = slug
+        for product in self.products:
+            if product.slug == slug and product.is_active and not product.is_deleted:
                 return build_product_detail_response(product)
         return None
 
@@ -339,6 +348,27 @@ async def execute_get_product_by_id(
     )
 
 
+async def execute_get_product_by_slug(
+    *,
+    redis_service: FakeRedisService | None = None,
+    product_repository: FakeProductRepository | None = None,
+    product_image_repository: FakeProductImageRepository | None = None,
+    category_repository: FakeCategoryRepository | None = None,
+    slug: str = "yabloki-krasnye",
+    query: ProductDetailQueryParams | None = None,
+) -> ProductDetailResponse:
+    return await ProductService().get_product_by_slug(
+        session=object(),
+        redis_service=redis_service or FakeRedisService(),
+        product_cache_service=ProductCacheService(),
+        product_repository=product_repository or FakeProductRepository(),
+        product_image_repository=product_image_repository or FakeProductImageRepository(),
+        category_repository=category_repository or FakeCategoryRepository(),
+        slug=slug,
+        query=query or ProductDetailQueryParams(),
+    )
+
+
 @pytest.mark.asyncio
 async def test_get_product_by_id_from_postgresql_success() -> None:
     response = await execute_get_product_by_id()
@@ -502,6 +532,152 @@ async def test_get_product_by_id_response_is_cached_in_redis() -> None:
     cache_key = f"products:detail:55:{build_query_hash(query.model_dump())}"
     assert cache_key in redis_service.values
     assert redis_service.ttls[cache_key] == settings.products.detail_cache_ttl_seconds
+
+
+@pytest.mark.asyncio
+async def test_get_product_by_slug_from_postgresql_success() -> None:
+    product_repository = FakeProductRepository()
+
+    response = await execute_get_product_by_slug(
+        product_repository=product_repository,
+        slug=" YABLOKI-KRASNYE ",
+    )
+
+    assert response.id == 55
+    assert response.slug == "yabloki-krasnye"
+    assert response.images[0].url == "/media/products/apple-1.png"
+    assert response.category is not None
+    assert response.seo is not None
+    assert product_repository.requested_slug == "yabloki-krasnye"
+
+
+@pytest.mark.asyncio
+async def test_get_product_by_slug_from_redis_cache_success() -> None:
+    redis_service = FakeRedisService()
+    query = ProductDetailQueryParams()
+    query_hash = build_query_hash(query.model_dump())
+    cached_response = build_product_detail_response(
+        build_product(product_id=55, name="Яблоки красные", slug="yabloki-krasnye", category_id=11),
+    )
+    redis_service.values[f"products:slug:yabloki-krasnye:{query_hash}"] = cached_response.model_dump_json()
+    product_repository = FakeProductRepository(products=[])
+
+    response = await execute_get_product_by_slug(
+        redis_service=redis_service,
+        product_repository=product_repository,
+        slug="YABLOKI-KRASNYE",
+        query=query,
+    )
+
+    assert response.id == 55
+    assert product_repository.requested_slug is None
+
+
+def test_product_slug_validation_and_normalization() -> None:
+    assert normalize_slug(" YABLOKI-KRASNYE_1 ") == "yabloki-krasnye_1"
+    assert validate_slug("yabloki-krasnye_1")
+    assert validate_slug("a" * 200)
+    assert not validate_slug("яблоки")
+    assert not validate_slug("a" * 201)
+
+
+@pytest.mark.asyncio
+async def test_get_product_by_slug_not_found() -> None:
+    with pytest.raises(ProductNotFoundError):
+        await execute_get_product_by_slug(
+            product_repository=FakeProductRepository(products=[]),
+            slug="missing-product",
+        )
+
+
+@pytest.mark.asyncio
+async def test_get_product_by_slug_inactive_product_not_found() -> None:
+    with pytest.raises(ProductNotFoundError):
+        await execute_get_product_by_slug(
+            product_repository=FakeProductRepository(
+                products=[
+                    build_product(
+                        product_id=55,
+                        name="Скрытый",
+                        slug="hidden",
+                        category_id=11,
+                        is_active=False,
+                    ),
+                ],
+            ),
+            slug="hidden",
+        )
+
+
+@pytest.mark.asyncio
+async def test_get_product_by_slug_deleted_product_not_found() -> None:
+    with pytest.raises(ProductNotFoundError):
+        await execute_get_product_by_slug(
+            product_repository=FakeProductRepository(
+                products=[
+                    build_product(
+                        product_id=55,
+                        name="Удалённый",
+                        slug="deleted",
+                        category_id=11,
+                        is_deleted=True,
+                    ),
+                ],
+            ),
+            slug="deleted",
+        )
+
+
+@pytest.mark.asyncio
+async def test_get_product_by_slug_calculates_discount() -> None:
+    response = await execute_get_product_by_slug(
+        product_repository=FakeProductRepository(
+            products=[
+                build_product(
+                    product_id=55,
+                    name="Яблоки красные",
+                    slug="yabloki-krasnye",
+                    category_id=11,
+                    price=Decimal("150.00"),
+                    old_price=Decimal("180.00"),
+                ),
+            ],
+        ),
+    )
+
+    assert response.discount_percent == 17
+
+
+@pytest.mark.asyncio
+async def test_get_product_by_slug_builds_stock_display() -> None:
+    response = await execute_get_product_by_slug(
+        product_repository=FakeProductRepository(
+            products=[
+                build_product(
+                    product_id=55,
+                    name="Яблоки красные",
+                    slug="yabloki-krasnye",
+                    category_id=11,
+                    stock_quantity=Decimal("0"),
+                    is_available=False,
+                ),
+            ],
+        ),
+    )
+
+    assert response.stock_display == "Нет в наличии"
+
+
+@pytest.mark.asyncio
+async def test_get_product_by_slug_response_is_cached_in_redis() -> None:
+    redis_service = FakeRedisService()
+    query = ProductDetailQueryParams(with_similar=True)
+
+    await execute_get_product_by_slug(redis_service=redis_service, query=query)
+
+    cache_key = f"products:slug:yabloki-krasnye:{build_query_hash(query.model_dump())}"
+    assert cache_key in redis_service.values
+    assert redis_service.ttls[cache_key] == settings.products.slug_cache_ttl_seconds
 
 
 @pytest.mark.asyncio
