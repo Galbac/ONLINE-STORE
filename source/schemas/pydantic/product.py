@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field, model_validator
 
 
 ProductSort = Literal["price_asc", "price_desc", "newest", "popular", "name_asc", "name_desc"]
+ProductSearchSort = Literal["relevance", "price_asc", "price_desc", "newest", "popular"]
 ProductType = Literal["piece", "weight"]
 
 
@@ -35,6 +36,27 @@ class ProductListQueryParams(BaseModel):
 class ProductDetailQueryParams(BaseModel):
     with_similar: bool = False
     with_breadcrumbs: bool = True
+
+
+class ProductSearchQueryParams(BaseModel):
+    q: str = Field(min_length=2, max_length=100)
+    page: int = Field(default=1, ge=1)
+    limit: int = Field(default=24, ge=1, le=100)
+    category_id: int | None = Field(default=None, ge=1)
+    in_stock: bool | None = None
+    has_discount: bool | None = None
+    sort: ProductSearchSort = "relevance"
+
+    @model_validator(mode="after")
+    def normalize_query(self) -> "ProductSearchQueryParams":
+        self.q = self.q.strip()
+        if len(self.q) < 2:
+            raise ValueError("q must contain at least 2 characters")
+        return self
+
+    @property
+    def offset(self) -> int:
+        return (self.page - 1) * self.limit
 
 
 class ProductCategoryShortResponse(BaseModel):
@@ -114,6 +136,34 @@ class ProductListResponse(BaseModel):
         limit: int,
     ) -> "ProductListResponse":
         return cls(
+            items=items,
+            total=total,
+            page=page,
+            limit=limit,
+            pages=ceil(total / limit) if total else 0,
+        )
+
+
+class ProductSearchResponse(BaseModel):
+    query: str
+    items: list[ProductShortResponse]
+    total: int
+    page: int
+    limit: int
+    pages: int
+
+    @classmethod
+    def build(
+        cls,
+        *,
+        query: str,
+        items: list[ProductShortResponse],
+        total: int,
+        page: int,
+        limit: int,
+    ) -> "ProductSearchResponse":
+        return cls(
+            query=query,
             items=items,
             total=total,
             page=page,

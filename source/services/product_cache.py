@@ -1,4 +1,4 @@
-from source.schemas.pydantic.product import ProductDetailResponse, ProductListResponse
+from source.schemas.pydantic.product import ProductDetailResponse, ProductListResponse, ProductSearchResponse
 from source.services.redis import RedisService
 
 
@@ -11,6 +11,9 @@ class ProductCacheService:
 
     def _slug_key(self, *, slug: str, query_hash: str) -> str:
         return f"products:slug:{slug}:{query_hash}"
+
+    def _search_key(self, query_hash: str) -> str:
+        return f"products:search:{query_hash}"
 
     async def get_list(
         self,
@@ -100,6 +103,36 @@ class ProductCacheService:
             response.model_dump_json(),
             ttl_seconds=ttl_seconds,
         )
+
+    async def get_search(
+        self,
+        *,
+        redis_service: RedisService,
+        query_hash: str,
+    ) -> ProductSearchResponse | None:
+        cached_products = await redis_service.get(self._search_key(query_hash))
+        if cached_products is None:
+            return None
+        if isinstance(cached_products, bytes):
+            cached_products = cached_products.decode("utf-8")
+        return ProductSearchResponse.model_validate_json(cached_products)
+
+    async def set_search(
+        self,
+        *,
+        redis_service: RedisService,
+        query_hash: str,
+        response: ProductSearchResponse,
+        ttl_seconds: int,
+    ) -> None:
+        await redis_service.set(
+            self._search_key(query_hash),
+            response.model_dump_json(),
+            ttl_seconds=ttl_seconds,
+        )
+
+    async def invalidate_search(self, *, redis_service: RedisService) -> None:
+        await redis_service.delete_by_pattern("products:search:*")
 
     async def invalidate_product(self, *, redis_service: RedisService, product_id: int, slug: str | None = None) -> None:
         await redis_service.delete_by_pattern(f"products:detail:{product_id}:*")

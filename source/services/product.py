@@ -12,10 +12,13 @@ from source.schemas.pydantic.product import (
     ProductDetailResponse,
     ProductListQueryParams,
     ProductListResponse,
+    ProductSearchQueryParams,
+    ProductSearchResponse,
 )
 from source.services.product_cache import ProductCacheService
 from source.services.redis import RedisService
 from source.utils.query_hash import build_query_hash
+from source.utils.search import normalize_search_query
 from source.utils.slug import normalize_slug
 
 
@@ -157,6 +160,55 @@ class ProductService:
         )
         return response
 
+    async def search_products(
+        self,
+        *,
+        session: AsyncSession,
+        redis_service: RedisService,
+        product_cache_service: ProductCacheService,
+        product_repository: ProductRepository,
+        category_repository: CategoryRepository,
+        query: ProductSearchQueryParams,
+    ) -> ProductSearchResponse:
+        normalized_query = query.model_copy(update={"q": normalize_search_query(query.q)})
+        query_hash = build_query_hash(normalized_query.model_dump())
+        cached_products = await product_cache_service.get_search(
+            redis_service=redis_service,
+            query_hash=query_hash,
+        )
+        if cached_products is not None:
+            return cached_products
+
+        category_ids = await self._resolve_category_ids_by_id(
+            session=session,
+            category_repository=category_repository,
+            category_id=normalized_query.category_id,
+        )
+        items = await product_repository.search_active(
+            session=session,
+            query=normalized_query,
+            category_ids=category_ids,
+        )
+        total = await product_repository.count_search_active(
+            session=session,
+            query=normalized_query,
+            category_ids=category_ids,
+        )
+        response = ProductSearchResponse.build(
+            query=normalized_query.q,
+            items=items,
+            total=total,
+            page=normalized_query.page,
+            limit=normalized_query.limit,
+        )
+        await product_cache_service.set_search(
+            redis_service=redis_service,
+            query_hash=query_hash,
+            response=response,
+            ttl_seconds=settings.products.search_cache_ttl_seconds,
+        )
+        return response
+
     async def _resolve_category_ids(
         self,
         *,
@@ -177,6 +229,34 @@ class ProductService:
 
         if category_id is None:
             return None
+
+        categories = await category_repository.get_active_all(session=session)
+        category_ids = {category_id}
+        pending_ids = [category_id]
+        while pending_ids:
+            parent_id = pending_ids.pop()
+            child_ids = [
+                category.id
+                for category in categories
+                if category.parent_id == parent_id and category.id not in category_ids
+            ]
+            category_ids.update(child_ids)
+            pending_ids.extend(child_ids)
+        return category_ids
+
+    async def _resolve_category_ids_by_id(
+        self,
+        *,
+        session: AsyncSession,
+        category_repository: CategoryRepository,
+        category_id: int | None,
+    ) -> set[int] | None:
+        if category_id is None:
+            return None
+
+        category = await category_repository.get_active_by_id(session=session, category_id=category_id)
+        if category is None:
+            raise CategoryNotFoundError
 
         categories = await category_repository.get_active_all(session=session)
         category_ids = {category_id}

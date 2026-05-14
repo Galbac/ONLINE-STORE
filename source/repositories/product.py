@@ -1,4 +1,4 @@
-from sqlalchemy import desc, func, select
+from sqlalchemy import case, desc, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from source.db.models.category import Category
@@ -7,6 +7,7 @@ from source.schemas.pydantic.product import (
     ProductCategoryShortResponse,
     ProductDetailResponse,
     ProductListQueryParams,
+    ProductSearchQueryParams,
     ProductSeoResponse,
     ProductShortResponse,
 )
@@ -66,6 +67,67 @@ class ProductRepository:
             case "name_asc" | _:
                 return statement.order_by(Product.name.asc())
 
+    def _search_statement(self, *, query: ProductSearchQueryParams, category_ids: set[int] | None):
+        search_pattern = f"%{query.q}%"
+        statement = (
+            select(Product, Category)
+            .outerjoin(Category, Product.category_id == Category.id)
+            .where(
+                Product.is_active.is_(True),
+                Product.is_deleted.is_(False),
+                or_(
+                    Product.name.ilike(search_pattern),
+                    Product.description.ilike(search_pattern),
+                    Product.article.ilike(search_pattern),
+                    Product.barcode.ilike(search_pattern),
+                    Product.search_keywords.ilike(search_pattern),
+                ),
+            )
+        )
+        if category_ids is not None:
+            statement = statement.where(Product.category_id.in_(category_ids))
+        if query.in_stock is True:
+            statement = statement.where(
+                Product.is_available.is_(True),
+                Product.stock_quantity > 0,
+            )
+        elif query.in_stock is False:
+            statement = statement.where(
+                (Product.is_available.is_(False)) | (Product.stock_quantity <= 0),
+            )
+        if query.has_discount is True:
+            statement = statement.where(
+                Product.old_price.is_not(None),
+                Product.old_price > Product.price,
+            )
+        elif query.has_discount is False:
+            statement = statement.where(
+                (Product.old_price.is_(None)) | (Product.old_price <= Product.price),
+            )
+        return statement
+
+    def _apply_search_sort(self, statement, *, query: ProductSearchQueryParams):
+        match query.sort:
+            case "price_asc":
+                return statement.order_by(Product.price.asc(), Product.name.asc())
+            case "price_desc":
+                return statement.order_by(Product.price.desc(), Product.name.asc())
+            case "newest":
+                return statement.order_by(desc(Product.created_date), Product.name.asc())
+            case "popular":
+                return statement.order_by(Product.popularity.desc(), Product.name.asc())
+            case "relevance" | _:
+                return statement.order_by(
+                    case(
+                        (Product.name.ilike(f"%{query.q}%"), 0),
+                        (Product.search_keywords.ilike(f"%{query.q}%"), 1),
+                        (Product.description.ilike(f"%{query.q}%"), 2),
+                        else_=3,
+                    ),
+                    Product.popularity.desc(),
+                    Product.name.asc(),
+                )
+
     async def get_active_list(
         self,
         *,
@@ -92,6 +154,35 @@ class ProductRepository:
         category_ids: set[int] | None = None,
     ) -> int:
         products_subquery = self._base_statement(query=query, category_ids=category_ids).subquery()
+        result = await session.execute(select(func.count()).select_from(products_subquery))
+        return int(result.scalar_one())
+
+    async def search_active(
+        self,
+        *,
+        session: AsyncSession,
+        query: ProductSearchQueryParams,
+        category_ids: set[int] | None = None,
+    ) -> list[ProductShortResponse]:
+        statement = (
+            self._apply_search_sort(self._search_statement(query=query, category_ids=category_ids), query=query)
+            .limit(query.limit)
+            .offset(query.offset)
+        )
+        result = await session.execute(statement)
+        return [
+            self._build_product_response(product=product, category=category)
+            for product, category in result.all()
+        ]
+
+    async def count_search_active(
+        self,
+        *,
+        session: AsyncSession,
+        query: ProductSearchQueryParams,
+        category_ids: set[int] | None = None,
+    ) -> int:
+        products_subquery = self._search_statement(query=query, category_ids=category_ids).subquery()
         result = await session.execute(select(func.count()).select_from(products_subquery))
         return int(result.scalar_one())
 

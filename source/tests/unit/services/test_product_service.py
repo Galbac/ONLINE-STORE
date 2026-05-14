@@ -17,6 +17,8 @@ from source.schemas.pydantic.product import (
     ProductImageResponse,
     ProductListQueryParams,
     ProductListResponse,
+    ProductSearchQueryParams,
+    ProductSearchResponse,
     ProductSeoResponse,
     ProductShortResponse,
 )
@@ -143,6 +145,29 @@ class FakeProductRepository:
     async def count_active(self, *, session, query: ProductListQueryParams, category_ids: set[int] | None = None):
         return len(self._filter_products(query=query, category_ids=category_ids))
 
+    async def search_active(
+        self,
+        *,
+        session,
+        query: ProductSearchQueryParams,
+        category_ids: set[int] | None = None,
+    ):
+        products = self._filter_search_products(query=query, category_ids=category_ids)
+        products = self._sort_search_products(products=products, query=query)
+        return [
+            build_product_response(product)
+            for product in products[query.offset : query.offset + query.limit]
+        ]
+
+    async def count_search_active(
+        self,
+        *,
+        session,
+        query: ProductSearchQueryParams,
+        category_ids: set[int] | None = None,
+    ):
+        return len(self._filter_search_products(query=query, category_ids=category_ids))
+
     def _filter_products(self, *, query: ProductListQueryParams, category_ids: set[int] | None) -> list[object]:
         products = [
             product
@@ -181,6 +206,73 @@ class FakeProductRepository:
                 return sorted(products, key=lambda product: product.name, reverse=True)
             case "name_asc" | _:
                 return sorted(products, key=lambda product: product.name)
+
+    def _filter_search_products(
+        self,
+        *,
+        query: ProductSearchQueryParams,
+        category_ids: set[int] | None,
+    ) -> list[object]:
+        search_query = query.q.lower()
+        products = [
+            product
+            for product in self.products
+            if product.is_active
+            and not product.is_deleted
+            and any(
+                search_query in str(value).lower()
+                for value in (
+                    product.name,
+                    product.description,
+                    product.article,
+                    product.barcode,
+                    product.search_keywords,
+                )
+                if value is not None
+            )
+        ]
+        if category_ids is not None:
+            products = [product for product in products if product.category_id in category_ids]
+        if query.in_stock is True:
+            products = [product for product in products if product.is_available and product.stock_quantity > 0]
+        if query.has_discount is True:
+            products = [
+                product
+                for product in products
+                if product.old_price is not None and product.old_price > product.price
+            ]
+        return products
+
+    def _sort_search_products(
+        self,
+        *,
+        products: list[object],
+        query: ProductSearchQueryParams,
+    ) -> list[object]:
+        match query.sort:
+            case "price_asc":
+                return sorted(products, key=lambda product: (product.price, product.name))
+            case "price_desc":
+                return sorted(products, key=lambda product: (-product.price, product.name))
+            case "newest":
+                return sorted(products, key=lambda product: (product.created_at, product.name), reverse=True)
+            case "popular":
+                return sorted(products, key=lambda product: (-product.popularity, product.name))
+            case "relevance" | _:
+                search_query = query.q.lower()
+
+                def relevance(product) -> tuple[int, int, str]:
+                    if search_query in product.name.lower():
+                        rank = 0
+                    elif product.search_keywords is not None and search_query in product.search_keywords.lower():
+                        rank = 1
+                    elif product.description is not None and search_query in product.description.lower():
+                        rank = 2
+                    else:
+                        rank = 3
+                    return rank, -product.popularity, product.name
+
+                return sorted(products, key=relevance)
 
 
 class FakeProductImageRepository:
@@ -232,11 +324,16 @@ def build_product(
     description: str | None = "Свежие красные яблоки",
     meta_title: str | None = "Яблоки красные купить онлайн",
     meta_description: str | None = "Свежие красные яблоки с доставкой",
+    article: str | None = None,
+    barcode: str | None = None,
+    search_keywords: str | None = None,
 ):
     return SimpleNamespace(
         id=product_id,
         name=name,
         slug=slug,
+        article=article,
+        barcode=barcode,
         preview_image_url=f"/media/products/{slug}.png",
         category_id=category_id,
         category=ProductCategoryShortResponse(id=category_id, name="Яблоки", slug="yabloki") if category_id else None,
@@ -253,6 +350,7 @@ def build_product(
         popularity=popularity,
         created_at=created_at or datetime(2026, 5, 12, 10, 0, 0, tzinfo=UTC),
         description=description,
+        search_keywords=search_keywords,
         meta_title=meta_title,
         meta_description=meta_description,
     )
@@ -324,6 +422,23 @@ async def execute_get_products(
         product_repository=product_repository or FakeProductRepository(),
         category_repository=category_repository or FakeCategoryRepository(),
         query=query or ProductListQueryParams(),
+    )
+
+
+async def execute_search_products(
+    *,
+    redis_service: FakeRedisService | None = None,
+    product_repository: FakeProductRepository | None = None,
+    category_repository: FakeCategoryRepository | None = None,
+    query: ProductSearchQueryParams | None = None,
+) -> ProductSearchResponse:
+    return await ProductService().search_products(
+        session=object(),
+        redis_service=redis_service or FakeRedisService(),
+        product_cache_service=ProductCacheService(),
+        product_repository=product_repository or FakeProductRepository(),
+        category_repository=category_repository or FakeCategoryRepository(),
+        query=query or ProductSearchQueryParams(q="яблоки"),
     )
 
 
@@ -678,6 +793,188 @@ async def test_get_product_by_slug_response_is_cached_in_redis() -> None:
     cache_key = f"products:slug:yabloki-krasnye:{build_query_hash(query.model_dump())}"
     assert cache_key in redis_service.values
     assert redis_service.ttls[cache_key] == settings.products.slug_cache_ttl_seconds
+
+
+@pytest.mark.asyncio
+async def test_search_products_success() -> None:
+    response = await execute_search_products(
+        product_repository=FakeProductRepository(
+            products=[
+                build_product(product_id=55, name="Яблоки красные", slug="yabloki-krasnye", category_id=11),
+                build_product(product_id=56, name="Груши", slug="grushi", category_id=1, description="Сочные груши"),
+            ],
+        ),
+        query=ProductSearchQueryParams(q=" яблоки "),
+    )
+
+    assert response.query == "яблоки"
+    assert response.total == 1
+    assert response.items[0].id == 55
+
+
+def test_search_products_empty_query_error() -> None:
+    with pytest.raises(ValueError):
+        ProductSearchQueryParams(q="   ")
+
+
+def test_search_products_short_query_error() -> None:
+    with pytest.raises(ValueError):
+        ProductSearchQueryParams(q="я")
+
+
+@pytest.mark.asyncio
+async def test_search_products_excludes_inactive_products() -> None:
+    response = await execute_search_products(
+        product_repository=FakeProductRepository(
+            products=[
+                build_product(product_id=55, name="Яблоки", slug="active", category_id=11),
+                build_product(product_id=56, name="Яблоки скрытые", slug="inactive", category_id=11, is_active=False),
+            ],
+        ),
+        query=ProductSearchQueryParams(q="яблоки"),
+    )
+
+    assert [product.id for product in response.items] == [55]
+
+
+@pytest.mark.asyncio
+async def test_search_products_excludes_deleted_products() -> None:
+    response = await execute_search_products(
+        product_repository=FakeProductRepository(
+            products=[
+                build_product(product_id=55, name="Яблоки", slug="active", category_id=11),
+                build_product(product_id=56, name="Яблоки удалённые", slug="deleted", category_id=11, is_deleted=True),
+            ],
+        ),
+        query=ProductSearchQueryParams(q="яблоки"),
+    )
+
+    assert [product.id for product in response.items] == [55]
+
+
+@pytest.mark.asyncio
+async def test_search_products_filter_in_stock_true() -> None:
+    response = await execute_search_products(
+        product_repository=FakeProductRepository(
+            products=[
+                build_product(product_id=55, name="Яблоки есть", slug="in-stock", category_id=11),
+                build_product(product_id=56, name="Яблоки нет", slug="out-stock", category_id=11, stock_quantity=Decimal("0")),
+            ],
+        ),
+        query=ProductSearchQueryParams(q="яблоки", in_stock=True),
+    )
+
+    assert [product.id for product in response.items] == [55]
+
+
+@pytest.mark.asyncio
+async def test_search_products_filter_category_id() -> None:
+    category_repository = FakeCategoryRepository(
+        categories=[
+            build_category(category_id=5, name="Фрукты", slug="frukty"),
+            build_category(category_id=15, name="Яблоки", slug="yabloki", parent_id=5),
+        ],
+    )
+    product_repository = FakeProductRepository(
+        products=[
+            build_product(product_id=55, name="Яблоки красные", slug="red", category_id=15),
+            build_product(product_id=56, name="Яблоки овощные", slug="other", category_id=9),
+        ],
+    )
+
+    response = await execute_search_products(
+        category_repository=category_repository,
+        product_repository=product_repository,
+        query=ProductSearchQueryParams(q="яблоки", category_id=5),
+    )
+
+    assert [product.id for product in response.items] == [55]
+    assert product_repository.category_ids is None
+
+
+@pytest.mark.asyncio
+async def test_search_products_pagination() -> None:
+    response = await execute_search_products(
+        product_repository=FakeProductRepository(
+            products=[
+                build_product(product_id=1, name="Яблоки A", slug="a", category_id=11),
+                build_product(product_id=2, name="Яблоки B", slug="b", category_id=11),
+                build_product(product_id=3, name="Яблоки C", slug="c", category_id=11),
+            ],
+        ),
+        query=ProductSearchQueryParams(q="яблоки", page=2, limit=1),
+    )
+
+    assert response.total == 3
+    assert response.page == 2
+    assert response.pages == 3
+    assert [product.id for product in response.items] == [2]
+
+
+@pytest.mark.asyncio
+async def test_search_products_sort_relevance() -> None:
+    response = await execute_search_products(
+        product_repository=FakeProductRepository(
+            products=[
+                build_product(
+                    product_id=55,
+                    name="Красные фрукты",
+                    slug="red-fruits",
+                    category_id=11,
+                    search_keywords="яблоки",
+                    popularity=100,
+                ),
+                build_product(
+                    product_id=56,
+                    name="Яблоки красные",
+                    slug="red-apples",
+                    category_id=11,
+                    popularity=1,
+                ),
+            ],
+        ),
+        query=ProductSearchQueryParams(q="яблоки", sort="relevance"),
+    )
+
+    assert [product.id for product in response.items] == [56, 55]
+
+
+@pytest.mark.asyncio
+async def test_search_products_from_redis_cache_success() -> None:
+    redis_service = FakeRedisService()
+    query = ProductSearchQueryParams(q="яблоки")
+    query_hash = build_query_hash(query.model_dump())
+    cached_response = ProductSearchResponse.build(
+        query="яблоки",
+        items=[build_product_response(build_product(product_id=55, name="Яблоки", slug="yabloki", category_id=11))],
+        total=1,
+        page=1,
+        limit=24,
+    )
+    redis_service.values[f"products:search:{query_hash}"] = cached_response.model_dump_json()
+    product_repository = FakeProductRepository(products=[])
+
+    response = await execute_search_products(
+        redis_service=redis_service,
+        product_repository=product_repository,
+        query=query,
+    )
+
+    assert response.total == 1
+    assert product_repository.query is None
+
+
+@pytest.mark.asyncio
+async def test_search_products_response_is_cached_in_redis() -> None:
+    redis_service = FakeRedisService()
+    query = ProductSearchQueryParams(q=" яблоки ")
+
+    await execute_search_products(redis_service=redis_service, query=query)
+
+    normalized_query = query.model_copy(update={"q": "яблоки"})
+    cache_key = f"products:search:{build_query_hash(normalized_query.model_dump())}"
+    assert cache_key in redis_service.values
+    assert redis_service.ttls[cache_key] == settings.products.search_cache_ttl_seconds
 
 
 @pytest.mark.asyncio
