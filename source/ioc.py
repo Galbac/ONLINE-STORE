@@ -30,6 +30,8 @@ from source.services.cart_cache import CartCacheService
 from source.services.category import CategoryService
 from source.services.category_cache import CategoryCacheService
 from source.services.notifications import EmailService, TelegramNotificationService
+from source.services.product import ProductService
+from source.services.product_cache import ProductCacheService
 from source.services.profile import ProfileService
 from source.services.profile_cache import ProfileCacheService
 from source.services.redis import RedisService
@@ -107,6 +109,14 @@ class AppProvider(Provider):
     )
     category_cache_service = provide(
         CategoryCacheService,
+        scope=Scope.REQUEST,
+    )
+    product_service = provide(
+        ProductService,
+        scope=Scope.REQUEST,
+    )
+    product_cache_service = provide(
+        ProductCacheService,
         scope=Scope.REQUEST,
     )
     user_repository = provide(

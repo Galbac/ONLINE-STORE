@@ -228,6 +228,14 @@ class CategoriesSettings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 
+class ProductsSettings(BaseSettings):
+    list_cache_ttl_seconds: int = Field(default=120, alias="PRODUCTS_LIST_CACHE_TTL_SECONDS")
+    list_default_limit: int = Field(default=24, alias="PRODUCTS_LIST_DEFAULT_LIMIT")
+    list_max_limit: int = Field(default=100, alias="PRODUCTS_LIST_MAX_LIMIT")
+
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=(".env.example", ".env"),
@@ -255,6 +263,7 @@ class Settings(BaseSettings):
     profile_orders: ProfileOrdersSettings = ProfileOrdersSettings()
     cart: CartSettings = CartSettings()
     categories: CategoriesSettings = CategoriesSettings()
+    products: ProductsSettings = ProductsSettings()
 
     @property
     def tz(self) -> tzinfo:

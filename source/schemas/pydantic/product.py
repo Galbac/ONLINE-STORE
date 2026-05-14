@@ -1,0 +1,78 @@
+from decimal import Decimal
+from math import ceil
+from typing import Literal
+
+from pydantic import BaseModel, Field, model_validator
+
+
+ProductSort = Literal["price_asc", "price_desc", "newest", "popular", "name_asc", "name_desc"]
+ProductType = Literal["piece", "weight"]
+
+
+class ProductListQueryParams(BaseModel):
+    page: int = Field(default=1, ge=1)
+    limit: int = Field(default=24, ge=1, le=100)
+    category_id: int | None = Field(default=None, ge=1)
+    category_slug: str | None = Field(default=None, min_length=2, max_length=150)
+    in_stock: bool | None = None
+    min_price: Decimal | None = Field(default=None, ge=0)
+    max_price: Decimal | None = Field(default=None, ge=0)
+    has_discount: bool | None = None
+    product_type: ProductType | None = None
+    sort: ProductSort | None = None
+
+    @model_validator(mode="after")
+    def validate_prices(self) -> "ProductListQueryParams":
+        if self.min_price is not None and self.max_price is not None and self.min_price > self.max_price:
+            raise ValueError("min_price must be less than or equal to max_price")
+        return self
+
+    @property
+    def offset(self) -> int:
+        return (self.page - 1) * self.limit
+
+
+class ProductCategoryShortResponse(BaseModel):
+    id: int
+    name: str
+    slug: str
+
+
+class ProductShortResponse(BaseModel):
+    id: int
+    name: str
+    slug: str
+    preview_image_url: str | None = None
+    price: Decimal
+    old_price: Decimal | None = None
+    discount_percent: int
+    unit: str
+    product_type: str
+    is_available: bool
+    stock_display: str
+    category: ProductCategoryShortResponse | None = None
+
+
+class ProductListResponse(BaseModel):
+    items: list[ProductShortResponse]
+    total: int
+    page: int
+    limit: int
+    pages: int
+
+    @classmethod
+    def build(
+        cls,
+        *,
+        items: list[ProductShortResponse],
+        total: int,
+        page: int,
+        limit: int,
+    ) -> "ProductListResponse":
+        return cls(
+            items=items,
+            total=total,
+            page=page,
+            limit=limit,
+            pages=ceil(total / limit) if total else 0,
+        )
