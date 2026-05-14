@@ -15,6 +15,8 @@ from source.schemas.pydantic.product import (
     ProductDetailResponse,
     ProductListQueryParams,
     ProductListResponse,
+    ProductPopularQueryParams,
+    ProductPopularResponse,
     ProductSearchQueryParams,
     ProductSearchResponse,
     ProductSearchSort,
@@ -28,6 +30,50 @@ from source.utils.search import normalize_search_query
 from source.utils.slug import normalize_slug, validate_slug
 
 router = APIRouter(tags=["products"])
+
+
+@router.get(
+    "/products/popular",
+    response_model=ProductPopularResponse,
+    status_code=status.HTTP_200_OK,
+    responses={
+        status.HTTP_400_BAD_REQUEST: {"description": "Неверные query params."},
+        status.HTTP_404_NOT_FOUND: {"description": "Категория не найдена."},
+        status.HTTP_500_INTERNAL_SERVER_ERROR: {"description": "Внутренняя ошибка сервера."},
+    },
+)
+@inject
+async def get_popular_products(
+    limit: int = Query(default=settings.products.popular_default_limit, ge=1, le=settings.products.list_max_limit),
+    category_id: int | None = Query(default=None, ge=1),
+    period_days: int = Query(default=30, ge=1),
+    in_stock: bool = True,
+    session: FromDishka[AsyncSession] = None,
+    redis_service: FromDishka[RedisService] = None,
+    product_service: FromDishka[ProductService] = None,
+    product_cache_service: FromDishka[ProductCacheService] = None,
+    product_repository: FromDishka[ProductRepository] = None,
+    category_repository: FromDishka[CategoryRepository] = None,
+) -> ProductPopularResponse:
+    try:
+        return await product_service.get_popular_products(
+            session=session,
+            redis_service=redis_service,
+            product_cache_service=product_cache_service,
+            product_repository=product_repository,
+            category_repository=category_repository,
+            query=ProductPopularQueryParams(
+                limit=limit,
+                category_id=category_id,
+                period_days=period_days,
+                in_stock=in_stock,
+            ),
+        )
+    except CategoryNotFoundError as error:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Категория не найдена",
+        ) from error
 
 
 @router.get(

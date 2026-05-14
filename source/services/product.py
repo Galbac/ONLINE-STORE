@@ -12,6 +12,8 @@ from source.schemas.pydantic.product import (
     ProductDetailResponse,
     ProductListQueryParams,
     ProductListResponse,
+    ProductPopularQueryParams,
+    ProductPopularResponse,
     ProductSearchQueryParams,
     ProductSearchResponse,
 )
@@ -206,6 +208,43 @@ class ProductService:
             query_hash=query_hash,
             response=response,
             ttl_seconds=settings.products.search_cache_ttl_seconds,
+        )
+        return response
+
+    async def get_popular_products(
+        self,
+        *,
+        session: AsyncSession,
+        redis_service: RedisService,
+        product_cache_service: ProductCacheService,
+        product_repository: ProductRepository,
+        category_repository: CategoryRepository,
+        query: ProductPopularQueryParams,
+    ) -> ProductPopularResponse:
+        query_hash = build_query_hash(query.model_dump())
+        cached_products = await product_cache_service.get_popular(
+            redis_service=redis_service,
+            query_hash=query_hash,
+        )
+        if cached_products is not None:
+            return cached_products
+
+        category_ids = await self._resolve_category_ids_by_id(
+            session=session,
+            category_repository=category_repository,
+            category_id=query.category_id,
+        )
+        items = await product_repository.get_popular_active(
+            session=session,
+            query=query,
+            category_ids=category_ids,
+        )
+        response = ProductPopularResponse(items=items, total=len(items))
+        await product_cache_service.set_popular(
+            redis_service=redis_service,
+            query_hash=query_hash,
+            response=response,
+            ttl_seconds=settings.products.popular_cache_ttl_seconds,
         )
         return response
 

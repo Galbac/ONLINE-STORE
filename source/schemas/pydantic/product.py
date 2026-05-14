@@ -59,6 +59,13 @@ class ProductSearchQueryParams(BaseModel):
         return (self.page - 1) * self.limit
 
 
+class ProductPopularQueryParams(BaseModel):
+    limit: int = Field(default=12, ge=1, le=100)
+    category_id: int | None = Field(default=None, ge=1)
+    period_days: int = Field(default=30, ge=1)
+    in_stock: bool = True
+
+
 class ProductCategoryShortResponse(BaseModel):
     id: int
     name: str
@@ -170,3 +177,8 @@ class ProductSearchResponse(BaseModel):
             limit=limit,
             pages=ceil(total / limit) if total else 0,
         )
+
+
+class ProductPopularResponse(BaseModel):
+    items: list[ProductShortResponse]
+    total: int

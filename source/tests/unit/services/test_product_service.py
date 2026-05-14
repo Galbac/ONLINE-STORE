@@ -17,6 +17,8 @@ from source.schemas.pydantic.product import (
     ProductImageResponse,
     ProductListQueryParams,
     ProductListResponse,
+    ProductPopularQueryParams,
+    ProductPopularResponse,
     ProductSearchQueryParams,
     ProductSearchResponse,
     ProductSeoResponse,
@@ -167,6 +169,25 @@ class FakeProductRepository:
         category_ids: set[int] | None = None,
     ):
         return len(self._filter_search_products(query=query, category_ids=category_ids))
+
+    async def get_popular_active(
+        self,
+        *,
+        session,
+        query: ProductPopularQueryParams,
+        category_ids: set[int] | None = None,
+    ):
+        products = [
+            product
+            for product in self.products
+            if product.is_active and not product.is_deleted
+        ]
+        if category_ids is not None:
+            products = [product for product in products if product.category_id in category_ids]
+        if query.in_stock:
+            products = [product for product in products if product.is_available and product.stock_quantity > 0]
+        products = sorted(products, key=lambda product: (-product.popularity, product.name))
+        return [build_product_response(product) for product in products[: query.limit]]
 
     def _filter_products(self, *, query: ProductListQueryParams, category_ids: set[int] | None) -> list[object]:
         products = [
@@ -439,6 +460,23 @@ async def execute_search_products(
         product_repository=product_repository or FakeProductRepository(),
         category_repository=category_repository or FakeCategoryRepository(),
         query=query or ProductSearchQueryParams(q="яблоки"),
+    )
+
+
+async def execute_get_popular_products(
+    *,
+    redis_service: FakeRedisService | None = None,
+    product_repository: FakeProductRepository | None = None,
+    category_repository: FakeCategoryRepository | None = None,
+    query: ProductPopularQueryParams | None = None,
+) -> ProductPopularResponse:
+    return await ProductService().get_popular_products(
+        session=object(),
+        redis_service=redis_service or FakeRedisService(),
+        product_cache_service=ProductCacheService(),
+        product_repository=product_repository or FakeProductRepository(),
+        category_repository=category_repository or FakeCategoryRepository(),
+        query=query or ProductPopularQueryParams(),
     )
 
 
@@ -975,6 +1013,173 @@ async def test_search_products_response_is_cached_in_redis() -> None:
     cache_key = f"products:search:{build_query_hash(normalized_query.model_dump())}"
     assert cache_key in redis_service.values
     assert redis_service.ttls[cache_key] == settings.products.search_cache_ttl_seconds
+
+
+@pytest.mark.asyncio
+async def test_get_popular_products_success() -> None:
+    response = await execute_get_popular_products(
+        product_repository=FakeProductRepository(
+            products=[
+                build_product(product_id=55, name="Популярный", slug="popular", category_id=11, popularity=100),
+                build_product(product_id=56, name="Обычный", slug="regular", category_id=11, popularity=10),
+            ],
+        ),
+    )
+
+    assert response.total == 2
+    assert [product.id for product in response.items] == [55, 56]
+
+
+@pytest.mark.asyncio
+async def test_get_popular_products_from_redis_cache_success() -> None:
+    redis_service = FakeRedisService()
+    query = ProductPopularQueryParams()
+    query_hash = build_query_hash(query.model_dump())
+    cached_response = ProductPopularResponse(
+        items=[build_product_response(build_product(product_id=55, name="Популярный", slug="popular", category_id=11))],
+        total=1,
+    )
+    redis_service.values[f"products:popular:{query_hash}"] = cached_response.model_dump_json()
+    product_repository = FakeProductRepository(products=[])
+
+    response = await execute_get_popular_products(
+        redis_service=redis_service,
+        product_repository=product_repository,
+        query=query,
+    )
+
+    assert response.total == 1
+    assert product_repository.query is None
+
+
+@pytest.mark.asyncio
+async def test_get_popular_products_limit_works() -> None:
+    response = await execute_get_popular_products(
+        product_repository=FakeProductRepository(
+            products=[
+                build_product(product_id=1, name="A", slug="a", category_id=11, popularity=30),
+                build_product(product_id=2, name="B", slug="b", category_id=11, popularity=20),
+                build_product(product_id=3, name="C", slug="c", category_id=11, popularity=10),
+            ],
+        ),
+        query=ProductPopularQueryParams(limit=2),
+    )
+
+    assert response.total == 2
+    assert [product.id for product in response.items] == [1, 2]
+
+
+@pytest.mark.asyncio
+async def test_get_popular_products_filter_category_id() -> None:
+    category_repository = FakeCategoryRepository(
+        categories=[
+            build_category(category_id=5, name="Фрукты", slug="frukty"),
+            build_category(category_id=15, name="Яблоки", slug="yabloki", parent_id=5),
+        ],
+    )
+    response = await execute_get_popular_products(
+        category_repository=category_repository,
+        product_repository=FakeProductRepository(
+            products=[
+                build_product(product_id=55, name="Яблоки", slug="apples", category_id=15, popularity=100),
+                build_product(product_id=56, name="Овощи", slug="vegetables", category_id=9, popularity=200),
+            ],
+        ),
+        query=ProductPopularQueryParams(category_id=5),
+    )
+
+    assert [product.id for product in response.items] == [55]
+
+
+@pytest.mark.asyncio
+async def test_get_popular_products_in_stock_true_excludes_unavailable() -> None:
+    response = await execute_get_popular_products(
+        product_repository=FakeProductRepository(
+            products=[
+                build_product(product_id=55, name="Есть", slug="in-stock", category_id=11, popularity=10),
+                build_product(
+                    product_id=56,
+                    name="Нет",
+                    slug="out-stock",
+                    category_id=11,
+                    popularity=100,
+                    stock_quantity=Decimal("0"),
+                ),
+            ],
+        ),
+    )
+
+    assert [product.id for product in response.items] == [55]
+
+
+@pytest.mark.asyncio
+async def test_get_popular_products_excludes_inactive_products() -> None:
+    response = await execute_get_popular_products(
+        product_repository=FakeProductRepository(
+            products=[
+                build_product(product_id=55, name="Активный", slug="active", category_id=11, popularity=10),
+                build_product(
+                    product_id=56,
+                    name="Скрытый",
+                    slug="inactive",
+                    category_id=11,
+                    popularity=100,
+                    is_active=False,
+                ),
+            ],
+        ),
+    )
+
+    assert [product.id for product in response.items] == [55]
+
+
+@pytest.mark.asyncio
+async def test_get_popular_products_excludes_deleted_products() -> None:
+    response = await execute_get_popular_products(
+        product_repository=FakeProductRepository(
+            products=[
+                build_product(product_id=55, name="Активный", slug="active", category_id=11, popularity=10),
+                build_product(
+                    product_id=56,
+                    name="Удалённый",
+                    slug="deleted",
+                    category_id=11,
+                    popularity=100,
+                    is_deleted=True,
+                ),
+            ],
+        ),
+    )
+
+    assert [product.id for product in response.items] == [55]
+
+
+@pytest.mark.asyncio
+async def test_get_popular_products_sorts_by_popularity() -> None:
+    response = await execute_get_popular_products(
+        product_repository=FakeProductRepository(
+            products=[
+                build_product(product_id=1, name="Low", slug="low", category_id=11, popularity=1),
+                build_product(product_id=2, name="High", slug="high", category_id=11, popularity=100),
+                build_product(product_id=3, name="Middle", slug="middle", category_id=11, popularity=50),
+            ],
+        ),
+        query=ProductPopularQueryParams(in_stock=False),
+    )
+
+    assert [product.id for product in response.items] == [2, 3, 1]
+
+
+@pytest.mark.asyncio
+async def test_get_popular_products_response_is_cached_in_redis() -> None:
+    redis_service = FakeRedisService()
+    query = ProductPopularQueryParams(limit=2, period_days=7)
+
+    await execute_get_popular_products(redis_service=redis_service, query=query)
+
+    cache_key = f"products:popular:{build_query_hash(query.model_dump())}"
+    assert cache_key in redis_service.values
+    assert redis_service.ttls[cache_key] == settings.products.popular_cache_ttl_seconds
 
 
 @pytest.mark.asyncio

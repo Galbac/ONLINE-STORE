@@ -235,6 +235,8 @@ class ProductsSettings(BaseSettings):
     search_cache_ttl_seconds: int = Field(default=60, alias="PRODUCT_SEARCH_CACHE_TTL_SECONDS")
     search_min_query_length: int = Field(default=2, alias="PRODUCT_SEARCH_MIN_QUERY_LENGTH")
     search_max_query_length: int = Field(default=100, alias="PRODUCT_SEARCH_MAX_QUERY_LENGTH")
+    popular_cache_ttl_seconds: int = Field(default=600, alias="PRODUCT_POPULAR_CACHE_TTL_SECONDS")
+    popular_default_limit: int = Field(default=12, alias="PRODUCT_POPULAR_DEFAULT_LIMIT")
     list_default_limit: int = Field(default=24, alias="PRODUCTS_LIST_DEFAULT_LIMIT")
     list_max_limit: int = Field(default=100, alias="PRODUCTS_LIST_MAX_LIMIT")
 

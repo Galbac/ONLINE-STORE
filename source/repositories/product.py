@@ -7,6 +7,7 @@ from source.schemas.pydantic.product import (
     ProductCategoryShortResponse,
     ProductDetailResponse,
     ProductListQueryParams,
+    ProductPopularQueryParams,
     ProductSearchQueryParams,
     ProductSeoResponse,
     ProductShortResponse,
@@ -128,6 +129,24 @@ class ProductRepository:
                     Product.name.asc(),
                 )
 
+    def _popular_statement(self, *, query: ProductPopularQueryParams, category_ids: set[int] | None):
+        statement = (
+            select(Product, Category)
+            .outerjoin(Category, Product.category_id == Category.id)
+            .where(
+                Product.is_active.is_(True),
+                Product.is_deleted.is_(False),
+            )
+        )
+        if category_ids is not None:
+            statement = statement.where(Product.category_id.in_(category_ids))
+        if query.in_stock:
+            statement = statement.where(
+                Product.is_available.is_(True),
+                Product.stock_quantity > 0,
+            )
+        return statement
+
     async def get_active_list(
         self,
         *,
@@ -185,6 +204,23 @@ class ProductRepository:
         products_subquery = self._search_statement(query=query, category_ids=category_ids).subquery()
         result = await session.execute(select(func.count()).select_from(products_subquery))
         return int(result.scalar_one())
+
+    async def get_popular_active(
+        self,
+        *,
+        session: AsyncSession,
+        query: ProductPopularQueryParams,
+        category_ids: set[int] | None = None,
+    ) -> list[ProductShortResponse]:
+        result = await session.execute(
+            self._popular_statement(query=query, category_ids=category_ids)
+            .order_by(Product.popularity.desc(), Product.name.asc())
+            .limit(query.limit),
+        )
+        return [
+            self._build_product_response(product=product, category=category)
+            for product, category in result.all()
+        ]
 
     async def get_by_id(
         self,
