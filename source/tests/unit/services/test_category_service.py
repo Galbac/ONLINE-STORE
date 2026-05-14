@@ -6,6 +6,10 @@ from pydantic import ValidationError
 from source.config.settings import settings
 from source.errors.category import CategoryNotFoundError
 from source.schemas.pydantic.category import (
+    CategoryBreadcrumbResponse,
+    CategoryDetailQueryParams,
+    CategoryDetailResponse,
+    CategorySeoResponse,
     CategoryListQueryParams,
     CategoryListResponse,
     CategoryShortResponse,
@@ -49,6 +53,8 @@ class FakeCategoryRepository:
         self.query: CategoryListQueryParams | None = None
         self.get_active_all_calls = 0
         self.get_active_by_id_calls = 0
+        self.get_active_children_calls = 0
+        self.get_parent_chain_calls = 0
 
     async def get_active_list(self, *, session, query: CategoryListQueryParams):
         self.query = query
@@ -76,8 +82,38 @@ class FakeCategoryRepository:
         self.get_active_by_id_calls += 1
         for category in self.categories:
             if category.id == category_id and category.is_active and not category.is_deleted:
-                return build_category_response(category)
+                return build_category_detail_response(category)
         return None
+
+    async def get_active_children(self, *, session, parent_id: int):
+        self.get_active_children_calls += 1
+        categories = [
+            category
+            for category in self.categories
+            if category.parent_id == parent_id and category.is_active and not category.is_deleted
+        ]
+        categories.sort(key=lambda category: (category.sort_order, category.name))
+        return [build_category_response(category) for category in categories]
+
+    async def get_parent_chain(self, *, session, category_id: int):
+        self.get_parent_chain_calls += 1
+        categories_by_id = {
+            category.id: category
+            for category in self.categories
+            if category.is_active and not category.is_deleted
+        }
+        breadcrumbs = []
+        current_category = categories_by_id.get(category_id)
+        while current_category is not None:
+            breadcrumbs.append(
+                CategoryBreadcrumbResponse(
+                    id=current_category.id,
+                    name=current_category.name,
+                    slug=current_category.slug,
+                ),
+            )
+            current_category = categories_by_id.get(current_category.parent_id)
+        return list(reversed(breadcrumbs))
 
     def _filter_categories(self, *, query: CategoryListQueryParams) -> list[object]:
         categories = [
@@ -94,6 +130,16 @@ class FakeCategoryRepository:
         return categories
 
 
+class FakeProductRepository:
+    def __init__(self, counts_by_category_id: dict[int, int] | None = None) -> None:
+        self.counts_by_category_id = counts_by_category_id or {}
+        self.count_calls = 0
+
+    async def count_active_by_category_id(self, *, session, category_id: int) -> int:
+        self.count_calls += 1
+        return self.counts_by_category_id.get(category_id, 0)
+
+
 def build_category(
     *,
     category_id: int,
@@ -104,17 +150,23 @@ def build_category(
     products_count: int = 1,
     is_active: bool = True,
     is_deleted: bool = False,
+    description: str | None = "Свежие фрукты",
+    meta_title: str | None = "Фрукты купить онлайн",
+    meta_description: str | None = "Свежие фрукты с доставкой",
 ):
     return SimpleNamespace(
         id=category_id,
         name=name,
         slug=slug,
+        description=description,
         parent_id=parent_id,
         image_url=f"/media/categories/{slug}.png",
         sort_order=sort_order,
         products_count=products_count,
         is_active=is_active,
         is_deleted=is_deleted,
+        meta_title=meta_title,
+        meta_description=meta_description,
     )
 
 
@@ -127,6 +179,25 @@ def build_category_response(category) -> CategoryShortResponse:
         image_url=category.image_url,
         sort_order=category.sort_order,
         products_count=category.products_count,
+    )
+
+
+def build_category_detail_response(category) -> CategoryDetailResponse:
+    seo = None
+    if category.meta_title is not None or category.meta_description is not None:
+        seo = CategorySeoResponse(
+            meta_title=category.meta_title,
+            meta_description=category.meta_description,
+        )
+    return CategoryDetailResponse(
+        id=category.id,
+        name=category.name,
+        slug=category.slug,
+        description=category.description,
+        parent_id=category.parent_id,
+        image_url=category.image_url,
+        sort_order=category.sort_order,
+        seo=seo,
     )
 
 
@@ -157,6 +228,25 @@ async def execute_get_category_tree(
         category_cache_service=CategoryCacheService(),
         category_repository=category_repository or FakeCategoryRepository(),
         query=query or CategoryTreeQueryParams(),
+    )
+
+
+async def execute_get_category_by_id(
+    *,
+    redis_service: FakeRedisService | None = None,
+    category_repository: FakeCategoryRepository | None = None,
+    product_repository: FakeProductRepository | None = None,
+    category_id: int = 1,
+    query: CategoryDetailQueryParams | None = None,
+) -> CategoryDetailResponse:
+    return await CategoryService().get_category_by_id(
+        session=object(),
+        redis_service=redis_service or FakeRedisService(),
+        category_cache_service=CategoryCacheService(),
+        category_repository=category_repository or FakeCategoryRepository(),
+        product_repository=product_repository or FakeProductRepository({1: 120}),
+        category_id=category_id,
+        query=query or CategoryDetailQueryParams(),
     )
 
 
@@ -322,6 +412,176 @@ async def test_get_categories_response_is_cached_in_redis() -> None:
     cache_key = f"categories:list:{build_query_hash(query.model_dump())}"
     assert cache_key in redis_service.values
     assert redis_service.ttls[cache_key] == settings.categories.cache_ttl_seconds
+
+
+@pytest.mark.asyncio
+async def test_get_category_by_id_from_postgresql_success() -> None:
+    response = await execute_get_category_by_id(
+        category_repository=FakeCategoryRepository(
+            categories=[
+                build_category(category_id=1, name="Фрукты", slug="frukty", products_count=120),
+                build_category(category_id=11, name="Яблоки", slug="yabloki", parent_id=1, products_count=25),
+            ],
+        ),
+        product_repository=FakeProductRepository({1: 120}),
+    )
+
+    assert response.id == 1
+    assert response.description == "Свежие фрукты"
+    assert response.products_count == 120
+    assert response.seo is not None
+    assert response.seo.meta_title == "Фрукты купить онлайн"
+
+
+@pytest.mark.asyncio
+async def test_get_category_by_id_from_redis_cache_success() -> None:
+    redis_service = FakeRedisService()
+    query = CategoryDetailQueryParams()
+    query_hash = build_query_hash(query.model_dump())
+    cached_response = CategoryDetailResponse(
+        id=1,
+        name="Фрукты",
+        slug="frukty",
+        description="Свежие фрукты",
+        parent_id=None,
+        image_url="/media/categories/frukty.png",
+        sort_order=10,
+        products_count=120,
+        children=[],
+        breadcrumbs=[],
+    )
+    redis_service.values[f"categories:detail:1:{query_hash}"] = cached_response.model_dump_json()
+    category_repository = FakeCategoryRepository(categories=[])
+
+    response = await execute_get_category_by_id(
+        redis_service=redis_service,
+        category_repository=category_repository,
+        query=query,
+    )
+
+    assert response.id == 1
+    assert category_repository.get_active_by_id_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_get_category_by_id_not_found() -> None:
+    with pytest.raises(CategoryNotFoundError):
+        await execute_get_category_by_id(
+            category_repository=FakeCategoryRepository(categories=[]),
+            category_id=999,
+        )
+
+
+@pytest.mark.asyncio
+async def test_get_category_by_id_inactive_category_not_found() -> None:
+    with pytest.raises(CategoryNotFoundError):
+        await execute_get_category_by_id(
+            category_repository=FakeCategoryRepository(
+                categories=[build_category(category_id=1, name="Скрытая", slug="hidden", is_active=False)],
+            ),
+        )
+
+
+@pytest.mark.asyncio
+async def test_get_category_by_id_deleted_category_not_found() -> None:
+    with pytest.raises(CategoryNotFoundError):
+        await execute_get_category_by_id(
+            category_repository=FakeCategoryRepository(
+                categories=[build_category(category_id=1, name="Удалённая", slug="deleted", is_deleted=True)],
+            ),
+        )
+
+
+@pytest.mark.asyncio
+async def test_get_category_by_id_with_children_returns_active_children() -> None:
+    response = await execute_get_category_by_id(
+        category_repository=FakeCategoryRepository(
+            categories=[
+                build_category(category_id=1, name="Фрукты", slug="frukty"),
+                build_category(category_id=11, name="Яблоки", slug="yabloki", parent_id=1, sort_order=20),
+                build_category(category_id=12, name="Абрикосы", slug="abrikosy", parent_id=1, sort_order=10),
+                build_category(category_id=13, name="Скрытая", slug="hidden", parent_id=1, is_active=False),
+            ],
+        ),
+    )
+
+    assert response.children is not None
+    assert [child.id for child in response.children] == [12, 11]
+
+
+@pytest.mark.asyncio
+async def test_get_category_by_id_with_breadcrumbs_returns_parent_chain() -> None:
+    response = await execute_get_category_by_id(
+        category_repository=FakeCategoryRepository(
+            categories=[
+                build_category(category_id=1, name="Фрукты", slug="frukty"),
+                build_category(category_id=11, name="Яблоки", slug="yabloki", parent_id=1),
+                build_category(category_id=111, name="Красные", slug="krasnye", parent_id=11),
+            ],
+        ),
+        category_id=111,
+        product_repository=FakeProductRepository({111: 5}),
+    )
+
+    assert response.breadcrumbs is not None
+    assert [breadcrumb.id for breadcrumb in response.breadcrumbs] == [1, 11, 111]
+
+
+@pytest.mark.asyncio
+async def test_get_category_by_id_with_products_count_returns_count() -> None:
+    product_repository = FakeProductRepository({1: 120})
+
+    response = await execute_get_category_by_id(product_repository=product_repository)
+
+    assert response.products_count == 120
+    assert product_repository.count_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_get_category_by_id_without_optional_parts() -> None:
+    category_repository = FakeCategoryRepository()
+    product_repository = FakeProductRepository({1: 120})
+
+    response = await execute_get_category_by_id(
+        category_repository=category_repository,
+        product_repository=product_repository,
+        query=CategoryDetailQueryParams(
+            with_children=False,
+            with_breadcrumbs=False,
+            with_products_count=False,
+        ),
+    )
+
+    assert response.children is None
+    assert response.breadcrumbs is None
+    assert response.products_count is None
+    assert category_repository.get_active_children_calls == 0
+    assert category_repository.get_parent_chain_calls == 0
+    assert product_repository.count_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_get_category_by_id_response_does_not_include_service_fields() -> None:
+    response = await execute_get_category_by_id()
+
+    response_data = response.model_dump()
+    assert "is_active" not in response_data
+    assert "is_deleted" not in response_data
+    assert "deleted_at" not in response_data
+    assert "created_date" not in response_data
+    assert "updated_date" not in response_data
+
+
+@pytest.mark.asyncio
+async def test_get_category_by_id_response_is_cached_in_redis() -> None:
+    redis_service = FakeRedisService()
+    query = CategoryDetailQueryParams(with_children=False)
+
+    await execute_get_category_by_id(redis_service=redis_service, query=query)
+
+    cache_key = f"categories:detail:1:{build_query_hash(query.model_dump())}"
+    assert cache_key in redis_service.values
+    assert redis_service.ttls[cache_key] == settings.categories.detail_cache_ttl_seconds
 
 
 @pytest.mark.asyncio

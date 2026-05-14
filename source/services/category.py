@@ -3,7 +3,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from source.config.settings import settings
 from source.errors.category import CategoryNotFoundError
 from source.repositories.category import CategoryRepository
+from source.repositories.product import ProductRepository
 from source.schemas.pydantic.category import (
+    CategoryBreadcrumbResponse,
+    CategoryDetailQueryParams,
+    CategoryDetailResponse,
     CategoryListQueryParams,
     CategoryListResponse,
     CategoryShortResponse,
@@ -17,6 +21,87 @@ from source.utils.query_hash import build_query_hash
 
 
 class CategoryService:
+    async def get_category_by_id(
+        self,
+        *,
+        session: AsyncSession,
+        redis_service: RedisService,
+        category_cache_service: CategoryCacheService,
+        category_repository: CategoryRepository,
+        product_repository: ProductRepository,
+        category_id: int,
+        query: CategoryDetailQueryParams,
+    ) -> CategoryDetailResponse:
+        query_hash = build_query_hash(query.model_dump())
+        cached_category = await category_cache_service.get_detail(
+            redis_service=redis_service,
+            category_id=category_id,
+            query_hash=query_hash,
+        )
+        if cached_category is not None:
+            return cached_category
+
+        category = await category_repository.get_active_by_id(session=session, category_id=category_id)
+        if category is None:
+            raise CategoryNotFoundError
+
+        products_count = None
+        if query.with_products_count:
+            products_count = await product_repository.count_active_by_category_id(
+                session=session,
+                category_id=category.id,
+            )
+
+        response = category.model_copy(
+            update={
+                "products_count": products_count,
+                "children": await self.get_children(
+                    session=session,
+                    category_repository=category_repository,
+                    category_id=category.id,
+                    with_products_count=query.with_products_count,
+                ) if query.with_children else None,
+                "breadcrumbs": await self.get_breadcrumbs(
+                    session=session,
+                    category_repository=category_repository,
+                    category_id=category.id,
+                ) if query.with_breadcrumbs else None,
+            },
+        )
+        await category_cache_service.set_detail(
+            redis_service=redis_service,
+            category_id=category.id,
+            query_hash=query_hash,
+            response=response,
+            ttl_seconds=settings.categories.detail_cache_ttl_seconds,
+        )
+        return response
+
+    async def get_children(
+        self,
+        *,
+        session: AsyncSession,
+        category_repository: CategoryRepository,
+        category_id: int,
+        with_products_count: bool,
+    ) -> list[CategoryShortResponse]:
+        children = await category_repository.get_active_children(session=session, parent_id=category_id)
+        if with_products_count:
+            return children
+        return [
+            child.model_copy(update={"products_count": None})
+            for child in children
+        ]
+
+    async def get_breadcrumbs(
+        self,
+        *,
+        session: AsyncSession,
+        category_repository: CategoryRepository,
+        category_id: int,
+    ) -> list[CategoryBreadcrumbResponse]:
+        return await category_repository.get_parent_chain(session=session, category_id=category_id)
+
     async def get_category_tree(
         self,
         *,
@@ -34,7 +119,7 @@ class CategoryService:
         if cached_tree is not None:
             return cached_tree
 
-        root_category = None
+        root_category_id = None
         if query.root_id is not None:
             root_category = await category_repository.get_active_by_id(
                 session=session,
@@ -42,8 +127,12 @@ class CategoryService:
             )
             if root_category is None:
                 raise CategoryNotFoundError
+            root_category_id = root_category.id
 
         categories = await category_repository.get_active_all(session=session)
+        root_category = None
+        if root_category_id is not None:
+            root_category = next((category for category in categories if category.id == root_category_id), None)
         response = CategoryTreeResponse(
             items=self.build_tree(
                 categories=categories,

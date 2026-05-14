@@ -16,6 +16,12 @@ class CategoryTreeQueryParams(BaseModel):
     with_products_count: bool = True
 
 
+class CategoryDetailQueryParams(BaseModel):
+    with_children: bool = True
+    with_breadcrumbs: bool = True
+    with_products_count: bool = True
+
+
 class CategoryShortResponse(BaseModel):
     id: int
     name: str
@@ -23,7 +29,7 @@ class CategoryShortResponse(BaseModel):
     parent_id: int | None = None
     image_url: str | None = None
     sort_order: int
-    products_count: int
+    products_count: int | None = None
 
 
 class CategoryListResponse(BaseModel):
@@ -46,3 +52,28 @@ class CategoryTreeItemResponse(BaseModel):
 
 class CategoryTreeResponse(BaseModel):
     items: list[CategoryTreeItemResponse]
+
+
+class CategoryBreadcrumbResponse(BaseModel):
+    id: int
+    name: str
+    slug: str
+
+
+class CategorySeoResponse(BaseModel):
+    meta_title: str | None = None
+    meta_description: str | None = None
+
+
+class CategoryDetailResponse(BaseModel):
+    id: int
+    name: str
+    slug: str
+    description: str | None = None
+    parent_id: int | None = None
+    image_url: str | None = None
+    sort_order: int
+    products_count: int | None = None
+    breadcrumbs: list[CategoryBreadcrumbResponse] | None = None
+    children: list[CategoryShortResponse] | None = None
+    seo: CategorySeoResponse | None = None

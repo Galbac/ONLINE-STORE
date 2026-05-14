@@ -3,7 +3,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from source.db.models.category import Category
 from source.db.models.product import Product
-from source.schemas.pydantic.category import CategoryListQueryParams, CategoryShortResponse
+from source.schemas.pydantic.category import (
+    CategoryBreadcrumbResponse,
+    CategoryDetailResponse,
+    CategoryListQueryParams,
+    CategorySeoResponse,
+    CategoryShortResponse,
+)
 
 
 class CategoryRepository:
@@ -93,7 +99,26 @@ class CategoryRepository:
         *,
         session: AsyncSession,
         category_id: int,
-    ) -> CategoryShortResponse | None:
+    ) -> CategoryDetailResponse | None:
+        result = await session.execute(
+            select(Category)
+            .where(
+                Category.id == category_id,
+                Category.is_active.is_(True),
+                Category.is_deleted.is_(False),
+            )
+        )
+        category = result.scalar_one_or_none()
+        if category is None:
+            return None
+        return self._build_category_detail_response(category=category)
+
+    async def get_active_children(
+        self,
+        *,
+        session: AsyncSession,
+        parent_id: int,
+    ) -> list[CategoryShortResponse]:
         active_products_count = func.count(Product.id).label("products_count")
         statement = (
             select(Category, active_products_count)
@@ -105,18 +130,47 @@ class CategoryRepository:
                 ),
             )
             .where(
-                Category.id == category_id,
+                Category.parent_id == parent_id,
                 Category.is_active.is_(True),
                 Category.is_deleted.is_(False),
             )
             .group_by(Category.id)
+            .order_by(Category.sort_order.asc(), Category.name.asc())
         )
         result = await session.execute(statement)
-        row = result.one_or_none()
-        if row is None:
-            return None
-        category, products_count = row
-        return self._build_category_response(category=category, products_count=products_count)
+        return [
+            self._build_category_response(category=category, products_count=products_count)
+            for category, products_count in result.all()
+        ]
+
+    async def get_parent_chain(
+        self,
+        *,
+        session: AsyncSession,
+        category_id: int,
+    ) -> list[CategoryBreadcrumbResponse]:
+        result = await session.execute(
+            select(Category).where(
+                Category.is_active.is_(True),
+                Category.is_deleted.is_(False),
+            ),
+        )
+        categories_by_id = {
+            category.id: category
+            for category in result.scalars().all()
+        }
+        breadcrumbs: list[CategoryBreadcrumbResponse] = []
+        current_category = categories_by_id.get(category_id)
+        while current_category is not None:
+            breadcrumbs.append(
+                CategoryBreadcrumbResponse(
+                    id=current_category.id,
+                    name=current_category.name,
+                    slug=current_category.slug,
+                ),
+            )
+            current_category = categories_by_id.get(current_category.parent_id)
+        return list(reversed(breadcrumbs))
 
     def _build_category_response(self, *, category: Category, products_count: int) -> CategoryShortResponse:
         return CategoryShortResponse(
@@ -127,4 +181,22 @@ class CategoryRepository:
             image_url=category.image_url,
             sort_order=category.sort_order,
             products_count=int(products_count),
+        )
+
+    def _build_category_detail_response(self, *, category: Category) -> CategoryDetailResponse:
+        seo = None
+        if category.meta_title is not None or category.meta_description is not None:
+            seo = CategorySeoResponse(
+                meta_title=category.meta_title,
+                meta_description=category.meta_description,
+            )
+        return CategoryDetailResponse(
+            id=category.id,
+            name=category.name,
+            slug=category.slug,
+            description=category.description,
+            parent_id=category.parent_id,
+            image_url=category.image_url,
+            sort_order=category.sort_order,
+            seo=seo,
         )
