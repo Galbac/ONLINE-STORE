@@ -7,16 +7,22 @@ import pytest
 
 from source.config.settings import settings
 from source.errors.category import CategoryNotFoundError
+from source.errors.product import ProductNotFoundError
 from source.schemas.pydantic.category import CategoryDetailResponse, CategoryShortResponse
 from source.schemas.pydantic.product import (
+    ProductBreadcrumbResponse,
     ProductCategoryShortResponse,
+    ProductDetailQueryParams,
+    ProductDetailResponse,
+    ProductImageResponse,
     ProductListQueryParams,
     ProductListResponse,
+    ProductSeoResponse,
     ProductShortResponse,
 )
 from source.services.product import ProductService
 from source.services.product_cache import ProductCacheService
-from source.utils.product import build_stock_display, calculate_discount_percent
+from source.utils.product import build_detailed_stock_display, build_stock_display, calculate_discount_percent
 from source.utils.query_hash import build_query_hash
 
 
@@ -41,6 +47,21 @@ class FakeCategoryRepository:
             build_category(category_id=11, name="Яблоки", slug="yabloki", parent_id=1),
         ]
         self.requested_slug: str | None = None
+
+    async def get_parent_chain(self, *, session, category_id: int):
+        categories_by_id = {category.id: category for category in self.categories}
+        breadcrumbs = []
+        current_category = categories_by_id.get(category_id)
+        while current_category is not None:
+            breadcrumbs.append(
+                ProductBreadcrumbResponse(
+                    id=current_category.id,
+                    name=current_category.name,
+                    slug=current_category.slug,
+                ),
+            )
+            current_category = categories_by_id.get(current_category.parent_id)
+        return list(reversed(breadcrumbs))
 
     async def get_active_by_id(self, *, session, category_id: int):
         for category in self.categories:
@@ -81,6 +102,24 @@ class FakeProductRepository:
         ]
         self.query: ProductListQueryParams | None = None
         self.category_ids: set[int] | None = None
+
+    async def get_active_by_id(self, *, session, product_id: int):
+        for product in self.products:
+            if product.id == product_id and product.is_active and not product.is_deleted:
+                return build_product_detail_response(product)
+        return None
+
+    async def get_similar_active(self, *, session, product_id: int, category_id: int | None, limit: int = 4):
+        products = [
+            product
+            for product in self.products
+            if product.id != product_id
+            and product.is_active
+            and not product.is_deleted
+            and (category_id is None or product.category_id == category_id)
+        ]
+        products = sorted(products, key=lambda product: (-product.popularity, product.name))
+        return [build_product_response(product) for product in products[:limit]]
 
     async def get_active_list(self, *, session, query: ProductListQueryParams, category_ids: set[int] | None = None):
         self.query = query
@@ -135,6 +174,16 @@ class FakeProductRepository:
                 return sorted(products, key=lambda product: product.name)
 
 
+class FakeProductImageRepository:
+    def __init__(self, images: list[ProductImageResponse] | None = None) -> None:
+        self.images = images if images is not None else [
+            ProductImageResponse(id=1, url="/media/products/apple-1.png", sort_order=1),
+        ]
+
+    async def get_by_product_id(self, *, session, product_id: int):
+        return self.images
+
+
 def build_category(
     *,
     category_id: int,
@@ -163,12 +212,17 @@ def build_product(
     old_price: Decimal | None = Decimal("180.00"),
     product_type: str = "weight",
     unit: str = "kg",
+    quantity_step: Decimal = Decimal("0.5"),
+    min_quantity: Decimal = Decimal("0.5"),
     is_available: bool = True,
     stock_quantity: Decimal = Decimal("10"),
     is_active: bool = True,
     is_deleted: bool = False,
     popularity: int = 0,
     created_at: datetime | None = None,
+    description: str | None = "Свежие красные яблоки",
+    meta_title: str | None = "Яблоки красные купить онлайн",
+    meta_description: str | None = "Свежие красные яблоки с доставкой",
 ):
     return SimpleNamespace(
         id=product_id,
@@ -181,12 +235,17 @@ def build_product(
         old_price=old_price,
         unit=unit,
         product_type=product_type,
+        quantity_step=quantity_step,
+        min_quantity=min_quantity,
         is_available=is_available,
         stock_quantity=stock_quantity,
         is_active=is_active,
         is_deleted=is_deleted,
         popularity=popularity,
         created_at=created_at or datetime(2026, 5, 12, 10, 0, 0, tzinfo=UTC),
+        description=description,
+        meta_title=meta_title,
+        meta_description=meta_description,
     )
 
 
@@ -210,6 +269,38 @@ def build_product_response(product) -> ProductShortResponse:
     )
 
 
+def build_product_detail_response(product) -> ProductDetailResponse:
+    seo = None
+    if product.meta_title is not None or product.meta_description is not None:
+        seo = ProductSeoResponse(
+            meta_title=product.meta_title,
+            meta_description=product.meta_description,
+        )
+    return ProductDetailResponse(
+        id=product.id,
+        name=product.name,
+        slug=product.slug,
+        description=product.description,
+        category=product.category,
+        price=product.price,
+        old_price=product.old_price,
+        discount_percent=calculate_discount_percent(price=product.price, old_price=product.old_price),
+        unit=product.unit,
+        product_type=product.product_type,
+        quantity_step=product.quantity_step,
+        min_quantity=product.min_quantity,
+        is_available=product.is_available,
+        stock_quantity=product.stock_quantity,
+        stock_display=build_detailed_stock_display(
+            is_available=product.is_available,
+            stock_quantity=product.stock_quantity,
+            unit=product.unit,
+        ),
+        images=[],
+        seo=seo,
+    )
+
+
 async def execute_get_products(
     *,
     redis_service: FakeRedisService | None = None,
@@ -225,6 +316,192 @@ async def execute_get_products(
         category_repository=category_repository or FakeCategoryRepository(),
         query=query or ProductListQueryParams(),
     )
+
+
+async def execute_get_product_by_id(
+    *,
+    redis_service: FakeRedisService | None = None,
+    product_repository: FakeProductRepository | None = None,
+    product_image_repository: FakeProductImageRepository | None = None,
+    category_repository: FakeCategoryRepository | None = None,
+    product_id: int = 55,
+    query: ProductDetailQueryParams | None = None,
+) -> ProductDetailResponse:
+    return await ProductService().get_product_by_id(
+        session=object(),
+        redis_service=redis_service or FakeRedisService(),
+        product_cache_service=ProductCacheService(),
+        product_repository=product_repository or FakeProductRepository(),
+        product_image_repository=product_image_repository or FakeProductImageRepository(),
+        category_repository=category_repository or FakeCategoryRepository(),
+        product_id=product_id,
+        query=query or ProductDetailQueryParams(),
+    )
+
+
+@pytest.mark.asyncio
+async def test_get_product_by_id_from_postgresql_success() -> None:
+    response = await execute_get_product_by_id()
+
+    assert response.id == 55
+    assert response.slug == "yabloki-krasnye"
+    assert response.description == "Свежие красные яблоки"
+    assert response.category is not None
+    assert response.quantity_step == Decimal("0.5")
+    assert response.min_quantity == Decimal("0.5")
+    assert response.images[0].url == "/media/products/apple-1.png"
+    assert response.seo is not None
+    assert response.seo.meta_title == "Яблоки красные купить онлайн"
+
+
+@pytest.mark.asyncio
+async def test_get_product_by_id_from_redis_cache_success() -> None:
+    redis_service = FakeRedisService()
+    query = ProductDetailQueryParams()
+    query_hash = build_query_hash(query.model_dump())
+    cached_response = build_product_detail_response(
+        build_product(product_id=55, name="Яблоки красные", slug="yabloki-krasnye", category_id=11),
+    )
+    redis_service.values[f"products:detail:55:{query_hash}"] = cached_response.model_dump_json()
+    product_repository = FakeProductRepository(products=[])
+
+    response = await execute_get_product_by_id(
+        redis_service=redis_service,
+        product_repository=product_repository,
+        query=query,
+    )
+
+    assert response.id == 55
+    assert product_repository.query is None
+
+
+@pytest.mark.asyncio
+async def test_get_product_by_id_not_found() -> None:
+    with pytest.raises(ProductNotFoundError):
+        await execute_get_product_by_id(
+            product_repository=FakeProductRepository(products=[]),
+            product_id=999,
+        )
+
+
+@pytest.mark.asyncio
+async def test_get_product_by_id_inactive_product_not_found() -> None:
+    with pytest.raises(ProductNotFoundError):
+        await execute_get_product_by_id(
+            product_repository=FakeProductRepository(
+                products=[
+                    build_product(
+                        product_id=55,
+                        name="Скрытый",
+                        slug="hidden",
+                        category_id=11,
+                        is_active=False,
+                    ),
+                ],
+            ),
+        )
+
+
+@pytest.mark.asyncio
+async def test_get_product_by_id_deleted_product_not_found() -> None:
+    with pytest.raises(ProductNotFoundError):
+        await execute_get_product_by_id(
+            product_repository=FakeProductRepository(
+                products=[
+                    build_product(
+                        product_id=55,
+                        name="Удалённый",
+                        slug="deleted",
+                        category_id=11,
+                        is_deleted=True,
+                    ),
+                ],
+            ),
+        )
+
+
+@pytest.mark.asyncio
+async def test_get_product_by_id_calculates_discount() -> None:
+    response = await execute_get_product_by_id(
+        product_repository=FakeProductRepository(
+            products=[
+                build_product(
+                    product_id=55,
+                    name="Яблоки красные",
+                    slug="yabloki-krasnye",
+                    category_id=11,
+                    price=Decimal("150.00"),
+                    old_price=Decimal("180.00"),
+                ),
+            ],
+        ),
+    )
+
+    assert response.discount_percent == 17
+
+
+@pytest.mark.asyncio
+async def test_get_product_by_id_builds_stock_display() -> None:
+    response = await execute_get_product_by_id(
+        product_repository=FakeProductRepository(
+            products=[
+                build_product(
+                    product_id=55,
+                    name="Яблоки красные",
+                    slug="yabloki-krasnye",
+                    category_id=11,
+                    stock_quantity=Decimal("2.5"),
+                    unit="kg",
+                ),
+            ],
+        ),
+    )
+
+    assert response.stock_display == "Осталось 2.5 kg"
+
+
+@pytest.mark.asyncio
+async def test_get_product_by_id_with_breadcrumbs_returns_parent_chain() -> None:
+    response = await execute_get_product_by_id(
+        category_repository=FakeCategoryRepository(
+            categories=[
+                build_category(category_id=1, name="Фрукты", slug="frukty"),
+                build_category(category_id=11, name="Яблоки", slug="yabloki", parent_id=1),
+            ],
+        ),
+    )
+
+    assert response.breadcrumbs is not None
+    assert [breadcrumb.id for breadcrumb in response.breadcrumbs] == [1, 11]
+
+
+@pytest.mark.asyncio
+async def test_get_product_by_id_with_similar_returns_similar_products() -> None:
+    response = await execute_get_product_by_id(
+        product_repository=FakeProductRepository(
+            products=[
+                build_product(product_id=55, name="Яблоки красные", slug="yabloki-krasnye", category_id=11),
+                build_product(product_id=56, name="Яблоки зелёные", slug="yabloki-zelenye", category_id=11),
+                build_product(product_id=57, name="Бананы", slug="banany", category_id=1),
+            ],
+        ),
+        query=ProductDetailQueryParams(with_similar=True),
+    )
+
+    assert response.similar is not None
+    assert [product.id for product in response.similar] == [56]
+
+
+@pytest.mark.asyncio
+async def test_get_product_by_id_response_is_cached_in_redis() -> None:
+    redis_service = FakeRedisService()
+    query = ProductDetailQueryParams(with_similar=True)
+
+    await execute_get_product_by_id(redis_service=redis_service, query=query)
+
+    cache_key = f"products:detail:55:{build_query_hash(query.model_dump())}"
+    assert cache_key in redis_service.values
+    assert redis_service.ttls[cache_key] == settings.products.detail_cache_ttl_seconds
 
 
 @pytest.mark.asyncio

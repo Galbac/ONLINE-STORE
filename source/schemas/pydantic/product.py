@@ -32,6 +32,11 @@ class ProductListQueryParams(BaseModel):
         return (self.page - 1) * self.limit
 
 
+class ProductDetailQueryParams(BaseModel):
+    with_similar: bool = False
+    with_breadcrumbs: bool = True
+
+
 class ProductCategoryShortResponse(BaseModel):
     id: int
     name: str
@@ -51,6 +56,45 @@ class ProductShortResponse(BaseModel):
     is_available: bool
     stock_display: str
     category: ProductCategoryShortResponse | None = None
+
+
+class ProductImageResponse(BaseModel):
+    id: int
+    url: str
+    sort_order: int
+
+
+class ProductBreadcrumbResponse(BaseModel):
+    id: int
+    name: str
+    slug: str
+
+
+class ProductSeoResponse(BaseModel):
+    meta_title: str | None = None
+    meta_description: str | None = None
+
+
+class ProductDetailResponse(BaseModel):
+    id: int
+    name: str
+    slug: str
+    description: str | None = None
+    category: ProductCategoryShortResponse | None = None
+    price: Decimal
+    old_price: Decimal | None = None
+    discount_percent: int | None = None
+    unit: str
+    product_type: str
+    quantity_step: Decimal
+    min_quantity: Decimal
+    is_available: bool
+    stock_quantity: Decimal
+    stock_display: str
+    images: list[ProductImageResponse]
+    breadcrumbs: list[ProductBreadcrumbResponse] | None = None
+    similar: list[ProductShortResponse] | None = None
+    seo: ProductSeoResponse | None = None
 
 
 class ProductListResponse(BaseModel):

@@ -230,6 +230,7 @@ class CategoriesSettings(BaseSettings):
 
 class ProductsSettings(BaseSettings):
     list_cache_ttl_seconds: int = Field(default=120, alias="PRODUCTS_LIST_CACHE_TTL_SECONDS")
+    detail_cache_ttl_seconds: int = Field(default=180, alias="PRODUCT_DETAIL_CACHE_TTL_SECONDS")
     list_default_limit: int = Field(default=24, alias="PRODUCTS_LIST_DEFAULT_LIMIT")
     list_max_limit: int = Field(default=100, alias="PRODUCTS_LIST_MAX_LIMIT")
 

@@ -5,10 +5,12 @@ from source.db.models.category import Category
 from source.db.models.product import Product
 from source.schemas.pydantic.product import (
     ProductCategoryShortResponse,
+    ProductDetailResponse,
     ProductListQueryParams,
+    ProductSeoResponse,
     ProductShortResponse,
 )
-from source.utils.product import build_stock_display, calculate_discount_percent
+from source.utils.product import build_detailed_stock_display, build_stock_display, calculate_discount_percent
 
 
 class ProductRepository:
@@ -102,6 +104,54 @@ class ProductRepository:
         result = await session.execute(select(Product).where(Product.id == product_id))
         return result.scalar_one_or_none()
 
+    async def get_active_by_id(
+        self,
+        *,
+        session: AsyncSession,
+        product_id: int,
+    ) -> ProductDetailResponse | None:
+        result = await session.execute(
+            select(Product, Category)
+            .outerjoin(Category, Product.category_id == Category.id)
+            .where(
+                Product.id == product_id,
+                Product.is_active.is_(True),
+                Product.is_deleted.is_(False),
+            ),
+        )
+        row = result.one_or_none()
+        if row is None:
+            return None
+        product, category = row
+        return self._build_product_detail_response(product=product, category=category)
+
+    async def get_similar_active(
+        self,
+        *,
+        session: AsyncSession,
+        product_id: int,
+        category_id: int | None,
+        limit: int = 4,
+    ) -> list[ProductShortResponse]:
+        statement = (
+            select(Product, Category)
+            .outerjoin(Category, Product.category_id == Category.id)
+            .where(
+                Product.id != product_id,
+                Product.is_active.is_(True),
+                Product.is_deleted.is_(False),
+            )
+            .order_by(Product.popularity.desc(), Product.name.asc())
+            .limit(limit)
+        )
+        if category_id is not None:
+            statement = statement.where(Product.category_id == category_id)
+        result = await session.execute(statement)
+        return [
+            self._build_product_response(product=product, category=category)
+            for product, category in result.all()
+        ]
+
     async def count_active_by_category_id(
         self,
         *,
@@ -156,4 +206,42 @@ class ProductRepository:
                 stock_quantity=product.stock_quantity,
             ),
             category=product_category,
+        )
+
+    def _build_product_detail_response(self, *, product: Product, category: Category | None) -> ProductDetailResponse:
+        product_category = None
+        if category is not None:
+            product_category = ProductCategoryShortResponse(
+                id=category.id,
+                name=category.name,
+                slug=category.slug,
+            )
+        seo = None
+        if product.meta_title is not None or product.meta_description is not None:
+            seo = ProductSeoResponse(
+                meta_title=product.meta_title,
+                meta_description=product.meta_description,
+            )
+        return ProductDetailResponse(
+            id=product.id,
+            name=product.name,
+            slug=product.slug,
+            description=product.description,
+            category=product_category,
+            price=product.price,
+            old_price=product.old_price,
+            discount_percent=calculate_discount_percent(price=product.price, old_price=product.old_price),
+            unit=product.unit,
+            product_type=product.product_type,
+            quantity_step=product.quantity_step,
+            min_quantity=product.min_quantity,
+            is_available=product.is_available,
+            stock_quantity=product.stock_quantity,
+            stock_display=build_detailed_stock_display(
+                is_available=product.is_available,
+                stock_quantity=product.stock_quantity,
+                unit=product.unit,
+            ),
+            images=[],
+            seo=seo,
         )

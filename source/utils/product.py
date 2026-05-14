@@ -11,4 +11,16 @@ def calculate_discount_percent(*, price: Decimal, old_price: Decimal | None) -> 
 def build_stock_display(*, is_available: bool, stock_quantity: Decimal) -> str:
     if not is_available or stock_quantity <= 0:
         return "Нет в наличии"
+    if stock_quantity <= 3:
+        normalized_quantity = stock_quantity.normalize()
+        return f"Осталось {normalized_quantity} шт"
+    return "В наличии"
+
+
+def build_detailed_stock_display(*, is_available: bool, stock_quantity: Decimal, unit: str) -> str:
+    if not is_available or stock_quantity <= 0:
+        return "Нет в наличии"
+    if stock_quantity <= 3:
+        normalized_quantity = stock_quantity.normalize()
+        return f"Осталось {normalized_quantity} {unit}"
     return "В наличии"

@@ -6,7 +6,20 @@ from source.db.models.category import Category
 from source.db.models.order import Order
 from source.db.models.order_item import OrderItem
 from source.db.models.product import Product
+from source.db.models.product_image import ProductImage
 from source.db.models.refresh_token import RefreshToken
 from source.db.models.user import User
 
-__all__ = ("Address", "Base", "Cart", "CartItem", "Category", "Order", "OrderItem", "Product", "RefreshToken", "User")
+__all__ = (
+    "Address",
+    "Base",
+    "Cart",
+    "CartItem",
+    "Category",
+    "Order",
+    "OrderItem",
+    "Product",
+    "ProductImage",
+    "RefreshToken",
+    "User",
+)

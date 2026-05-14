@@ -22,6 +22,7 @@ from source.repositories.category import CategoryRepository
 from source.repositories.order import OrderRepository
 from source.repositories.order_item import OrderItemRepository
 from source.repositories.product import ProductRepository
+from source.repositories.product_image import ProductImageRepository
 from source.repositories.user import UserRepository
 from source.services.auth_cache import AuthCacheService
 from source.services.auth import AuthService
@@ -137,6 +138,10 @@ class AppProvider(Provider):
     )
     product_repository = provide(
         ProductRepository,
+        scope=Scope.REQUEST,
+    )
+    product_image_repository = provide(
+        ProductImageRepository,
         scope=Scope.REQUEST,
     )
     cart_repository = provide(
