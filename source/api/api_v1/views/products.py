@@ -42,8 +42,8 @@ router = APIRouter(tags=["products"])
 )
 @inject
 async def search_products(
-    q: str = Query(
-        min_length=1,
+    q: str | None = Query(
+        default=None,
         max_length=settings.products.search_max_query_length,
     ),
     page: int = Query(default=1, ge=1),
@@ -59,12 +59,7 @@ async def search_products(
     product_repository: FromDishka[ProductRepository] = None,
     category_repository: FromDishka[CategoryRepository] = None,
 ) -> ProductSearchResponse:
-    normalized_query = normalize_search_query(q)
-    if len(normalized_query) < settings.products.search_min_query_length:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Поисковый запрос слишком короткий",
-        )
+    normalized_query = _normalize_required_search_query(q)
 
     try:
         return await product_service.search_products(
@@ -88,6 +83,27 @@ async def search_products(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Категория не найдена",
         ) from error
+
+
+def _normalize_required_search_query(query: str | None) -> str:
+    if query is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Поисковый запрос обязателен",
+        )
+
+    normalized_query = normalize_search_query(query)
+    if not normalized_query:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Поисковый запрос обязателен",
+        )
+    if len(normalized_query) < settings.products.search_min_query_length:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Поисковый запрос слишком короткий",
+        )
+    return normalized_query
 
 
 @router.get(
