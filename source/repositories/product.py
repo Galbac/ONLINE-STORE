@@ -6,6 +6,7 @@ from source.db.models.product import Product
 from source.schemas.pydantic.product import (
     ProductCategoryShortResponse,
     ProductDetailResponse,
+    ProductDiscountedQueryParams,
     ProductListQueryParams,
     ProductPopularQueryParams,
     ProductSearchQueryParams,
@@ -147,6 +148,40 @@ class ProductRepository:
             )
         return statement
 
+    def _discounted_statement(self, *, query: ProductDiscountedQueryParams, category_ids: set[int] | None):
+        statement = (
+            select(Product, Category)
+            .outerjoin(Category, Product.category_id == Category.id)
+            .where(
+                Product.is_active.is_(True),
+                Product.is_deleted.is_(False),
+                Product.old_price.is_not(None),
+                Product.old_price > Product.price,
+            )
+        )
+        if category_ids is not None:
+            statement = statement.where(Product.category_id.in_(category_ids))
+        if query.in_stock:
+            statement = statement.where(
+                Product.is_available.is_(True),
+                Product.stock_quantity > 0,
+            )
+        return statement
+
+    def _apply_discounted_sort(self, statement, *, query: ProductDiscountedQueryParams):
+        match query.sort:
+            case "price_asc":
+                return statement.order_by(Product.price.asc(), Product.name.asc())
+            case "price_desc":
+                return statement.order_by(Product.price.desc(), Product.name.asc())
+            case "newest":
+                return statement.order_by(desc(Product.created_date), Product.name.asc())
+            case "discount_desc" | _:
+                return statement.order_by(
+                    ((Product.old_price - Product.price) / Product.old_price).desc(),
+                    Product.name.asc(),
+                )
+
     async def get_active_list(
         self,
         *,
@@ -221,6 +256,38 @@ class ProductRepository:
             self._build_product_response(product=product, category=category)
             for product, category in result.all()
         ]
+
+    async def get_discounted_active(
+        self,
+        *,
+        session: AsyncSession,
+        query: ProductDiscountedQueryParams,
+        category_ids: set[int] | None = None,
+    ) -> list[ProductShortResponse]:
+        statement = (
+            self._apply_discounted_sort(
+                self._discounted_statement(query=query, category_ids=category_ids),
+                query=query,
+            )
+            .limit(query.limit)
+            .offset(query.offset)
+        )
+        result = await session.execute(statement)
+        return [
+            self._build_product_response(product=product, category=category)
+            for product, category in result.all()
+        ]
+
+    async def count_discounted_active(
+        self,
+        *,
+        session: AsyncSession,
+        query: ProductDiscountedQueryParams,
+        category_ids: set[int] | None = None,
+    ) -> int:
+        products_subquery = self._discounted_statement(query=query, category_ids=category_ids).subquery()
+        result = await session.execute(select(func.count()).select_from(products_subquery))
+        return int(result.scalar_one())
 
     async def get_by_id(
         self,

@@ -14,6 +14,8 @@ from source.schemas.pydantic.product import (
     ProductCategoryShortResponse,
     ProductDetailQueryParams,
     ProductDetailResponse,
+    ProductDiscountedQueryParams,
+    ProductDiscountedResponse,
     ProductImageResponse,
     ProductListQueryParams,
     ProductListResponse,
@@ -35,6 +37,7 @@ class FakeRedisService:
     def __init__(self) -> None:
         self.values: dict[str, str] = {}
         self.ttls: dict[str, int] = {}
+        self.deleted_patterns: list[str] = []
 
     async def get(self, key: str):
         return self.values.get(key)
@@ -43,6 +46,9 @@ class FakeRedisService:
         self.values[key] = value
         if ttl_seconds is not None:
             self.ttls[key] = ttl_seconds
+
+    async def delete_by_pattern(self, pattern: str) -> None:
+        self.deleted_patterns.append(pattern)
 
 
 class FakeCategoryRepository:
@@ -189,6 +195,29 @@ class FakeProductRepository:
         products = sorted(products, key=lambda product: (-product.popularity, product.name))
         return [build_product_response(product) for product in products[: query.limit]]
 
+    async def get_discounted_active(
+        self,
+        *,
+        session,
+        query: ProductDiscountedQueryParams,
+        category_ids: set[int] | None = None,
+    ):
+        products = self._filter_discounted_products(query=query, category_ids=category_ids)
+        products = self._sort_discounted_products(products=products, query=query)
+        return [
+            build_product_response(product)
+            for product in products[query.offset : query.offset + query.limit]
+        ]
+
+    async def count_discounted_active(
+        self,
+        *,
+        session,
+        query: ProductDiscountedQueryParams,
+        category_ids: set[int] | None = None,
+    ):
+        return len(self._filter_discounted_products(query=query, category_ids=category_ids))
+
     def _filter_products(self, *, query: ProductListQueryParams, category_ids: set[int] | None) -> list[object]:
         products = [
             product
@@ -294,6 +323,48 @@ class FakeProductRepository:
                     return rank, -product.popularity, product.name
 
                 return sorted(products, key=relevance)
+
+    def _filter_discounted_products(
+        self,
+        *,
+        query: ProductDiscountedQueryParams,
+        category_ids: set[int] | None,
+    ) -> list[object]:
+        products = [
+            product
+            for product in self.products
+            if product.is_active
+            and not product.is_deleted
+            and product.old_price is not None
+            and product.old_price > product.price
+        ]
+        if category_ids is not None:
+            products = [product for product in products if product.category_id in category_ids]
+        if query.in_stock:
+            products = [product for product in products if product.is_available and product.stock_quantity > 0]
+        return products
+
+    def _sort_discounted_products(
+        self,
+        *,
+        products: list[object],
+        query: ProductDiscountedQueryParams,
+    ) -> list[object]:
+        match query.sort:
+            case "price_asc":
+                return sorted(products, key=lambda product: (product.price, product.name))
+            case "price_desc":
+                return sorted(products, key=lambda product: (-product.price, product.name))
+            case "newest":
+                return sorted(products, key=lambda product: (product.created_at, product.name), reverse=True)
+            case "discount_desc" | _:
+                return sorted(
+                    products,
+                    key=lambda product: (
+                        -((product.old_price - product.price) / product.old_price),
+                        product.name,
+                    ),
+                )
 
 
 class FakeProductImageRepository:
@@ -477,6 +548,23 @@ async def execute_get_popular_products(
         product_repository=product_repository or FakeProductRepository(),
         category_repository=category_repository or FakeCategoryRepository(),
         query=query or ProductPopularQueryParams(),
+    )
+
+
+async def execute_get_discounted_products(
+    *,
+    redis_service: FakeRedisService | None = None,
+    product_repository: FakeProductRepository | None = None,
+    category_repository: FakeCategoryRepository | None = None,
+    query: ProductDiscountedQueryParams | None = None,
+) -> ProductDiscountedResponse:
+    return await ProductService().get_discounted_products(
+        session=object(),
+        redis_service=redis_service or FakeRedisService(),
+        product_cache_service=ProductCacheService(),
+        product_repository=product_repository or FakeProductRepository(),
+        category_repository=category_repository or FakeCategoryRepository(),
+        query=query or ProductDiscountedQueryParams(),
     )
 
 
@@ -1180,6 +1268,174 @@ async def test_get_popular_products_response_is_cached_in_redis() -> None:
     cache_key = f"products:popular:{build_query_hash(query.model_dump())}"
     assert cache_key in redis_service.values
     assert redis_service.ttls[cache_key] == settings.products.popular_cache_ttl_seconds
+
+
+@pytest.mark.asyncio
+async def test_get_discounted_products_success() -> None:
+    response = await execute_get_discounted_products(
+        product_repository=FakeProductRepository(
+            products=[
+                build_product(product_id=55, name="Скидка", slug="discount", category_id=11),
+                build_product(product_id=56, name="Без скидки", slug="regular", category_id=11, old_price=None),
+            ],
+        ),
+    )
+
+    assert response.total == 1
+    assert response.page == 1
+    assert response.limit == 24
+    assert response.pages == 1
+    assert response.items[0].id == 55
+    assert response.items[0].discount_percent == 17
+
+
+@pytest.mark.asyncio
+async def test_get_discounted_products_excludes_products_without_discount() -> None:
+    response = await execute_get_discounted_products(
+        product_repository=FakeProductRepository(
+            products=[
+                build_product(product_id=55, name="Без old_price", slug="no-old", category_id=11, old_price=None),
+                build_product(
+                    product_id=56,
+                    name="old_price ниже цены",
+                    slug="bad-old",
+                    category_id=11,
+                    price=Decimal("200"),
+                    old_price=Decimal("180"),
+                ),
+            ],
+        ),
+    )
+
+    assert response.total == 0
+    assert response.items == []
+
+
+@pytest.mark.asyncio
+async def test_get_discounted_products_ignores_expired_and_future_discounts_for_mvp() -> None:
+    response = await execute_get_discounted_products(
+        product_repository=FakeProductRepository(
+            products=[
+                build_product(product_id=55, name="Активная скидка", slug="active-discount", category_id=11),
+                build_product(product_id=56, name="Нет активной скидки", slug="no-discount", category_id=11, old_price=None),
+            ],
+        ),
+    )
+
+    assert [product.id for product in response.items] == [55]
+
+
+@pytest.mark.asyncio
+async def test_get_discounted_products_in_stock_true_excludes_unavailable() -> None:
+    response = await execute_get_discounted_products(
+        product_repository=FakeProductRepository(
+            products=[
+                build_product(product_id=55, name="Есть", slug="in-stock", category_id=11),
+                build_product(
+                    product_id=56,
+                    name="Нет",
+                    slug="out-stock",
+                    category_id=11,
+                    stock_quantity=Decimal("0"),
+                ),
+            ],
+        ),
+    )
+
+    assert [product.id for product in response.items] == [55]
+
+
+@pytest.mark.asyncio
+async def test_get_discounted_products_sort_discount_desc() -> None:
+    response = await execute_get_discounted_products(
+        product_repository=FakeProductRepository(
+            products=[
+                build_product(
+                    product_id=55,
+                    name="Скидка 10",
+                    slug="discount-10",
+                    category_id=11,
+                    price=Decimal("90"),
+                    old_price=Decimal("100"),
+                ),
+                build_product(
+                    product_id=56,
+                    name="Скидка 50",
+                    slug="discount-50",
+                    category_id=11,
+                    price=Decimal("50"),
+                    old_price=Decimal("100"),
+                ),
+            ],
+        ),
+        query=ProductDiscountedQueryParams(sort="discount_desc"),
+    )
+
+    assert [product.id for product in response.items] == [56, 55]
+
+
+@pytest.mark.asyncio
+async def test_get_discounted_products_pagination() -> None:
+    response = await execute_get_discounted_products(
+        product_repository=FakeProductRepository(
+            products=[
+                build_product(product_id=1, name="A", slug="a", category_id=11),
+                build_product(product_id=2, name="B", slug="b", category_id=11),
+                build_product(product_id=3, name="C", slug="c", category_id=11),
+            ],
+        ),
+        query=ProductDiscountedQueryParams(page=2, limit=1),
+    )
+
+    assert response.total == 3
+    assert response.page == 2
+    assert response.pages == 3
+    assert [product.id for product in response.items] == [2]
+
+
+@pytest.mark.asyncio
+async def test_get_discounted_products_from_redis_cache_success() -> None:
+    redis_service = FakeRedisService()
+    query = ProductDiscountedQueryParams()
+    query_hash = build_query_hash(query.model_dump())
+    cached_response = ProductDiscountedResponse.build(
+        items=[build_product_response(build_product(product_id=55, name="Скидка", slug="discount", category_id=11))],
+        total=1,
+        page=1,
+        limit=24,
+    )
+    redis_service.values[f"products:discounted:{query_hash}"] = cached_response.model_dump_json()
+    product_repository = FakeProductRepository(products=[])
+
+    response = await execute_get_discounted_products(
+        redis_service=redis_service,
+        product_repository=product_repository,
+        query=query,
+    )
+
+    assert response.total == 1
+    assert product_repository.query is None
+
+
+@pytest.mark.asyncio
+async def test_get_discounted_products_response_is_cached_in_redis() -> None:
+    redis_service = FakeRedisService()
+    query = ProductDiscountedQueryParams(page=1, limit=2)
+
+    await execute_get_discounted_products(redis_service=redis_service, query=query)
+
+    cache_key = f"products:discounted:{build_query_hash(query.model_dump())}"
+    assert cache_key in redis_service.values
+    assert redis_service.ttls[cache_key] == settings.products.discounted_cache_ttl_seconds
+
+
+@pytest.mark.asyncio
+async def test_discounted_cache_invalidates_on_discount_change() -> None:
+    redis_service = FakeRedisService()
+
+    await ProductCacheService().invalidate_discounted(redis_service=redis_service)
+
+    assert redis_service.deleted_patterns == ["products:discounted:*"]
 
 
 @pytest.mark.asyncio

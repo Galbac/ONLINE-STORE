@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field, model_validator
 
 ProductSort = Literal["price_asc", "price_desc", "newest", "popular", "name_asc", "name_desc"]
 ProductSearchSort = Literal["relevance", "price_asc", "price_desc", "newest", "popular"]
+ProductDiscountedSort = Literal["discount_desc", "price_asc", "price_desc", "newest"]
 ProductType = Literal["piece", "weight"]
 
 
@@ -64,6 +65,18 @@ class ProductPopularQueryParams(BaseModel):
     category_id: int | None = Field(default=None, ge=1)
     period_days: int = Field(default=30, ge=1)
     in_stock: bool = True
+
+
+class ProductDiscountedQueryParams(BaseModel):
+    page: int = Field(default=1, ge=1)
+    limit: int = Field(default=24, ge=1, le=100)
+    category_id: int | None = Field(default=None, ge=1)
+    in_stock: bool = True
+    sort: ProductDiscountedSort = "discount_desc"
+
+    @property
+    def offset(self) -> int:
+        return (self.page - 1) * self.limit
 
 
 class ProductCategoryShortResponse(BaseModel):
@@ -182,3 +195,28 @@ class ProductSearchResponse(BaseModel):
 class ProductPopularResponse(BaseModel):
     items: list[ProductShortResponse]
     total: int
+
+
+class ProductDiscountedResponse(BaseModel):
+    items: list[ProductShortResponse]
+    total: int
+    page: int
+    limit: int
+    pages: int
+
+    @classmethod
+    def build(
+        cls,
+        *,
+        items: list[ProductShortResponse],
+        total: int,
+        page: int,
+        limit: int,
+    ) -> "ProductDiscountedResponse":
+        return cls(
+            items=items,
+            total=total,
+            page=page,
+            limit=limit,
+            pages=ceil(total / limit) if total else 0,
+        )

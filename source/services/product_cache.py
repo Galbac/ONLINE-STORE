@@ -1,5 +1,6 @@
 from source.schemas.pydantic.product import (
     ProductDetailResponse,
+    ProductDiscountedResponse,
     ProductListResponse,
     ProductPopularResponse,
     ProductSearchResponse,
@@ -22,6 +23,9 @@ class ProductCacheService:
 
     def _popular_key(self, query_hash: str) -> str:
         return f"products:popular:{query_hash}"
+
+    def _discounted_key(self, query_hash: str) -> str:
+        return f"products:discounted:{query_hash}"
 
     async def get_list(
         self,
@@ -172,6 +176,36 @@ class ProductCacheService:
     async def invalidate_popular(self, *, redis_service: RedisService) -> None:
         await redis_service.delete_by_pattern("products:popular:*")
 
+    async def get_discounted(
+        self,
+        *,
+        redis_service: RedisService,
+        query_hash: str,
+    ) -> ProductDiscountedResponse | None:
+        cached_products = await redis_service.get(self._discounted_key(query_hash))
+        if cached_products is None:
+            return None
+        if isinstance(cached_products, bytes):
+            cached_products = cached_products.decode("utf-8")
+        return ProductDiscountedResponse.model_validate_json(cached_products)
+
+    async def set_discounted(
+        self,
+        *,
+        redis_service: RedisService,
+        query_hash: str,
+        response: ProductDiscountedResponse,
+        ttl_seconds: int,
+    ) -> None:
+        await redis_service.set(
+            self._discounted_key(query_hash),
+            response.model_dump_json(),
+            ttl_seconds=ttl_seconds,
+        )
+
+    async def invalidate_discounted(self, *, redis_service: RedisService) -> None:
+        await redis_service.delete_by_pattern("products:discounted:*")
+
     async def invalidate_product(self, *, redis_service: RedisService, product_id: int, slug: str | None = None) -> None:
         await redis_service.delete_by_pattern(f"products:detail:{product_id}:*")
         await redis_service.delete_by_pattern(f"products:similar:{product_id}:*")
@@ -180,6 +214,7 @@ class ProductCacheService:
         await redis_service.delete_by_pattern("products:list:*")
         await redis_service.delete_by_pattern("products:search:*")
         await redis_service.delete_by_pattern("products:popular:*")
+        await redis_service.delete_by_pattern("products:discounted:*")
 
     async def invalidate_all(self, *, redis_service: RedisService) -> None:
         await redis_service.delete_by_pattern("products:list:*")

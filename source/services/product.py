@@ -10,6 +10,8 @@ from source.schemas.pydantic.product import (
     ProductBreadcrumbResponse,
     ProductDetailQueryParams,
     ProductDetailResponse,
+    ProductDiscountedQueryParams,
+    ProductDiscountedResponse,
     ProductListQueryParams,
     ProductListResponse,
     ProductPopularQueryParams,
@@ -245,6 +247,53 @@ class ProductService:
             query_hash=query_hash,
             response=response,
             ttl_seconds=settings.products.popular_cache_ttl_seconds,
+        )
+        return response
+
+    async def get_discounted_products(
+        self,
+        *,
+        session: AsyncSession,
+        redis_service: RedisService,
+        product_cache_service: ProductCacheService,
+        product_repository: ProductRepository,
+        category_repository: CategoryRepository,
+        query: ProductDiscountedQueryParams,
+    ) -> ProductDiscountedResponse:
+        query_hash = build_query_hash(query.model_dump())
+        cached_products = await product_cache_service.get_discounted(
+            redis_service=redis_service,
+            query_hash=query_hash,
+        )
+        if cached_products is not None:
+            return cached_products
+
+        category_ids = await self._resolve_category_ids_by_id(
+            session=session,
+            category_repository=category_repository,
+            category_id=query.category_id,
+        )
+        items = await product_repository.get_discounted_active(
+            session=session,
+            query=query,
+            category_ids=category_ids,
+        )
+        total = await product_repository.count_discounted_active(
+            session=session,
+            query=query,
+            category_ids=category_ids,
+        )
+        response = ProductDiscountedResponse.build(
+            items=items,
+            total=total,
+            page=query.page,
+            limit=query.limit,
+        )
+        await product_cache_service.set_discounted(
+            redis_service=redis_service,
+            query_hash=query_hash,
+            response=response,
+            ttl_seconds=settings.products.discounted_cache_ttl_seconds,
         )
         return response
 
