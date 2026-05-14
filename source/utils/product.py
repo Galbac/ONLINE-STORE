@@ -1,9 +1,9 @@
 from decimal import Decimal, ROUND_HALF_UP
 
 
-def calculate_discount_percent(*, price: Decimal, old_price: Decimal | None) -> int:
+def calculate_discount_percent(*, price: Decimal, old_price: Decimal | None) -> int | None:
     if old_price is None or old_price <= price or old_price <= 0:
-        return 0
+        return None
     discount = ((old_price - price) / old_price * Decimal("100")).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
     return int(discount)
 

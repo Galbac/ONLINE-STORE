@@ -305,6 +305,64 @@ async def test_get_products_filter_by_category_id_includes_children() -> None:
 
 
 @pytest.mark.asyncio
+async def test_get_products_with_page_limit_category_id_and_in_stock_true() -> None:
+    category_repository = FakeCategoryRepository(
+        categories=[
+            build_category(category_id=5, name="Фрукты", slug="frukty"),
+            build_category(category_id=15, name="Яблоки", slug="yabloki", parent_id=5),
+        ],
+    )
+    product_repository = FakeProductRepository(
+        products=[
+            build_product(
+                product_id=55,
+                name="Яблоки красные",
+                slug="yabloki-krasnye",
+                category_id=5,
+                old_price=None,
+            ),
+            build_product(
+                product_id=56,
+                name="Яблоки зелёные",
+                slug="yabloki-zelenye",
+                category_id=15,
+                old_price=None,
+            ),
+            build_product(
+                product_id=57,
+                name="Нет в наличии",
+                slug="out-of-stock",
+                category_id=5,
+                stock_quantity=Decimal("0"),
+            ),
+            build_product(
+                product_id=58,
+                name="Овощи",
+                slug="ovoshchi",
+                category_id=9,
+            ),
+        ],
+    )
+
+    response = await execute_get_products(
+        category_repository=category_repository,
+        product_repository=product_repository,
+        query=ProductListQueryParams(page=1, limit=24, category_id=5, in_stock=True),
+    )
+
+    assert response.page == 1
+    assert response.limit == 24
+    assert response.total == 2
+    assert response.pages == 1
+    assert {product.id for product in response.items} == {55, 56}
+    assert all(product.is_available for product in response.items)
+    assert all(product.stock_display == "В наличии" for product in response.items)
+    assert response.items[0].old_price is None
+    assert response.items[0].discount_percent is None
+    assert product_repository.category_ids == {5, 15}
+
+
+@pytest.mark.asyncio
 async def test_get_products_filter_by_category_slug() -> None:
     category_repository = FakeCategoryRepository()
     product_repository = FakeProductRepository(
@@ -330,6 +388,17 @@ async def test_get_products_category_not_found() -> None:
         await execute_get_products(
             category_repository=FakeCategoryRepository(categories=[]),
             query=ProductListQueryParams(category_id=999),
+        )
+
+
+@pytest.mark.asyncio
+async def test_get_products_requested_category_id_not_found() -> None:
+    with pytest.raises(CategoryNotFoundError):
+        await execute_get_products(
+            category_repository=FakeCategoryRepository(
+                categories=[build_category(category_id=1, name="Фрукты", slug="frukty")],
+            ),
+            query=ProductListQueryParams(page=1, limit=24, category_id=5, in_stock=True),
         )
 
 
@@ -458,6 +527,27 @@ async def test_get_products_response_is_cached_in_redis() -> None:
     query = ProductListQueryParams(category_id=1, sort="price_asc")
 
     await execute_get_products(redis_service=redis_service, query=query)
+
+    cache_key = f"products:list:{build_query_hash(query.model_dump())}"
+    assert cache_key in redis_service.values
+    assert redis_service.ttls[cache_key] == settings.products.list_cache_ttl_seconds
+
+
+@pytest.mark.asyncio
+async def test_get_products_with_category_and_in_stock_response_is_cached_in_redis() -> None:
+    redis_service = FakeRedisService()
+    query = ProductListQueryParams(page=1, limit=24, category_id=5, in_stock=True)
+
+    await execute_get_products(
+        redis_service=redis_service,
+        category_repository=FakeCategoryRepository(
+            categories=[build_category(category_id=5, name="Фрукты", slug="frukty")],
+        ),
+        product_repository=FakeProductRepository(
+            products=[build_product(product_id=55, name="Яблоки красные", slug="yabloki-krasnye", category_id=5)],
+        ),
+        query=query,
+    )
 
     cache_key = f"products:list:{build_query_hash(query.model_dump())}"
     assert cache_key in redis_service.values

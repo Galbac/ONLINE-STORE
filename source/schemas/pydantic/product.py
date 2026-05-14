@@ -45,7 +45,7 @@ class ProductShortResponse(BaseModel):
     preview_image_url: str | None = None
     price: Decimal
     old_price: Decimal | None = None
-    discount_percent: int
+    discount_percent: int | None = None
     unit: str
     product_type: str
     is_available: bool
