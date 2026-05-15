@@ -39,6 +39,48 @@ router = APIRouter(tags=["cart"])
 
 
 @router.delete(
+    "/cart/promo-code",
+    response_model=MessageCartResponse,
+    status_code=status.HTTP_200_OK,
+    responses={
+        status.HTTP_401_UNAUTHORIZED: {"description": "Пользователь не авторизован."},
+        status.HTTP_403_FORBIDDEN: {"description": "Пользователь заблокирован или удалён."},
+    },
+)
+@inject
+async def remove_promo_code(
+    current_user: User = Depends(get_current_user),
+    session: FromDishka[AsyncSession] = None,
+    commiter: FromDishka[Commiter] = None,
+    redis_service: FromDishka[RedisService] = None,
+    cart_service: FromDishka[CartService] = None,
+    cart_cache_service: FromDishka[CartCacheService] = None,
+    cart_calculator_service: FromDishka[CartCalculatorService] = None,
+    cart_repository: FromDishka[CartRepository] = None,
+    cart_item_repository: FromDishka[CartItemRepository] = None,
+    product_repository: FromDishka[ProductRepository] = None,
+    promo_code_repository: FromDishka[PromoCodeRepository] = None,
+) -> MessageCartResponse:
+    try:
+        cart = await cart_service.remove_promo_code(
+            session=session,
+            redis_service=redis_service,
+            cart_cache_service=cart_cache_service,
+            cart_repository=cart_repository,
+            cart_item_repository=cart_item_repository,
+            product_repository=product_repository,
+            promo_code_repository=promo_code_repository,
+            cart_calculator_service=cart_calculator_service,
+            user=current_user,
+        )
+        await commiter.commit()
+        return MessageCartResponse(message="Промокод удалён", cart=cart)
+    except InactiveUserError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Пользователь заблокирован или удалён") from error
+
+
+@router.delete(
     "/cart",
     response_model=MessageCartResponse,
     status_code=status.HTTP_200_OK,

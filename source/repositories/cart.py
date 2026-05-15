@@ -43,3 +43,11 @@ class CartRepository:
         await session.flush()
         await session.refresh(cart)
         return cart
+
+    async def clear_promo_code(
+        self,
+        *,
+        session: AsyncSession,
+        cart: Cart,
+    ) -> Cart:
+        return await self.set_promo_code(session=session, cart=cart, promo_code_id=None)
