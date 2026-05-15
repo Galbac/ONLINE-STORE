@@ -23,6 +23,7 @@ from source.repositories.order import OrderRepository
 from source.repositories.order_item import OrderItemRepository
 from source.repositories.product import ProductRepository
 from source.repositories.product_image import ProductImageRepository
+from source.repositories.promo_code import PromoCodeRepository, PromoCodeUsageRepository
 from source.repositories.user import UserRepository
 from source.services.auth_cache import AuthCacheService
 from source.services.auth import AuthService
@@ -37,6 +38,7 @@ from source.services.profile import ProfileService
 from source.services.profile_cache import ProfileCacheService
 from source.services.redis import RedisService
 from source.services.stock import StockService
+from source.services.promo_code import PromoCodeService
 from source.services.user import UserService
 from source.services.user_cache import UserCacheService
 
@@ -153,6 +155,14 @@ class AppProvider(Provider):
         CartItemRepository,
         scope=Scope.REQUEST,
     )
+    promo_code_repository = provide(
+        PromoCodeRepository,
+        scope=Scope.REQUEST,
+    )
+    promo_code_usage_repository = provide(
+        PromoCodeUsageRepository,
+        scope=Scope.REQUEST,
+    )
     category_repository = provide(
         CategoryRepository,
         scope=Scope.REQUEST,
@@ -167,6 +177,10 @@ class AppProvider(Provider):
     )
     stock_service = provide(
         StockService,
+        scope=Scope.REQUEST,
+    )
+    promo_code_service = provide(
+        PromoCodeService,
         scope=Scope.REQUEST,
     )
     cart_cache_service = provide(

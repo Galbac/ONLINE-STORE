@@ -6,8 +6,10 @@ from source.db.models.cart import Cart
 from source.db.models.product import Product
 from source.config.settings import settings
 from source.errors.auth import (
+    CartEmptyError,
     CartItemAccessDeniedError,
     CartItemNotFoundError,
+    CartPromoCodeNotFoundError,
     CartProductNotFoundError,
     CartProductUnavailableError,
     InactiveUserError,
@@ -15,6 +17,7 @@ from source.errors.auth import (
 from source.repositories.cart import CartRepository
 from source.repositories.cart_item import CartItemRepository
 from source.repositories.product import ProductRepository
+from source.repositories.promo_code import PromoCodeRepository, PromoCodeUsageRepository
 from source.schemas.pydantic.cart import (
     CartItemResponse as DetailedCartItemResponse,
     CartResponse as DetailedCartResponse,
@@ -24,11 +27,20 @@ from source.schemas.pydantic.profile import CartItemResponse, CartResponse
 from source.services.cart_cache import CartCacheService
 from source.services.redis import RedisService
 from source.services.stock import StockService
+from source.services.promo_code import PromoCodeService
 from source.utils.cart import calculate_cart_totals
 
 
 class CartCalculatorService:
-    def calculate(self, *, cart_id: int, cart_items: list, products_by_id: dict[int, Product]) -> DetailedCartResponse:
+    def calculate(
+        self,
+        *,
+        cart_id: int,
+        cart_items: list,
+        products_by_id: dict[int, Product],
+        promo_code=None,
+        promo_discount_amount: Decimal = Decimal("0"),
+    ) -> DetailedCartResponse:
         items: list[DetailedCartItemResponse] = []
         warnings: list[CartWarningResponse] = []
         subtotal = Decimal("0")
@@ -100,7 +112,6 @@ class CartCalculatorService:
             discount_amount += item.discount_amount
             total_quantity += item.quantity
 
-        promo_discount_amount = Decimal("0")
         final_price = subtotal - discount_amount - promo_discount_amount
         if final_price < 0:
             final_price = Decimal("0")
@@ -108,7 +119,11 @@ class CartCalculatorService:
         return DetailedCartResponse(
             id=cart_id,
             items=items,
-            promo_code=None,
+            promo_code=(
+                None
+                if promo_code is None
+                else {"code": promo_code.code, "discount_amount": promo_discount_amount}
+            ),
             items_count=len(items),
             total_quantity=total_quantity,
             subtotal=subtotal,
@@ -130,6 +145,7 @@ class CartService:
         cart_repository: CartRepository,
         cart_item_repository: CartItemRepository,
         product_repository: ProductRepository,
+        promo_code_repository: PromoCodeRepository,
         cart_calculator_service: CartCalculatorService,
         user,
     ) -> DetailedCartResponse:
@@ -146,10 +162,12 @@ class CartService:
             cart_item_repository=cart_item_repository,
             cart=cart,
         )
+        await cart_repository.set_promo_code(session=session, cart=cart, promo_code_id=None)
         response = await self.recalculate_current_cart(
             session=session,
             cart_item_repository=cart_item_repository,
             product_repository=product_repository,
+            promo_code_repository=promo_code_repository,
             cart_calculator_service=cart_calculator_service,
             cart=cart,
         )
@@ -165,6 +183,7 @@ class CartService:
         cart_repository: CartRepository,
         cart_item_repository: CartItemRepository,
         product_repository: ProductRepository,
+        promo_code_repository: PromoCodeRepository,
         cart_calculator_service: CartCalculatorService,
         user,
         cart_item_id: int,
@@ -183,10 +202,13 @@ class CartService:
             raise CartItemAccessDeniedError
 
         await cart_item_repository.delete(session=session, cart_item=cart_item)
+        if not await cart_item_repository.get_by_cart_id(session=session, cart_id=cart.id):
+            await cart_repository.set_promo_code(session=session, cart=cart, promo_code_id=None)
         response = await self.recalculate_current_cart(
             session=session,
             cart_item_repository=cart_item_repository,
             product_repository=product_repository,
+            promo_code_repository=promo_code_repository,
             cart_calculator_service=cart_calculator_service,
             cart=cart,
         )
@@ -202,6 +224,7 @@ class CartService:
         cart_repository: CartRepository,
         cart_item_repository: CartItemRepository,
         product_repository: ProductRepository,
+        promo_code_repository: PromoCodeRepository,
         cart_calculator_service: CartCalculatorService,
         stock_service: StockService,
         user,
@@ -240,6 +263,7 @@ class CartService:
             session=session,
             cart_item_repository=cart_item_repository,
             product_repository=product_repository,
+            promo_code_repository=promo_code_repository,
             cart_calculator_service=cart_calculator_service,
             cart=cart,
         )
@@ -255,6 +279,7 @@ class CartService:
         cart_repository: CartRepository,
         cart_item_repository: CartItemRepository,
         product_repository: ProductRepository,
+        promo_code_repository: PromoCodeRepository,
         cart_calculator_service: CartCalculatorService,
         stock_service: StockService,
         user,
@@ -306,6 +331,7 @@ class CartService:
             session=session,
             cart_item_repository=cart_item_repository,
             product_repository=product_repository,
+            promo_code_repository=promo_code_repository,
             cart_calculator_service=cart_calculator_service,
             cart=cart,
         )
@@ -321,6 +347,7 @@ class CartService:
         cart_repository: CartRepository,
         cart_item_repository: CartItemRepository,
         product_repository: ProductRepository,
+        promo_code_repository: PromoCodeRepository,
         cart_calculator_service: CartCalculatorService,
         user,
     ) -> DetailedCartResponse:
@@ -340,6 +367,7 @@ class CartService:
             session=session,
             cart_item_repository=cart_item_repository,
             product_repository=product_repository,
+            promo_code_repository=promo_code_repository,
             cart_calculator_service=cart_calculator_service,
             cart=cart,
         )
@@ -359,6 +387,78 @@ class CartService:
         user_id: int,
     ) -> Cart:
         return await cart_repository.get_or_create_by_user_id(session=session, user_id=user_id)
+
+    async def apply_promo_code(
+        self,
+        *,
+        session: AsyncSession,
+        redis_service: RedisService,
+        cart_cache_service: CartCacheService,
+        cart_repository: CartRepository,
+        cart_item_repository: CartItemRepository,
+        product_repository: ProductRepository,
+        promo_code_repository: PromoCodeRepository,
+        promo_code_usage_repository: PromoCodeUsageRepository,
+        cart_calculator_service: CartCalculatorService,
+        promo_code_service: PromoCodeService,
+        user,
+        code: str,
+    ) -> DetailedCartResponse:
+        if not user.is_active or user.is_deleted:
+            raise InactiveUserError
+
+        cart = await self.get_or_create_cart(
+            session=session,
+            cart_repository=cart_repository,
+            user_id=user.id,
+        )
+        cart_items = await cart_item_repository.get_by_cart_id(session=session, cart_id=cart.id)
+        if not cart_items:
+            raise CartEmptyError
+
+        promo_code = await promo_code_repository.get_by_code(session=session, code=code)
+        if promo_code is None:
+            raise CartPromoCodeNotFoundError
+
+        products = await product_repository.get_by_ids(
+            session=session,
+            product_ids=[cart_item.product_id for cart_item in cart_items],
+        )
+        products_by_id = {product.id: product for product in products}
+        base_response = cart_calculator_service.calculate(
+            cart_id=cart.id,
+            cart_items=cart_items,
+            products_by_id=products_by_id,
+        )
+        total_usage_count = await promo_code_usage_repository.count_by_code(session=session, promo_code_id=promo_code.id)
+        user_usage_count = await promo_code_usage_repository.count_by_user_and_code(
+            session=session,
+            user_id=user.id,
+            promo_code_id=promo_code.id,
+        )
+        promo_code_service.validate_promo_code(
+            promo_code=promo_code,
+            cart=cart,
+            cart_items=cart_items,
+            products_by_id=products_by_id,
+            subtotal=base_response.final_price,
+            total_usage_count=total_usage_count,
+            user_usage_count=user_usage_count,
+        )
+        await cart_repository.set_promo_code(session=session, cart=cart, promo_code_id=promo_code.id)
+        promo_discount_amount = promo_code_service.calculate_discount(
+            promo_code=promo_code,
+            amount=base_response.final_price,
+        )
+        response = cart_calculator_service.calculate(
+            cart_id=cart.id,
+            cart_items=cart_items,
+            products_by_id=products_by_id,
+            promo_code=promo_code,
+            promo_discount_amount=promo_discount_amount,
+        )
+        await cart_cache_service.invalidate_cart(redis_service=redis_service, user_id=user.id)
+        return response
 
     async def clear_cart(
         self,
@@ -419,6 +519,7 @@ class CartService:
         session: AsyncSession,
         cart_item_repository: CartItemRepository,
         product_repository: ProductRepository,
+        promo_code_repository: PromoCodeRepository,
         cart_calculator_service: CartCalculatorService,
         cart: Cart,
     ) -> DetailedCartResponse:
@@ -427,8 +528,25 @@ class CartService:
             session=session,
             product_ids=[cart_item.product_id for cart_item in cart_items],
         )
+        promo_code = None
+        promo_discount_amount = Decimal("0")
+        if cart.promo_code_id is not None:
+            promo_code = await promo_code_repository.get_by_id(session=session, promo_code_id=cart.promo_code_id)
+            if promo_code is not None:
+                subtotal_response = cart_calculator_service.calculate(
+                    cart_id=cart.id,
+                    cart_items=cart_items,
+                    products_by_id={product.id: product for product in products},
+                )
+                promo_discount_amount = PromoCodeService().calculate_discount(
+                    promo_code=promo_code,
+                    amount=subtotal_response.final_price,
+                )
+
         return cart_calculator_service.calculate(
             cart_id=cart.id,
             cart_items=cart_items,
             products_by_id={product.id: product for product in products},
+            promo_code=promo_code,
+            promo_discount_amount=promo_discount_amount,
         )

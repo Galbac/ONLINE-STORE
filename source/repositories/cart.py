@@ -30,3 +30,16 @@ class CartRepository:
         await session.flush()
         await session.refresh(cart)
         return cart
+
+    async def set_promo_code(
+        self,
+        *,
+        session: AsyncSession,
+        cart: Cart,
+        promo_code_id: int | None,
+    ) -> Cart:
+        cart.promo_code_id = promo_code_id
+        session.add(cart)
+        await session.flush()
+        await session.refresh(cart)
+        return cart

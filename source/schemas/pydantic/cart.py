@@ -1,7 +1,6 @@
 from decimal import Decimal
 
-from pydantic import BaseModel
-from pydantic import Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class CartWarningResponse(BaseModel):
@@ -54,6 +53,17 @@ class CartItemCreateRequest(BaseModel):
 
 class CartItemUpdateRequest(BaseModel):
     quantity: Decimal = Field(gt=0)
+
+
+class ApplyPromoCodeRequest(BaseModel):
+    code: str = Field(min_length=2, max_length=50)
+
+    @field_validator("code", mode="before")
+    @classmethod
+    def normalize_code(cls, value: str) -> str:
+        if not isinstance(value, str):
+            return value
+        return value.strip().upper()
 
 
 class MessageCartResponse(BaseModel):

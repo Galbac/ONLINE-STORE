@@ -124,3 +124,35 @@ class CartItemNotFoundError(Exception):
 
 class CartItemAccessDeniedError(Exception):
     pass
+
+
+class CartEmptyError(Exception):
+    pass
+
+
+class CartPromoCodeNotFoundError(Exception):
+    pass
+
+
+class CartPromoCodeInactiveError(Exception):
+    pass
+
+
+class CartPromoCodeExpiredError(Exception):
+    pass
+
+
+class CartPromoCodeLimitExceededError(Exception):
+    pass
+
+
+class CartPromoCodeAlreadyAppliedError(Exception):
+    pass
+
+
+class CartPromoCodeMinAmountError(Exception):
+    pass
+
+
+class CartPromoCodeNotApplicableError(Exception):
+    pass

@@ -1,3 +1,4 @@
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
 
@@ -7,16 +8,24 @@ from pydantic import ValidationError
 from source.config.settings import settings
 from source.errors.auth import InactiveUserError
 from source.errors.auth import (
+    CartEmptyError,
     CartInsufficientStockError,
     CartItemAccessDeniedError,
     CartItemNotFoundError,
     CartPieceQuantityMustBeIntegerError,
     CartProductNotFoundError,
     CartQuantityStepError,
+    CartPromoCodeExpiredError,
+    CartPromoCodeInactiveError,
+    CartPromoCodeLimitExceededError,
+    CartPromoCodeMinAmountError,
+    CartPromoCodeNotApplicableError,
+    CartPromoCodeNotFoundError,
 )
-from source.schemas.pydantic.cart import CartItemUpdateRequest, CartResponse
+from source.schemas.pydantic.cart import ApplyPromoCodeRequest, CartItemUpdateRequest, CartResponse
 from source.services.cart import CartCalculatorService, CartService
 from source.services.cart_cache import CartCacheService
+from source.services.promo_code import PromoCodeService
 from source.services.stock import StockService
 
 
@@ -42,8 +51,8 @@ class FakeRedisService:
 class FakeCartRepository:
     def __init__(self) -> None:
         self.carts_by_user_id = {
-            1: SimpleNamespace(id=10, user_id=1),
-            2: SimpleNamespace(id=20, user_id=2),
+            1: SimpleNamespace(id=10, user_id=1, promo_code_id=None),
+            2: SimpleNamespace(id=20, user_id=2, promo_code_id=None),
         }
         self.requested_user_id: int | None = None
 
@@ -51,12 +60,16 @@ class FakeCartRepository:
         self.requested_user_id = user_id
         cart = self.carts_by_user_id.get(user_id)
         if cart is None:
-            cart = SimpleNamespace(id=100 + user_id, user_id=user_id)
+            cart = SimpleNamespace(id=100 + user_id, user_id=user_id, promo_code_id=None)
             self.carts_by_user_id[user_id] = cart
         return cart
 
     async def get_by_id(self, *, session, cart_id: int):
         return next((cart for cart in self.carts_by_user_id.values() if cart.id == cart_id), None)
+
+    async def set_promo_code(self, *, session, cart, promo_code_id: int | None):
+        cart.promo_code_id = promo_code_id
+        return cart
 
 
 class FakeCartItemRepository:
@@ -129,6 +142,30 @@ class FakeProductRepository:
         return next((product for product in self.products if product.id == product_id), None)
 
 
+class FakePromoCodeRepository:
+    def __init__(self, promo_codes: list[object] | None = None) -> None:
+        self.promo_codes = promo_codes if promo_codes is not None else []
+
+    async def get_by_id(self, *, session, promo_code_id: int):
+        return next((promo_code for promo_code in self.promo_codes if promo_code.id == promo_code_id), None)
+
+    async def get_by_code(self, *, session, code: str):
+        return next((promo_code for promo_code in self.promo_codes if promo_code.code == code), None)
+
+
+class FakePromoCodeUsageRepository:
+    def __init__(self, *, total_count: int = 0, user_count: int = 0) -> None:
+        self.total_count = total_count
+        self.user_count = user_count
+        self.created_count = 0
+
+    async def count_by_code(self, *, session, promo_code_id: int) -> int:
+        return self.total_count
+
+    async def count_by_user_and_code(self, *, session, user_id: int, promo_code_id: int) -> int:
+        return self.user_count
+
+
 def build_user(*, user_id: int = 1, is_active: bool = True, is_deleted: bool = False):
     return SimpleNamespace(id=user_id, is_active=is_active, is_deleted=is_deleted)
 
@@ -170,6 +207,7 @@ def build_product(
     is_available: bool = True,
     quantity_step: Decimal = Decimal("0.5"),
     min_quantity: Decimal = Decimal("0.5"),
+    category_id: int | None = 11,
 ):
     return SimpleNamespace(
         id=product_id,
@@ -186,6 +224,40 @@ def build_product(
         is_available=is_available,
         quantity_step=quantity_step,
         min_quantity=min_quantity,
+        category_id=category_id,
+    )
+
+
+def build_promo_code(
+    *,
+    promo_code_id: int = 1,
+    code: str = "PROMO10",
+    discount_type: str = "percent",
+    discount_value: Decimal = Decimal("10"),
+    min_order_amount: Decimal | None = None,
+    usage_limit: int | None = None,
+    per_user_usage_limit: int | None = None,
+    applicable_category_id: int | None = None,
+    applicable_product_id: int | None = None,
+    allow_discounted_products: bool = True,
+    is_active: bool = True,
+    starts_at=None,
+    ends_at=None,
+):
+    return SimpleNamespace(
+        id=promo_code_id,
+        code=code,
+        discount_type=discount_type,
+        discount_value=discount_value,
+        min_order_amount=min_order_amount,
+        usage_limit=usage_limit,
+        per_user_usage_limit=per_user_usage_limit,
+        applicable_category_id=applicable_category_id,
+        applicable_product_id=applicable_product_id,
+        allow_discounted_products=allow_discounted_products,
+        is_active=is_active,
+        starts_at=starts_at,
+        ends_at=ends_at,
     )
 
 
@@ -204,6 +276,7 @@ async def execute_get_current_cart(
         cart_repository=cart_repository or FakeCartRepository(),
         cart_item_repository=cart_item_repository or FakeCartItemRepository(),
         product_repository=product_repository or FakeProductRepository(),
+        promo_code_repository=FakePromoCodeRepository(),
         cart_calculator_service=CartCalculatorService(),
         user=user or build_user(),
     )
@@ -226,6 +299,7 @@ async def execute_add_item(
         cart_repository=cart_repository or FakeCartRepository(),
         cart_item_repository=cart_item_repository or FakeCartItemRepository(),
         product_repository=product_repository or FakeProductRepository([build_product()]),
+        promo_code_repository=FakePromoCodeRepository(),
         cart_calculator_service=CartCalculatorService(),
         stock_service=StockService(),
         user=user or build_user(),
@@ -251,6 +325,7 @@ async def execute_update_item(
         cart_repository=cart_repository or FakeCartRepository(),
         cart_item_repository=cart_item_repository or FakeCartItemRepository({10: [build_cart_item()]}),
         product_repository=product_repository or FakeProductRepository([build_product()]),
+        promo_code_repository=FakePromoCodeRepository(),
         cart_calculator_service=CartCalculatorService(),
         stock_service=StockService(),
         user=user or build_user(),
@@ -275,6 +350,7 @@ async def execute_delete_item(
         cart_repository=cart_repository or FakeCartRepository(),
         cart_item_repository=cart_item_repository or FakeCartItemRepository({10: [build_cart_item()]}),
         product_repository=product_repository or FakeProductRepository([build_product()]),
+        promo_code_repository=FakePromoCodeRepository(),
         cart_calculator_service=CartCalculatorService(),
         user=user or build_user(),
         cart_item_id=cart_item_id,
@@ -296,8 +372,36 @@ async def execute_clear_current_cart(
         cart_repository=cart_repository or FakeCartRepository(),
         cart_item_repository=cart_item_repository or FakeCartItemRepository({10: [build_cart_item()]}),
         product_repository=product_repository or FakeProductRepository([build_product()]),
+        promo_code_repository=FakePromoCodeRepository(),
         cart_calculator_service=CartCalculatorService(),
         user=user or build_user(),
+    )
+
+
+async def execute_apply_promo_code(
+    *,
+    redis_service: FakeRedisService | None = None,
+    cart_repository: FakeCartRepository | None = None,
+    cart_item_repository: FakeCartItemRepository | None = None,
+    product_repository: FakeProductRepository | None = None,
+    promo_code_repository: FakePromoCodeRepository | None = None,
+    promo_code_usage_repository: FakePromoCodeUsageRepository | None = None,
+    user=None,
+    code: str = "PROMO10",
+) -> CartResponse:
+    return await CartService().apply_promo_code(
+        session=object(),
+        redis_service=redis_service or FakeRedisService(),
+        cart_cache_service=CartCacheService(),
+        cart_repository=cart_repository or FakeCartRepository(),
+        cart_item_repository=cart_item_repository or FakeCartItemRepository({10: [build_cart_item(quantity=Decimal("1"))]}),
+        product_repository=product_repository or FakeProductRepository([build_product(old_price=None)]),
+        promo_code_repository=promo_code_repository or FakePromoCodeRepository([build_promo_code()]),
+        promo_code_usage_repository=promo_code_usage_repository or FakePromoCodeUsageRepository(),
+        cart_calculator_service=CartCalculatorService(),
+        promo_code_service=PromoCodeService(),
+        user=user or build_user(),
+        code=code,
     )
 
 
@@ -779,3 +883,109 @@ async def test_clear_current_cart_invalidates_cart_cache() -> None:
 async def test_clear_current_cart_inactive_user_error() -> None:
     with pytest.raises(InactiveUserError):
         await execute_clear_current_cart(user=build_user(is_active=False))
+
+
+def test_apply_promo_code_request_normalizes_code() -> None:
+    assert ApplyPromoCodeRequest(code=" promo10 ").code == "PROMO10"
+
+
+@pytest.mark.asyncio
+async def test_apply_promo_code_percent_success() -> None:
+    response = await execute_apply_promo_code()
+
+    assert response.promo_code is not None
+    assert response.promo_code.code == "PROMO10"
+    assert response.promo_discount_amount == Decimal("15.00")
+    assert response.final_price == Decimal("135.00")
+
+
+@pytest.mark.asyncio
+async def test_apply_promo_code_fixed_success() -> None:
+    response = await execute_apply_promo_code(
+        promo_code_repository=FakePromoCodeRepository(
+            [build_promo_code(discount_type="fixed", discount_value=Decimal("25"))],
+        ),
+    )
+
+    assert response.promo_discount_amount == Decimal("25")
+    assert response.final_price == Decimal("125.00")
+
+
+@pytest.mark.asyncio
+async def test_apply_promo_code_empty_cart_error() -> None:
+    with pytest.raises(CartEmptyError):
+        await execute_apply_promo_code(
+            cart_item_repository=FakeCartItemRepository({10: []}),
+            product_repository=FakeProductRepository([]),
+        )
+
+
+@pytest.mark.asyncio
+async def test_apply_promo_code_not_found_error() -> None:
+    with pytest.raises(CartPromoCodeNotFoundError):
+        await execute_apply_promo_code(promo_code_repository=FakePromoCodeRepository([]))
+
+
+@pytest.mark.asyncio
+async def test_apply_promo_code_inactive_error() -> None:
+    with pytest.raises(CartPromoCodeInactiveError):
+        await execute_apply_promo_code(
+            promo_code_repository=FakePromoCodeRepository([build_promo_code(is_active=False)]),
+        )
+
+
+@pytest.mark.asyncio
+async def test_apply_promo_code_expired_error() -> None:
+    with pytest.raises(CartPromoCodeExpiredError):
+        await execute_apply_promo_code(
+            promo_code_repository=FakePromoCodeRepository(
+                [build_promo_code(ends_at=datetime.now(UTC) - timedelta(days=1))],
+            ),
+        )
+
+
+@pytest.mark.asyncio
+async def test_apply_promo_code_min_amount_error() -> None:
+    with pytest.raises(CartPromoCodeMinAmountError):
+        await execute_apply_promo_code(
+            promo_code_repository=FakePromoCodeRepository(
+                [build_promo_code(min_order_amount=Decimal("200"))],
+            ),
+        )
+
+
+@pytest.mark.asyncio
+async def test_apply_promo_code_usage_limit_error() -> None:
+    with pytest.raises(CartPromoCodeLimitExceededError):
+        await execute_apply_promo_code(
+            promo_code_repository=FakePromoCodeRepository([build_promo_code(usage_limit=1)]),
+            promo_code_usage_repository=FakePromoCodeUsageRepository(total_count=1),
+        )
+
+
+@pytest.mark.asyncio
+async def test_apply_promo_code_not_applicable_error() -> None:
+    with pytest.raises(CartPromoCodeNotApplicableError):
+        await execute_apply_promo_code(
+            promo_code_repository=FakePromoCodeRepository(
+                [build_promo_code(applicable_product_id=999)],
+            ),
+        )
+
+
+@pytest.mark.asyncio
+async def test_apply_promo_code_invalidates_cart_cache() -> None:
+    redis_service = FakeRedisService()
+
+    await execute_apply_promo_code(redis_service=redis_service)
+
+    assert redis_service.deleted == ["cart:1", "cart:summary:1"]
+
+
+@pytest.mark.asyncio
+async def test_apply_promo_code_does_not_increase_usage_count() -> None:
+    usage_repository = FakePromoCodeUsageRepository()
+
+    await execute_apply_promo_code(promo_code_usage_repository=usage_repository)
+
+    assert usage_repository.created_count == 0
