@@ -214,6 +214,7 @@ class ProfileOrdersSettings(BaseSettings):
 
 class CartSettings(BaseSettings):
     cache_ttl_seconds: int = Field(default=120, alias="CART_CACHE_TTL_SECONDS")
+    summary_cache_ttl_seconds: int = Field(default=120, alias="CART_SUMMARY_CACHE_TTL_SECONDS")
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

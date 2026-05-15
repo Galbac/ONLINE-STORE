@@ -46,6 +46,19 @@ class CartResponse(BaseModel):
     warnings: list[CartWarningResponse]
 
 
+class CartSummaryResponse(BaseModel):
+    items_count: int
+    total_quantity: Decimal
+    subtotal: Decimal
+    discount_amount: Decimal
+    promo_discount_amount: Decimal
+    delivery_price: Decimal | None = None
+    final_price: Decimal
+    has_warnings: bool
+    warnings_count: int
+    promo_code: str | None = None
+
+
 class CartItemCreateRequest(BaseModel):
     product_id: int = Field(gt=0)
     quantity: Decimal = Field(gt=0)

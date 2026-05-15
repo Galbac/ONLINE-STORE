@@ -1,3 +1,4 @@
+from datetime import datetime
 from decimal import Decimal
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -21,6 +22,7 @@ from source.repositories.promo_code import PromoCodeRepository, PromoCodeUsageRe
 from source.schemas.pydantic.cart import (
     CartItemResponse as DetailedCartItemResponse,
     CartResponse as DetailedCartResponse,
+    CartSummaryResponse,
     CartWarningResponse,
 )
 from source.schemas.pydantic.profile import CartItemResponse, CartResponse
@@ -134,8 +136,104 @@ class CartCalculatorService:
             warnings=warnings,
         )
 
+    def calculate_summary(
+        self,
+        *,
+        cart: DetailedCartResponse,
+        extra_warnings_count: int = 0,
+    ) -> CartSummaryResponse:
+        warnings_count = len(cart.warnings) + extra_warnings_count
+        return CartSummaryResponse(
+            items_count=cart.items_count,
+            total_quantity=cart.total_quantity,
+            subtotal=cart.subtotal,
+            discount_amount=cart.discount_amount,
+            promo_discount_amount=cart.promo_discount_amount,
+            delivery_price=cart.delivery_price,
+            final_price=cart.final_price,
+            has_warnings=warnings_count > 0,
+            warnings_count=warnings_count,
+            promo_code=None if cart.promo_code is None else cart.promo_code.code,
+        )
+
 
 class CartService:
+    async def get_cart_summary(
+        self,
+        *,
+        session: AsyncSession,
+        redis_service: RedisService,
+        cart_cache_service: CartCacheService,
+        cart_repository: CartRepository,
+        cart_item_repository: CartItemRepository,
+        product_repository: ProductRepository,
+        promo_code_repository: PromoCodeRepository,
+        cart_calculator_service: CartCalculatorService,
+        user,
+    ) -> CartSummaryResponse:
+        if not user.is_active or user.is_deleted:
+            raise InactiveUserError
+
+        cached_summary = await cart_cache_service.get_summary(redis_service=redis_service, user_id=user.id)
+        if cached_summary is not None:
+            return cached_summary
+
+        response = await self.recalculate_cart_summary(
+            session=session,
+            cart_repository=cart_repository,
+            cart_item_repository=cart_item_repository,
+            product_repository=product_repository,
+            promo_code_repository=promo_code_repository,
+            cart_calculator_service=cart_calculator_service,
+            user_id=user.id,
+        )
+        await cart_cache_service.set_summary(
+            redis_service=redis_service,
+            user_id=user.id,
+            response=response,
+            ttl_seconds=settings.cart.summary_cache_ttl_seconds,
+        )
+        return response
+
+    async def recalculate_cart_summary(
+        self,
+        *,
+        session: AsyncSession,
+        cart_repository: CartRepository,
+        cart_item_repository: CartItemRepository,
+        product_repository: ProductRepository,
+        promo_code_repository: PromoCodeRepository,
+        cart_calculator_service: CartCalculatorService,
+        user_id: int,
+    ) -> CartSummaryResponse:
+        cart = await cart_repository.get_by_user_id(session=session, user_id=user_id)
+        if cart is None:
+            empty_cart = cart_calculator_service.calculate(cart_id=0, cart_items=[], products_by_id={})
+            return cart_calculator_service.calculate_summary(cart=empty_cart)
+
+        detailed_cart = await self.recalculate_current_cart(
+            session=session,
+            cart_item_repository=cart_item_repository,
+            product_repository=product_repository,
+            promo_code_repository=promo_code_repository,
+            cart_calculator_service=cart_calculator_service,
+            cart=cart,
+        )
+        invalid_promo_warning = 0
+        if cart.promo_code_id is not None:
+            promo_code = await promo_code_repository.get_by_id(session=session, promo_code_id=cart.promo_code_id)
+            now = datetime.now(settings.tz)
+            if promo_code is None or not promo_code.is_active or (
+                promo_code.starts_at is not None and promo_code.starts_at > now
+            ) or (
+                promo_code.ends_at is not None and promo_code.ends_at < now
+            ):
+                invalid_promo_warning = 1
+        return cart_calculator_service.calculate_summary(
+            cart=detailed_cart,
+            extra_warnings_count=invalid_promo_warning,
+        )
+
     async def clear_current_cart(
         self,
         *,

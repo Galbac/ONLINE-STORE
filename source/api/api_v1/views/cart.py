@@ -28,7 +28,7 @@ from source.repositories.cart import CartRepository
 from source.repositories.cart_item import CartItemRepository
 from source.repositories.product import ProductRepository
 from source.repositories.promo_code import PromoCodeRepository, PromoCodeUsageRepository
-from source.schemas.pydantic.cart import ApplyPromoCodeRequest, CartItemCreateRequest, CartItemUpdateRequest, CartResponse, MessageCartResponse
+from source.schemas.pydantic.cart import ApplyPromoCodeRequest, CartItemCreateRequest, CartItemUpdateRequest, CartResponse, CartSummaryResponse, MessageCartResponse
 from source.services.cart import CartCalculatorService, CartService
 from source.services.cart_cache import CartCacheService
 from source.services.redis import RedisService
@@ -36,6 +36,44 @@ from source.services.stock import StockService
 from source.services.promo_code import PromoCodeService
 
 router = APIRouter(tags=["cart"])
+
+
+@router.get(
+    "/cart/summary",
+    response_model=CartSummaryResponse,
+    status_code=status.HTTP_200_OK,
+    responses={
+        status.HTTP_401_UNAUTHORIZED: {"description": "Пользователь не авторизован."},
+        status.HTTP_403_FORBIDDEN: {"description": "Пользователь заблокирован или удалён."},
+    },
+)
+@inject
+async def get_cart_summary(
+    current_user: User = Depends(get_current_user),
+    session: FromDishka[AsyncSession] = None,
+    redis_service: FromDishka[RedisService] = None,
+    cart_service: FromDishka[CartService] = None,
+    cart_cache_service: FromDishka[CartCacheService] = None,
+    cart_calculator_service: FromDishka[CartCalculatorService] = None,
+    cart_repository: FromDishka[CartRepository] = None,
+    cart_item_repository: FromDishka[CartItemRepository] = None,
+    product_repository: FromDishka[ProductRepository] = None,
+    promo_code_repository: FromDishka[PromoCodeRepository] = None,
+) -> CartSummaryResponse:
+    try:
+        return await cart_service.get_cart_summary(
+            session=session,
+            redis_service=redis_service,
+            cart_cache_service=cart_cache_service,
+            cart_repository=cart_repository,
+            cart_item_repository=cart_item_repository,
+            product_repository=product_repository,
+            promo_code_repository=promo_code_repository,
+            cart_calculator_service=cart_calculator_service,
+            user=current_user,
+        )
+    except InactiveUserError as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Пользователь заблокирован или удалён") from error
 
 
 @router.delete(

@@ -22,7 +22,7 @@ from source.errors.auth import (
     CartPromoCodeNotApplicableError,
     CartPromoCodeNotFoundError,
 )
-from source.schemas.pydantic.cart import ApplyPromoCodeRequest, CartItemUpdateRequest, CartResponse
+from source.schemas.pydantic.cart import ApplyPromoCodeRequest, CartItemUpdateRequest, CartResponse, CartSummaryResponse
 from source.services.cart import CartCalculatorService, CartService
 from source.services.cart_cache import CartCacheService
 from source.services.promo_code import PromoCodeService
@@ -66,6 +66,10 @@ class FakeCartRepository:
 
     async def get_by_id(self, *, session, cart_id: int):
         return next((cart for cart in self.carts_by_user_id.values() if cart.id == cart_id), None)
+
+    async def get_by_user_id(self, *, session, user_id: int):
+        self.requested_user_id = user_id
+        return self.carts_by_user_id.get(user_id)
 
     async def set_promo_code(self, *, session, cart, promo_code_id: int | None):
         cart.promo_code_id = promo_code_id
@@ -427,6 +431,28 @@ async def execute_remove_promo_code(
         cart_item_repository=cart_item_repository or FakeCartItemRepository({10: [build_cart_item(quantity=Decimal("1"))]}),
         product_repository=product_repository or FakeProductRepository([build_product(old_price=None)]),
         promo_code_repository=promo_code_repository or FakePromoCodeRepository([build_promo_code()]),
+        cart_calculator_service=CartCalculatorService(),
+        user=user or build_user(),
+    )
+
+
+async def execute_get_cart_summary(
+    *,
+    redis_service: FakeRedisService | None = None,
+    cart_repository: FakeCartRepository | None = None,
+    cart_item_repository: FakeCartItemRepository | None = None,
+    product_repository: FakeProductRepository | None = None,
+    promo_code_repository: FakePromoCodeRepository | None = None,
+    user=None,
+) -> CartSummaryResponse:
+    return await CartService().get_cart_summary(
+        session=object(),
+        redis_service=redis_service or FakeRedisService(),
+        cart_cache_service=CartCacheService(),
+        cart_repository=cart_repository or FakeCartRepository(),
+        cart_item_repository=cart_item_repository or FakeCartItemRepository({10: [build_cart_item()]}),
+        product_repository=product_repository or FakeProductRepository([build_product()]),
+        promo_code_repository=promo_code_repository or FakePromoCodeRepository(),
         cart_calculator_service=CartCalculatorService(),
         user=user or build_user(),
     )
@@ -1062,3 +1088,106 @@ async def test_remove_promo_code_invalidates_cart_cache() -> None:
 async def test_remove_promo_code_inactive_user_error() -> None:
     with pytest.raises(InactiveUserError):
         await execute_remove_promo_code(user=build_user(is_active=False))
+
+
+@pytest.mark.asyncio
+async def test_get_cart_summary_from_postgresql_success() -> None:
+    response = await execute_get_cart_summary()
+
+    assert response.items_count == 1
+    assert response.total_quantity == Decimal("1.5")
+    assert response.subtotal == Decimal("270.000")
+    assert response.discount_amount == Decimal("45.000")
+    assert response.final_price == Decimal("225.000")
+    assert response.has_warnings is False
+
+
+@pytest.mark.asyncio
+async def test_get_cart_summary_from_redis_cache_success() -> None:
+    redis_service = FakeRedisService()
+    cached_summary = CartSummaryResponse(
+        items_count=2,
+        total_quantity=Decimal("3"),
+        subtotal=Decimal("100"),
+        discount_amount=Decimal("0"),
+        promo_discount_amount=Decimal("0"),
+        final_price=Decimal("100"),
+        has_warnings=False,
+        warnings_count=0,
+    )
+    redis_service.values["cart:summary:1"] = cached_summary.model_dump_json()
+    cart_repository = FakeCartRepository()
+
+    response = await execute_get_cart_summary(redis_service=redis_service, cart_repository=cart_repository)
+
+    assert response.items_count == 2
+    assert cart_repository.requested_user_id is None
+
+
+@pytest.mark.asyncio
+async def test_get_cart_summary_empty_cart() -> None:
+    cart_repository = FakeCartRepository()
+    cart_repository.carts_by_user_id = {}
+
+    response = await execute_get_cart_summary(cart_repository=cart_repository)
+
+    assert response.items_count == 0
+    assert response.total_quantity == Decimal("0")
+    assert response.final_price == Decimal("0")
+    assert response.promo_code is None
+
+
+@pytest.mark.asyncio
+async def test_get_cart_summary_with_promo_code() -> None:
+    cart_repository = FakeCartRepository()
+    cart_repository.carts_by_user_id[1].promo_code_id = 1
+
+    response = await execute_get_cart_summary(
+        cart_repository=cart_repository,
+        promo_code_repository=FakePromoCodeRepository([build_promo_code()]),
+    )
+
+    assert response.promo_code == "PROMO10"
+    assert response.promo_discount_amount == Decimal("22.500")
+    assert response.final_price == Decimal("202.500")
+
+
+@pytest.mark.asyncio
+async def test_get_cart_summary_with_product_discount() -> None:
+    response = await execute_get_cart_summary()
+
+    assert response.discount_amount == Decimal("45.000")
+
+
+@pytest.mark.asyncio
+async def test_get_cart_summary_with_warnings() -> None:
+    response = await execute_get_cart_summary(
+        product_repository=FakeProductRepository([build_product(is_available=False)]),
+    )
+
+    assert response.has_warnings is True
+    assert response.warnings_count == 1
+
+
+@pytest.mark.asyncio
+async def test_get_cart_summary_with_invalid_promo_warning() -> None:
+    cart_repository = FakeCartRepository()
+    cart_repository.carts_by_user_id[1].promo_code_id = 1
+
+    response = await execute_get_cart_summary(
+        cart_repository=cart_repository,
+        promo_code_repository=FakePromoCodeRepository([build_promo_code(is_active=False)]),
+    )
+
+    assert response.has_warnings is True
+    assert response.warnings_count == 1
+
+
+@pytest.mark.asyncio
+async def test_get_cart_summary_is_cached_in_redis() -> None:
+    redis_service = FakeRedisService()
+
+    await execute_get_cart_summary(redis_service=redis_service)
+
+    assert "cart:summary:1" in redis_service.values
+    assert redis_service.ttls["cart:summary:1"] == settings.cart.summary_cache_ttl_seconds
