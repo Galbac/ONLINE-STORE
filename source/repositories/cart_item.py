@@ -127,3 +127,12 @@ class CartItemRepository:
         for cart_item in await self.get_by_cart_id(session=session, cart_id=cart_id):
             await session.delete(cart_item)
         await session.flush()
+
+    async def delete(
+        self,
+        *,
+        session: AsyncSession,
+        cart_item: CartItem,
+    ) -> None:
+        await session.delete(cart_item)
+        await session.flush()

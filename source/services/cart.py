@@ -121,6 +121,43 @@ class CartCalculatorService:
 
 
 class CartService:
+    async def delete_item(
+        self,
+        *,
+        session: AsyncSession,
+        redis_service: RedisService,
+        cart_cache_service: CartCacheService,
+        cart_repository: CartRepository,
+        cart_item_repository: CartItemRepository,
+        product_repository: ProductRepository,
+        cart_calculator_service: CartCalculatorService,
+        user,
+        cart_item_id: int,
+    ) -> DetailedCartResponse:
+        if not user.is_active or user.is_deleted:
+            raise InactiveUserError
+
+        cart_item = await cart_item_repository.get_by_id(session=session, cart_item_id=cart_item_id)
+        if cart_item is None:
+            raise CartItemNotFoundError
+
+        cart = await cart_repository.get_by_id(session=session, cart_id=cart_item.cart_id)
+        if cart is None:
+            raise CartItemNotFoundError
+        if cart.user_id != user.id:
+            raise CartItemAccessDeniedError
+
+        await cart_item_repository.delete(session=session, cart_item=cart_item)
+        response = await self.recalculate_current_cart(
+            session=session,
+            cart_item_repository=cart_item_repository,
+            product_repository=product_repository,
+            cart_calculator_service=cart_calculator_service,
+            cart=cart,
+        )
+        await cart_cache_service.invalidate_cart(redis_service=redis_service, user_id=user.id)
+        return response
+
     async def update_item_quantity(
         self,
         *,

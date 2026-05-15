@@ -28,6 +28,56 @@ from source.services.stock import StockService
 router = APIRouter(tags=["cart"])
 
 
+@router.delete(
+    "/cart/items/{cart_item_id}",
+    response_model=MessageCartResponse,
+    status_code=status.HTTP_200_OK,
+    responses={
+        status.HTTP_400_BAD_REQUEST: {"description": "Неверный cart_item_id."},
+        status.HTTP_401_UNAUTHORIZED: {"description": "Пользователь не авторизован."},
+        status.HTTP_403_FORBIDDEN: {"description": "Пользователь заблокирован или позиция чужая."},
+        status.HTTP_404_NOT_FOUND: {"description": "Позиция корзины не найдена."},
+    },
+)
+@inject
+async def delete_cart_item(
+    cart_item_id: int,
+    current_user: User = Depends(get_current_user),
+    session: FromDishka[AsyncSession] = None,
+    commiter: FromDishka[Commiter] = None,
+    redis_service: FromDishka[RedisService] = None,
+    cart_service: FromDishka[CartService] = None,
+    cart_cache_service: FromDishka[CartCacheService] = None,
+    cart_calculator_service: FromDishka[CartCalculatorService] = None,
+    cart_repository: FromDishka[CartRepository] = None,
+    cart_item_repository: FromDishka[CartItemRepository] = None,
+    product_repository: FromDishka[ProductRepository] = None,
+) -> MessageCartResponse:
+    try:
+        cart = await cart_service.delete_item(
+            session=session,
+            redis_service=redis_service,
+            cart_cache_service=cart_cache_service,
+            cart_repository=cart_repository,
+            cart_item_repository=cart_item_repository,
+            product_repository=product_repository,
+            cart_calculator_service=cart_calculator_service,
+            user=current_user,
+            cart_item_id=cart_item_id,
+        )
+        await commiter.commit()
+        return MessageCartResponse(message="Товар удалён из корзины", cart=cart)
+    except InactiveUserError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Пользователь заблокирован или удалён") from error
+    except CartItemAccessDeniedError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Позиция корзины принадлежит другому пользователю") from error
+    except CartItemNotFoundError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Позиция корзины не найдена") from error
+
+
 @router.patch(
     "/cart/items/{cart_item_id}",
     response_model=MessageCartResponse,
