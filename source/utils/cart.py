@@ -13,6 +13,12 @@ def validate_product_quantity(*, quantity: Decimal, available_quantity: Decimal,
     return steps * quantity_step
 
 
+def is_quantity_valid_for_step(*, quantity: Decimal, quantity_step: Decimal) -> bool:
+    if quantity_step <= 0:
+        return True
+    return quantity % quantity_step == 0
+
+
 def calculate_cart_totals(items) -> tuple[Decimal, Decimal, Decimal]:
     total_price = sum((item.total_price for item in items), Decimal("0"))
     discount_amount = Decimal("0")

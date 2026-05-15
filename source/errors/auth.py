@@ -92,3 +92,27 @@ class OrderItemsNotFoundError(Exception):
 
 class RepeatOrderUnavailableError(Exception):
     pass
+
+
+class CartProductNotFoundError(Exception):
+    pass
+
+
+class CartProductUnavailableError(Exception):
+    pass
+
+
+class CartInsufficientStockError(Exception):
+    pass
+
+
+class CartPieceQuantityMustBeIntegerError(Exception):
+    pass
+
+
+class CartQuantityStepError(Exception):
+    pass
+
+
+class CartQuantityBelowMinimumError(Exception):
+    pass

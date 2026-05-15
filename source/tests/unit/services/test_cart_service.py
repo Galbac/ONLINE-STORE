@@ -5,9 +5,16 @@ import pytest
 
 from source.config.settings import settings
 from source.errors.auth import InactiveUserError
+from source.errors.auth import (
+    CartInsufficientStockError,
+    CartPieceQuantityMustBeIntegerError,
+    CartProductNotFoundError,
+    CartQuantityStepError,
+)
 from source.schemas.pydantic.cart import CartResponse
 from source.services.cart import CartCalculatorService, CartService
 from source.services.cart_cache import CartCacheService
+from source.services.stock import StockService
 
 
 class FakeRedisService:
@@ -55,6 +62,33 @@ class FakeCartItemRepository:
         self.requested_cart_id = cart_id
         return self.items_by_cart_id.get(cart_id, [])
 
+    async def get_by_cart_and_product_id(self, *, session, cart_id: int, product_id: int):
+        return next(
+            (item for item in self.items_by_cart_id.get(cart_id, []) if item.product_id == product_id),
+            None,
+        )
+
+    async def create(self, *, session, cart_id: int, product, quantity: Decimal):
+        item = build_cart_item(
+            item_id=len(self.items_by_cart_id.get(cart_id, [])) + 1,
+            cart_id=cart_id,
+            product_id=product.id,
+            name=product.name,
+            quantity=quantity,
+            unit=product.unit,
+            price=product.price,
+        )
+        self.items_by_cart_id.setdefault(cart_id, []).append(item)
+        return item
+
+    async def update_quantity(self, *, session, cart_item, product, quantity: Decimal):
+        cart_item.name = product.name
+        cart_item.quantity = quantity
+        cart_item.unit = product.unit
+        cart_item.price = product.price
+        cart_item.total_price = product.price * quantity
+        return cart_item
+
 
 class FakeProductRepository:
     def __init__(self, products: list[object] | None = None) -> None:
@@ -65,6 +99,9 @@ class FakeProductRepository:
         self.requested_product_ids = product_ids
         product_ids_set = set(product_ids)
         return [product for product in self.products if product.id in product_ids_set]
+
+    async def get_by_id(self, *, session, product_id: int):
+        return next((product for product in self.products if product.id == product_id), None)
 
 
 def build_user(*, user_id: int = 1, is_active: bool = True, is_deleted: bool = False):
@@ -106,6 +143,8 @@ def build_product(
     is_active: bool = True,
     is_deleted: bool = False,
     is_available: bool = True,
+    quantity_step: Decimal = Decimal("0.5"),
+    min_quantity: Decimal = Decimal("0.5"),
 ):
     return SimpleNamespace(
         id=product_id,
@@ -120,6 +159,8 @@ def build_product(
         is_active=is_active,
         is_deleted=is_deleted,
         is_available=is_available,
+        quantity_step=quantity_step,
+        min_quantity=min_quantity,
     )
 
 
@@ -140,6 +181,31 @@ async def execute_get_current_cart(
         product_repository=product_repository or FakeProductRepository(),
         cart_calculator_service=CartCalculatorService(),
         user=user or build_user(),
+    )
+
+
+async def execute_add_item(
+    *,
+    redis_service: FakeRedisService | None = None,
+    cart_repository: FakeCartRepository | None = None,
+    cart_item_repository: FakeCartItemRepository | None = None,
+    product_repository: FakeProductRepository | None = None,
+    user=None,
+    product_id: int = 55,
+    quantity: Decimal = Decimal("1.5"),
+) -> CartResponse:
+    return await CartService().add_item(
+        session=object(),
+        redis_service=redis_service or FakeRedisService(),
+        cart_cache_service=CartCacheService(),
+        cart_repository=cart_repository or FakeCartRepository(),
+        cart_item_repository=cart_item_repository or FakeCartItemRepository(),
+        product_repository=product_repository or FakeProductRepository([build_product()]),
+        cart_calculator_service=CartCalculatorService(),
+        stock_service=StockService(),
+        user=user or build_user(),
+        product_id=product_id,
+        quantity=quantity,
     )
 
 
@@ -319,3 +385,95 @@ async def test_get_current_cart_response_is_cached_in_redis() -> None:
 
     assert "cart:1" in redis_service.values
     assert redis_service.ttls["cart:1"] == settings.cart.cache_ttl_seconds
+
+
+@pytest.mark.asyncio
+async def test_add_item_piece_product_success() -> None:
+    response = await execute_add_item(
+        product_repository=FakeProductRepository(
+            [
+                build_product(
+                    product_type="piece",
+                    unit="pcs",
+                    quantity_step=Decimal("1"),
+                    min_quantity=Decimal("1"),
+                    stock_quantity=Decimal("10"),
+                    old_price=None,
+                ),
+            ],
+        ),
+        quantity=Decimal("2"),
+    )
+
+    assert response.items[0].quantity == Decimal("2")
+    assert response.items[0].product_type == "piece"
+
+
+@pytest.mark.asyncio
+async def test_add_item_weight_product_success() -> None:
+    response = await execute_add_item(quantity=Decimal("1.5"))
+
+    assert response.items[0].quantity == Decimal("1.5")
+    assert response.items[0].product_type == "weight"
+
+
+@pytest.mark.asyncio
+async def test_add_item_existing_product_increases_quantity() -> None:
+    cart_items = FakeCartItemRepository({10: [build_cart_item(quantity=Decimal("1"))]})
+
+    response = await execute_add_item(cart_item_repository=cart_items, quantity=Decimal("1.5"))
+
+    assert response.items[0].quantity == Decimal("2.5")
+
+
+@pytest.mark.asyncio
+async def test_add_item_product_not_found_error() -> None:
+    with pytest.raises(CartProductNotFoundError):
+        await execute_add_item(product_repository=FakeProductRepository([]))
+
+
+@pytest.mark.asyncio
+async def test_add_item_inactive_product_not_found_error() -> None:
+    with pytest.raises(CartProductNotFoundError):
+        await execute_add_item(product_repository=FakeProductRepository([build_product(is_active=False)]))
+
+
+@pytest.mark.asyncio
+async def test_add_item_deleted_product_not_found_error() -> None:
+    with pytest.raises(CartProductNotFoundError):
+        await execute_add_item(product_repository=FakeProductRepository([build_product(is_deleted=True)]))
+
+
+@pytest.mark.asyncio
+async def test_add_item_quantity_over_stock_error() -> None:
+    with pytest.raises(CartInsufficientStockError):
+        await execute_add_item(
+            product_repository=FakeProductRepository([build_product(stock_quantity=Decimal("1"))]),
+            quantity=Decimal("1.5"),
+        )
+
+
+@pytest.mark.asyncio
+async def test_add_item_piece_fractional_quantity_error() -> None:
+    with pytest.raises(CartPieceQuantityMustBeIntegerError):
+        await execute_add_item(
+            product_repository=FakeProductRepository(
+                [build_product(product_type="piece", quantity_step=Decimal("1"), min_quantity=Decimal("1"))],
+            ),
+            quantity=Decimal("1.5"),
+        )
+
+
+@pytest.mark.asyncio
+async def test_add_item_weight_invalid_step_error() -> None:
+    with pytest.raises(CartQuantityStepError):
+        await execute_add_item(quantity=Decimal("1.3"))
+
+
+@pytest.mark.asyncio
+async def test_add_item_invalidates_cart_cache() -> None:
+    redis_service = FakeRedisService()
+
+    await execute_add_item(redis_service=redis_service)
+
+    assert redis_service.deleted == ["cart:1", "cart:summary:1"]

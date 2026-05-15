@@ -36,6 +36,7 @@ from source.services.product_cache import ProductCacheService
 from source.services.profile import ProfileService
 from source.services.profile_cache import ProfileCacheService
 from source.services.redis import RedisService
+from source.services.stock import StockService
 from source.services.user import UserService
 from source.services.user_cache import UserCacheService
 
@@ -162,6 +163,10 @@ class AppProvider(Provider):
     )
     cart_calculator_service = provide(
         CartCalculatorService,
+        scope=Scope.REQUEST,
+    )
+    stock_service = provide(
+        StockService,
         scope=Scope.REQUEST,
     )
     cart_cache_service = provide(

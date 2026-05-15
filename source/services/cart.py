@@ -5,7 +5,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from source.db.models.cart import Cart
 from source.db.models.product import Product
 from source.config.settings import settings
-from source.errors.auth import InactiveUserError
+from source.errors.auth import (
+    CartProductNotFoundError,
+    CartProductUnavailableError,
+    InactiveUserError,
+)
 from source.repositories.cart import CartRepository
 from source.repositories.cart_item import CartItemRepository
 from source.repositories.product import ProductRepository
@@ -17,6 +21,7 @@ from source.schemas.pydantic.cart import (
 from source.schemas.pydantic.profile import CartItemResponse, CartResponse
 from source.services.cart_cache import CartCacheService
 from source.services.redis import RedisService
+from source.services.stock import StockService
 from source.utils.cart import calculate_cart_totals
 
 
@@ -114,6 +119,72 @@ class CartCalculatorService:
 
 
 class CartService:
+    async def add_item(
+        self,
+        *,
+        session: AsyncSession,
+        redis_service: RedisService,
+        cart_cache_service: CartCacheService,
+        cart_repository: CartRepository,
+        cart_item_repository: CartItemRepository,
+        product_repository: ProductRepository,
+        cart_calculator_service: CartCalculatorService,
+        stock_service: StockService,
+        user,
+        product_id: int,
+        quantity: Decimal,
+    ) -> DetailedCartResponse:
+        if not user.is_active or user.is_deleted:
+            raise InactiveUserError
+
+        product = await product_repository.get_by_id(session=session, product_id=product_id)
+        if product is None:
+            raise CartProductNotFoundError
+        if not product.is_active or product.is_deleted:
+            raise CartProductNotFoundError
+        if not product.is_available:
+            raise CartProductUnavailableError
+
+        stock_service.validate_quantity(product=product, quantity=quantity)
+
+        cart = await self.get_or_create_cart(
+            session=session,
+            cart_repository=cart_repository,
+            user_id=user.id,
+        )
+        cart_item = await cart_item_repository.get_by_cart_and_product_id(
+            session=session,
+            cart_id=cart.id,
+            product_id=product.id,
+        )
+        final_quantity = quantity if cart_item is None else cart_item.quantity + quantity
+        stock_service.check_available_stock(product=product, quantity=final_quantity)
+
+        if cart_item is None:
+            await cart_item_repository.create(
+                session=session,
+                cart_id=cart.id,
+                product=product,
+                quantity=final_quantity,
+            )
+        else:
+            await cart_item_repository.update_quantity(
+                session=session,
+                cart_item=cart_item,
+                product=product,
+                quantity=final_quantity,
+            )
+
+        response = await self.recalculate_current_cart(
+            session=session,
+            cart_item_repository=cart_item_repository,
+            product_repository=product_repository,
+            cart_calculator_service=cart_calculator_service,
+            cart=cart,
+        )
+        await cart_cache_service.invalidate_cart(redis_service=redis_service, user_id=user.id)
+        return response
+
     async def get_current_cart(
         self,
         *,

@@ -1,6 +1,7 @@
 from decimal import Decimal
 
 from pydantic import BaseModel
+from pydantic import Field
 
 
 class CartWarningResponse(BaseModel):
@@ -44,3 +45,13 @@ class CartResponse(BaseModel):
     delivery_price: Decimal | None = None
     final_price: Decimal
     warnings: list[CartWarningResponse]
+
+
+class CartItemCreateRequest(BaseModel):
+    product_id: int = Field(gt=0)
+    quantity: Decimal = Field(gt=0)
+
+
+class MessageCartResponse(BaseModel):
+    message: str
+    cart: CartResponse
