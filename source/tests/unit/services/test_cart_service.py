@@ -111,6 +111,9 @@ class FakeCartItemRepository:
             item for item in self.items_by_cart_id.get(cart_item.cart_id, []) if item.id != cart_item.id
         ]
 
+    async def delete_by_cart_id(self, *, session, cart_id: int) -> None:
+        self.items_by_cart_id[cart_id] = []
+
 
 class FakeProductRepository:
     def __init__(self, products: list[object] | None = None) -> None:
@@ -275,6 +278,26 @@ async def execute_delete_item(
         cart_calculator_service=CartCalculatorService(),
         user=user or build_user(),
         cart_item_id=cart_item_id,
+    )
+
+
+async def execute_clear_current_cart(
+    *,
+    redis_service: FakeRedisService | None = None,
+    cart_repository: FakeCartRepository | None = None,
+    cart_item_repository: FakeCartItemRepository | None = None,
+    product_repository: FakeProductRepository | None = None,
+    user=None,
+) -> CartResponse:
+    return await CartService().clear_current_cart(
+        session=object(),
+        redis_service=redis_service or FakeRedisService(),
+        cart_cache_service=CartCacheService(),
+        cart_repository=cart_repository or FakeCartRepository(),
+        cart_item_repository=cart_item_repository or FakeCartItemRepository({10: [build_cart_item()]}),
+        product_repository=product_repository or FakeProductRepository([build_product()]),
+        cart_calculator_service=CartCalculatorService(),
+        user=user or build_user(),
     )
 
 
@@ -693,3 +716,66 @@ async def test_delete_item_invalidates_cart_cache() -> None:
     await execute_delete_item(redis_service=redis_service)
 
     assert redis_service.deleted == ["cart:1", "cart:summary:1"]
+
+
+@pytest.mark.asyncio
+async def test_clear_current_cart_success() -> None:
+    response = await execute_clear_current_cart()
+
+    assert response.items == []
+    assert response.items_count == 0
+    assert response.final_price == Decimal("0")
+
+
+@pytest.mark.asyncio
+async def test_clear_current_cart_empty_cart_success() -> None:
+    response = await execute_clear_current_cart(
+        cart_item_repository=FakeCartItemRepository({10: []}),
+        product_repository=FakeProductRepository([]),
+    )
+
+    assert response.items == []
+    assert response.items_count == 0
+    assert response.final_price == Decimal("0")
+
+
+@pytest.mark.asyncio
+async def test_clear_current_cart_has_no_promo_code() -> None:
+    response = await execute_clear_current_cart()
+
+    assert response.promo_code is None
+    assert response.promo_discount_amount == Decimal("0")
+
+
+@pytest.mark.asyncio
+async def test_clear_current_cart_uses_only_current_user_cart() -> None:
+    cart_item_repository = FakeCartItemRepository(
+        {
+            10: [build_cart_item()],
+            20: [build_cart_item(item_id=2, cart_id=20, product_id=77, name="Чужой товар")],
+        },
+    )
+
+    await execute_clear_current_cart(
+        cart_item_repository=cart_item_repository,
+        product_repository=FakeProductRepository([build_product()]),
+        user=build_user(user_id=1),
+    )
+
+    assert cart_item_repository.items_by_cart_id[10] == []
+    assert len(cart_item_repository.items_by_cart_id[20]) == 1
+
+
+@pytest.mark.asyncio
+async def test_clear_current_cart_invalidates_cart_cache() -> None:
+    redis_service = FakeRedisService()
+
+    await execute_clear_current_cart(redis_service=redis_service)
+
+    assert redis_service.deleted == ["cart:1", "cart:summary:1"]
+
+
+@pytest.mark.asyncio
+async def test_clear_current_cart_inactive_user_error() -> None:
+    with pytest.raises(InactiveUserError):
+        await execute_clear_current_cart(user=build_user(is_active=False))
