@@ -5,6 +5,15 @@ from source.db.models.cart import Cart
 
 
 class CartRepository:
+    async def get_by_id(
+        self,
+        *,
+        session: AsyncSession,
+        cart_id: int,
+    ) -> Cart | None:
+        result = await session.execute(select(Cart).where(Cart.id == cart_id))
+        return result.scalar_one_or_none()
+
     async def get_or_create_by_user_id(
         self,
         *,

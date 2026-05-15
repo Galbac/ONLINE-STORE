@@ -52,6 +52,10 @@ class CartItemCreateRequest(BaseModel):
     quantity: Decimal = Field(gt=0)
 
 
+class CartItemUpdateRequest(BaseModel):
+    quantity: Decimal = Field(gt=0)
+
+
 class MessageCartResponse(BaseModel):
     message: str
     cart: CartResponse

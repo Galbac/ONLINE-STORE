@@ -116,3 +116,11 @@ class CartQuantityStepError(Exception):
 
 class CartQuantityBelowMinimumError(Exception):
     pass
+
+
+class CartItemNotFoundError(Exception):
+    pass
+
+
+class CartItemAccessDeniedError(Exception):
+    pass

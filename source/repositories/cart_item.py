@@ -8,6 +8,15 @@ from source.db.models.product import Product
 
 
 class CartItemRepository:
+    async def get_by_id(
+        self,
+        *,
+        session: AsyncSession,
+        cart_item_id: int,
+    ) -> CartItem | None:
+        result = await session.execute(select(CartItem).where(CartItem.id == cart_item_id))
+        return result.scalar_one_or_none()
+
     async def get_by_cart_id(
         self,
         *,
