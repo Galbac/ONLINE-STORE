@@ -26,7 +26,7 @@ from source.repositories.product_image import ProductImageRepository
 from source.repositories.user import UserRepository
 from source.services.auth_cache import AuthCacheService
 from source.services.auth import AuthService
-from source.services.cart import CartService
+from source.services.cart import CartCalculatorService, CartService
 from source.services.cart_cache import CartCacheService
 from source.services.category import CategoryService
 from source.services.category_cache import CategoryCacheService
@@ -158,6 +158,10 @@ class AppProvider(Provider):
     )
     cart_service = provide(
         CartService,
+        scope=Scope.REQUEST,
+    )
+    cart_calculator_service = provide(
+        CartCalculatorService,
         scope=Scope.REQUEST,
     )
     cart_cache_service = provide(

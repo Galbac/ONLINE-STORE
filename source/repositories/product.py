@@ -345,6 +345,17 @@ class ProductRepository:
         result = await session.execute(select(Product).where(Product.id == product_id))
         return result.scalar_one_or_none()
 
+    async def get_by_ids(
+        self,
+        *,
+        session: AsyncSession,
+        product_ids: list[int],
+    ) -> list[Product]:
+        if not product_ids:
+            return []
+        result = await session.execute(select(Product).where(Product.id.in_(product_ids)))
+        return list(result.scalars().all())
+
     async def get_active_by_id(
         self,
         *,

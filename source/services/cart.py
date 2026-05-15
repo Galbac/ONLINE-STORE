@@ -4,13 +4,155 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from source.db.models.cart import Cart
 from source.db.models.product import Product
+from source.config.settings import settings
+from source.errors.auth import InactiveUserError
 from source.repositories.cart import CartRepository
 from source.repositories.cart_item import CartItemRepository
+from source.repositories.product import ProductRepository
+from source.schemas.pydantic.cart import (
+    CartItemResponse as DetailedCartItemResponse,
+    CartResponse as DetailedCartResponse,
+    CartWarningResponse,
+)
 from source.schemas.pydantic.profile import CartItemResponse, CartResponse
+from source.services.cart_cache import CartCacheService
+from source.services.redis import RedisService
 from source.utils.cart import calculate_cart_totals
 
 
+class CartCalculatorService:
+    def calculate(self, *, cart_id: int, cart_items: list, products_by_id: dict[int, Product]) -> DetailedCartResponse:
+        items: list[DetailedCartItemResponse] = []
+        warnings: list[CartWarningResponse] = []
+        subtotal = Decimal("0")
+        discount_amount = Decimal("0")
+        total_quantity = Decimal("0")
+
+        for cart_item in cart_items:
+            product = products_by_id.get(cart_item.product_id)
+            stock_warning = None
+
+            if product is None:
+                stock_warning = "Товар больше недоступен"
+                warnings.append(CartWarningResponse(product_id=cart_item.product_id, message=stock_warning))
+                price = cart_item.price
+                old_price = None
+                item_total = price * cart_item.quantity
+                item_discount = Decimal("0")
+                item_final = item_total
+                item = DetailedCartItemResponse(
+                    id=cart_item.id,
+                    product_id=cart_item.product_id,
+                    name=cart_item.name,
+                    quantity=cart_item.quantity,
+                    unit=cart_item.unit,
+                    price=price,
+                    old_price=old_price,
+                    discount_amount=item_discount,
+                    total_price=item_total,
+                    final_price=item_final,
+                    is_available=False,
+                    stock_quantity=Decimal("0"),
+                    stock_warning=stock_warning,
+                )
+            else:
+                is_available = product.is_active and not product.is_deleted and product.is_available and product.stock_quantity > 0
+                if not is_available:
+                    stock_warning = "Товар сейчас недоступен"
+                    warnings.append(CartWarningResponse(product_id=product.id, message=stock_warning))
+                elif product.stock_quantity < cart_item.quantity:
+                    stock_warning = "Недостаточно товара на складе"
+                    warnings.append(CartWarningResponse(product_id=product.id, message=stock_warning))
+
+                old_price = product.old_price if product.old_price is not None and product.old_price > product.price else None
+                base_price = old_price or product.price
+                item_total = base_price * cart_item.quantity
+                item_final = product.price * cart_item.quantity
+                item_discount = item_total - item_final
+                item = DetailedCartItemResponse(
+                    id=cart_item.id,
+                    product_id=product.id,
+                    name=product.name,
+                    slug=product.slug,
+                    preview_image_url=product.preview_image_url,
+                    quantity=cart_item.quantity,
+                    unit=product.unit,
+                    product_type=product.product_type,
+                    price=product.price,
+                    old_price=old_price,
+                    discount_amount=item_discount,
+                    total_price=item_total,
+                    final_price=item_final,
+                    is_available=is_available,
+                    stock_quantity=product.stock_quantity,
+                    stock_warning=stock_warning,
+                )
+
+            items.append(item)
+            subtotal += item.total_price
+            discount_amount += item.discount_amount
+            total_quantity += item.quantity
+
+        promo_discount_amount = Decimal("0")
+        final_price = subtotal - discount_amount - promo_discount_amount
+        if final_price < 0:
+            final_price = Decimal("0")
+
+        return DetailedCartResponse(
+            id=cart_id,
+            items=items,
+            promo_code=None,
+            items_count=len(items),
+            total_quantity=total_quantity,
+            subtotal=subtotal,
+            discount_amount=discount_amount,
+            promo_discount_amount=promo_discount_amount,
+            delivery_price=None,
+            final_price=final_price,
+            warnings=warnings,
+        )
+
+
 class CartService:
+    async def get_current_cart(
+        self,
+        *,
+        session: AsyncSession,
+        redis_service: RedisService,
+        cart_cache_service: CartCacheService,
+        cart_repository: CartRepository,
+        cart_item_repository: CartItemRepository,
+        product_repository: ProductRepository,
+        cart_calculator_service: CartCalculatorService,
+        user,
+    ) -> DetailedCartResponse:
+        if not user.is_active or user.is_deleted:
+            raise InactiveUserError
+
+        cached_cart = await cart_cache_service.get_cart(redis_service=redis_service, user_id=user.id)
+        if cached_cart is not None:
+            return cached_cart
+
+        cart = await self.get_or_create_cart(
+            session=session,
+            cart_repository=cart_repository,
+            user_id=user.id,
+        )
+        response = await self.recalculate_current_cart(
+            session=session,
+            cart_item_repository=cart_item_repository,
+            product_repository=product_repository,
+            cart_calculator_service=cart_calculator_service,
+            cart=cart,
+        )
+        await cart_cache_service.set_cart(
+            redis_service=redis_service,
+            user_id=user.id,
+            response=response,
+            ttl_seconds=settings.cart.cache_ttl_seconds,
+        )
+        return response
+
     async def get_or_create_cart(
         self,
         *,
@@ -71,4 +213,24 @@ class CartService:
             total_price=total_price,
             discount_amount=discount_amount,
             final_price=final_price,
+        )
+
+    async def recalculate_current_cart(
+        self,
+        *,
+        session: AsyncSession,
+        cart_item_repository: CartItemRepository,
+        product_repository: ProductRepository,
+        cart_calculator_service: CartCalculatorService,
+        cart: Cart,
+    ) -> DetailedCartResponse:
+        cart_items = await cart_item_repository.get_by_cart_id(session=session, cart_id=cart.id)
+        products = await product_repository.get_by_ids(
+            session=session,
+            product_ids=[cart_item.product_id for cart_item in cart_items],
+        )
+        return cart_calculator_service.calculate(
+            cart_id=cart.id,
+            cart_items=cart_items,
+            products_by_id={product.id: product for product in products},
         )
