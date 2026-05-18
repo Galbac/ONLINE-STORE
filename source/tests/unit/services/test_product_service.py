@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from math import ceil
 from types import SimpleNamespace
@@ -1575,11 +1575,24 @@ async def test_get_new_products_limit_works() -> None:
 
 @pytest.mark.asyncio
 async def test_get_new_products_days_works() -> None:
+    now = datetime.now(settings.tz)
     response = await execute_get_new_products(
         product_repository=FakeProductRepository(
             products=[
-                build_product(product_id=1, name="Today", slug="today", category_id=11, created_at=datetime(2026, 5, 14, tzinfo=UTC)),
-                build_product(product_id=2, name="Earlier", slug="earlier", category_id=11, created_at=datetime(2026, 5, 10, tzinfo=UTC)),
+                build_product(
+                    product_id=1,
+                    name="Today",
+                    slug="today",
+                    category_id=11,
+                    created_at=now - timedelta(days=1),
+                ),
+                build_product(
+                    product_id=2,
+                    name="Earlier",
+                    slug="earlier",
+                    category_id=11,
+                    created_at=now - timedelta(days=3),
+                ),
             ],
         ),
         query=ProductNewQueryParams(days=2, in_stock=False),
