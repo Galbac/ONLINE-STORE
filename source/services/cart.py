@@ -682,6 +682,3 @@ class CartService:
             promo_code=promo_code,
             promo_discount_amount=promo_discount_amount,
         )
-
-    async def recalculate_cart(self, **kwargs) -> DetailedCartResponse:
-        return await self.recalculate_current_cart(**kwargs)
