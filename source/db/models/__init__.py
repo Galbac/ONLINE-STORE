@@ -6,6 +6,8 @@ from source.db.models.category import Category
 from source.db.models.delivery_settings import DeliverySettings
 from source.db.models.delivery_time_slot import DeliveryTimeSlot
 from source.db.models.delivery_zone import DeliveryZone
+from source.db.models.discount import Discount
+from source.db.models.favorite import Favorite
 from source.db.models.order import Order
 from source.db.models.order_item import OrderItem
 from source.db.models.payment import Payment
@@ -27,6 +29,8 @@ __all__ = (
     "DeliverySettings",
     "DeliveryTimeSlot",
     "DeliveryZone",
+    "Discount",
+    "Favorite",
     "Order",
     "OrderItem",
     "Payment",

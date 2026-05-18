@@ -22,6 +22,8 @@ from source.repositories.category import CategoryRepository
 from source.repositories.delivery_settings import DeliverySettingsRepository
 from source.repositories.delivery_time_slot import DeliveryTimeSlotRepository
 from source.repositories.delivery_zone import DeliveryZoneRepository
+from source.repositories.discount import DiscountRepository
+from source.repositories.favorite import FavoriteRepository
 from source.repositories.order import OrderRepository
 from source.repositories.order_item import OrderItemRepository
 from source.repositories.payment import PaymentRepository
@@ -42,6 +44,10 @@ from source.services.notifications import EmailService, TelegramNotificationServ
 from source.services.delivery_cache import DeliveryCacheService
 from source.services.notifications import NotificationService
 from source.services.delivery import DeliveryService, DeliveryTimeSlotService, DeliveryZoneService
+from source.services.discount import DiscountService
+from source.services.discount_cache import DiscountCacheService
+from source.services.favorite import FavoriteService
+from source.services.favorite_cache import FavoriteCacheService
 from source.services.one_c import OneCIntegrationService
 from source.services.order import OrderService
 from source.services.order_cache import OrderCacheService
@@ -211,6 +217,14 @@ class AppProvider(Provider):
         DeliveryZoneRepository,
         scope=Scope.REQUEST,
     )
+    discount_repository = provide(
+        DiscountRepository,
+        scope=Scope.REQUEST,
+    )
+    favorite_repository = provide(
+        FavoriteRepository,
+        scope=Scope.REQUEST,
+    )
     cart_service = provide(
         CartService,
         scope=Scope.REQUEST,
@@ -265,6 +279,22 @@ class AppProvider(Provider):
     )
     delivery_cache_service = provide(
         DeliveryCacheService,
+        scope=Scope.REQUEST,
+    )
+    discount_service = provide(
+        DiscountService,
+        scope=Scope.REQUEST,
+    )
+    discount_cache_service = provide(
+        DiscountCacheService,
+        scope=Scope.REQUEST,
+    )
+    favorite_service = provide(
+        FavoriteService,
+        scope=Scope.REQUEST,
+    )
+    favorite_cache_service = provide(
+        FavoriteCacheService,
         scope=Scope.REQUEST,
     )
     one_c_integration_service = provide(

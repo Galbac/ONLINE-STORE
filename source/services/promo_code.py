@@ -9,10 +9,82 @@ from source.errors.auth import (
     CartPromoCodeLimitExceededError,
     CartPromoCodeMinAmountError,
     CartPromoCodeNotApplicableError,
+    CartPromoCodeNotFoundError,
 )
+from source.schemas.pydantic.promo_code import PromoCodeCheckRequest, PromoCodeCheckResponse
+from source.utils.promo_code import calculate_promo_discount
 
 
 class PromoCodeService:
+    async def check_promo_code(
+        self,
+        *,
+        session,
+        promo_code_repository,
+        promo_code_usage_repository,
+        user_id: int | None,
+        data: PromoCodeCheckRequest,
+    ) -> PromoCodeCheckResponse:
+        promo_code = await promo_code_repository.get_by_code(session=session, code=data.code)
+        if promo_code is None:
+            raise CartPromoCodeNotFoundError
+
+        now = datetime.now(settings.tz)
+        if not promo_code.is_active or (promo_code.starts_at is not None and promo_code.starts_at > now):
+            raise CartPromoCodeInactiveError
+        if promo_code.ends_at is not None and promo_code.ends_at < now:
+            raise CartPromoCodeExpiredError
+
+        total_usage_count = await promo_code_usage_repository.count_by_code(session=session, promo_code_id=promo_code.id)
+        if promo_code.usage_limit is not None and total_usage_count >= promo_code.usage_limit:
+            raise CartPromoCodeLimitExceededError
+        if user_id is not None and promo_code.per_user_usage_limit is not None:
+            user_usage_count = await promo_code_usage_repository.count_by_user_and_code(
+                session=session,
+                user_id=user_id,
+                promo_code_id=promo_code.id,
+            )
+            if user_usage_count >= promo_code.per_user_usage_limit:
+                raise CartPromoCodeLimitExceededError
+
+        if (
+            data.cart_total is not None
+            and promo_code.min_order_amount is not None
+            and data.cart_total < promo_code.min_order_amount
+        ):
+            return PromoCodeCheckResponse(
+                valid=False,
+                code=promo_code.code,
+                min_order_amount=promo_code.min_order_amount,
+                amount_left=promo_code.min_order_amount - data.cart_total,
+                message="Сумма заказа меньше минимальной суммы для промокода",
+            )
+
+        return PromoCodeCheckResponse(
+            valid=True,
+            code=promo_code.code,
+            discount_type=promo_code.discount_type,
+            discount_value=promo_code.discount_value,
+            discount_amount=self.calculate_preview_discount(promo_code=promo_code, cart_total=data.cart_total),
+            min_order_amount=promo_code.min_order_amount,
+            message="Промокод доступен",
+        )
+
+    def calculate_preview_discount(self, *, promo_code, cart_total: Decimal | None) -> Decimal | None:
+        if cart_total is None:
+            return None
+        return calculate_promo_discount(
+            discount_type=promo_code.discount_type,
+            discount_value=promo_code.discount_value,
+            amount=cart_total,
+        )
+
+    def validate_for_cart(
+        self,
+        **kwargs,
+    ) -> None:
+        return self.validate_promo_code(**kwargs)
+
     def validate_promo_code(
         self,
         *,

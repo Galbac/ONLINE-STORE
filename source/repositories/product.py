@@ -3,7 +3,9 @@ from datetime import datetime
 from sqlalchemy import case, desc, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from source.config.settings import settings
 from source.db.models.category import Category
+from source.db.models.discount import Discount
 from source.db.models.product import Product
 from source.schemas.pydantic.product import (
     ProductCategoryShortResponse,
@@ -17,6 +19,7 @@ from source.schemas.pydantic.product import (
     ProductSeoResponse,
     ProductShortResponse,
 )
+from source.schemas.pydantic.discount import DiscountProductsQueryParams
 from source.utils.product import build_detailed_stock_display, build_stock_display, calculate_discount_percent
 
 
@@ -317,6 +320,70 @@ class ProductRepository:
         products_subquery = self._discounted_statement(query=query, category_ids=category_ids).subquery()
         result = await session.execute(select(func.count()).select_from(products_subquery))
         return int(result.scalar_one())
+
+    async def get_discounted_products(
+        self,
+        *,
+        session: AsyncSession,
+        query: DiscountProductsQueryParams,
+    ) -> list[ProductShortResponse]:
+        statement = (
+            self._apply_discounted_sort(
+                self._discount_products_statement(query=query),
+                query=query,
+            )
+            .limit(query.limit)
+            .offset(query.offset)
+        )
+        result = await session.execute(statement)
+        return [
+            self._build_product_response(product=product, category=category)
+            for product, category in result.all()
+        ]
+
+    async def count_discounted_products(
+        self,
+        *,
+        session: AsyncSession,
+        query: DiscountProductsQueryParams,
+    ) -> int:
+        products_subquery = self._discount_products_statement(query=query).subquery()
+        result = await session.execute(select(func.count()).select_from(products_subquery))
+        return int(result.scalar_one())
+
+    def _discount_products_statement(self, *, query: DiscountProductsQueryParams):
+        now = datetime.now(settings.tz)
+        active_discount_exists = (
+            select(Discount.id)
+            .where(
+                Discount.is_active.is_(True),
+                Discount.is_deleted.is_(False),
+                or_(Discount.starts_at.is_(None), Discount.starts_at <= now),
+                or_(Discount.ends_at.is_(None), Discount.ends_at >= now),
+                or_(
+                    Discount.type == "cart",
+                    Discount.applicable_product_id == Product.id,
+                    Discount.applicable_category_id == Product.category_id,
+                ),
+            )
+            .exists()
+        )
+        statement = (
+            select(Product, Category)
+            .outerjoin(Category, Product.category_id == Category.id)
+            .where(
+                Product.is_active.is_(True),
+                Product.is_deleted.is_(False),
+                Product.old_price.is_not(None),
+                Product.old_price > Product.price,
+                active_discount_exists,
+            )
+        )
+        if query.category_id is not None:
+            statement = statement.where(Product.category_id == query.category_id)
+        if query.in_stock:
+            statement = statement.where(Product.is_available.is_(True), Product.stock_quantity > 0)
+        return statement
 
     async def get_new_active(
         self,
