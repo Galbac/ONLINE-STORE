@@ -54,3 +54,10 @@ class StockService:
         for item in cart_items:
             product = products_by_id[item.product_id]
             product.stock_quantity -= item.quantity
+
+    async def release_reserved_items(self, *, product_repository, session, products_by_id: dict[int, Product], order_items: list):
+        return await product_repository.release_stock(
+            session=session,
+            products_by_id=products_by_id,
+            order_items=order_items,
+        )

@@ -12,11 +12,13 @@ from source.errors.auth import (
     OrderAccessDeniedError,
     OrderAddressAccessDeniedError,
     OrderNotFoundError,
+    OrderAlreadyCancelledError,
+    OrderCancellationNotAllowedError,
     OrderPickupPointInactiveError,
     OrderPromoCodeInvalidError,
     OrderUnavailableItemsError,
 )
-from source.schemas.pydantic.order import OrderCreateRequest
+from source.schemas.pydantic.order import OrderCancelRequest, OrderCreateRequest
 from source.schemas.pydantic.order import OrderDetailResponse, OrderMyListQueryParams, OrderMyListResponse, OrderShortResponse
 from source.services.cart import CartCalculatorService
 from source.services.delivery import DeliveryService
@@ -73,6 +75,14 @@ class FakeProductRepository:
     async def get_by_ids(self, *, session, product_ids: list[int]):
         return [product for product in self.products if product.id in product_ids]
 
+    async def release_stock(self, *, session, products_by_id: dict, order_items: list):
+        products = []
+        for item in order_items:
+            product = products_by_id[item.product_id]
+            product.stock_quantity += item.quantity
+            products.append(product)
+        return products
+
 
 class FakeAddressRepository:
     def __init__(self, address) -> None:
@@ -101,6 +111,7 @@ class FakePromoCodeRepository:
 class FakePromoCodeUsageRepository:
     def __init__(self) -> None:
         self.created = False
+        self.cancelled = False
 
     async def count_by_code(self, *, session, promo_code_id: int) -> int:
         return 0
@@ -108,9 +119,12 @@ class FakePromoCodeUsageRepository:
     async def count_by_user_and_code(self, *, session, user_id: int, promo_code_id: int) -> int:
         return 0
 
-    async def create(self, *, session, promo_code_id: int, user_id: int, status: str):
+    async def create(self, *, session, promo_code_id: int, user_id: int, order_id: int | None = None, status: str):
         self.created = True
-        return SimpleNamespace(id=1, promo_code_id=promo_code_id, user_id=user_id, status=status)
+        return SimpleNamespace(id=1, promo_code_id=promo_code_id, user_id=user_id, order_id=order_id, status=status)
+
+    async def cancel_by_order_id(self, *, session, order_id: int) -> None:
+        self.cancelled = True
 
 
 class FakeOrderRepository:
@@ -133,6 +147,10 @@ class FakeOrderDetailRepository:
     async def get_by_id(self, *, session, order_id: int):
         self.requested_order_id = order_id
         return self.order if self.order is not None and self.order.id == order_id else None
+
+    async def update_status(self, *, session, order, status: str):
+        order.status = status
+        return order
 
 
 class FakeMyOrderRepository:
@@ -222,6 +240,9 @@ class FakeCartCacheService:
     async def invalidate_cart(self, *, redis_service, user_id: int) -> None:
         self.invalidated = True
 
+    async def invalidate_summary(self, *, redis_service, user_id: int) -> None:
+        self.summary_invalidated = True
+
 
 class FakeOrderCacheService:
     def __init__(self) -> None:
@@ -253,6 +274,9 @@ class FakeOrderCacheService:
     async def invalidate_detail(self, *, redis_service, user_id: int, order_id: int | None = None) -> None:
         self.invalidated = True
 
+    async def invalidate_order(self, *, redis_service, user_id: int, order_id: int) -> None:
+        self.invalidated = True
+
 
 class FakeProfileCacheService:
     def __init__(self) -> None:
@@ -280,6 +304,9 @@ class FakeNotificationService:
 
     async def notify_order_created(self, **kwargs) -> None:
         self.notified = True
+
+    async def notify_order_cancelled(self, **kwargs) -> None:
+        self.cancel_notified = True
 
 
 class FakeEmailService:
@@ -388,6 +415,7 @@ def build_order_detail(*, user_id: int = 1):
         sync_error="secret",
         internal_comment="secret",
         manager_id=7,
+        sync_status="sent",
     )
 
 
@@ -530,6 +558,66 @@ async def execute_get_order_detail(
             SimpleNamespace(id=9, amount=Decimal("375.00"), status="paid", payment_url=None),
         ),
         order_cache_service=order_cache_service or FakeOrderCacheService(),
+    )
+
+
+async def execute_cancel_order(
+    *,
+    order="default",
+    fail_update=False,
+    payment=None,
+):
+    order = build_order_detail() if order == "default" else order
+    if order is not None and payment is None:
+        order.payment_status = "unpaid"
+    product = build_product(stock_quantity=Decimal("8"))
+    promo_usage_repository = FakePromoCodeUsageRepository()
+    commiter = FakeCommiter()
+    order_repository = FakeOrderDetailRepository(order)
+    if fail_update:
+        async def broken_update_status(*, session, order, status: str):
+            raise RuntimeError("boom")
+        order_repository.update_status = broken_update_status
+    order_cache_service = FakeOrderCacheService()
+    profile_cache_service = FakeProfileCacheService()
+    product_cache_service = FakeProductCacheService()
+    cart_cache_service = FakeCartCacheService()
+    notification_service = FakeNotificationService()
+    response = await OrderService().cancel_order(
+        session=None,
+        commiter=commiter,
+        redis_service=FakeRedisService(),
+        user=SimpleNamespace(id=1, is_active=True, is_deleted=False),
+        order_id=101,
+        data=OrderCancelRequest(reason=" Передумал "),
+        order_repository=order_repository,
+        order_item_repository=FakeOrderDetailItemRepository(),
+        product_repository=FakeProductRepository([product]),
+        promo_code_usage_repository=promo_usage_repository,
+        payment_repository=FakeOrderDetailPaymentRepository(payment),
+        stock_service=StockService(),
+        promo_code_service=PromoCodeService(),
+        payment_service=PaymentService(),
+        order_cache_service=order_cache_service,
+        profile_cache_service=profile_cache_service,
+        product_cache_service=product_cache_service,
+        cart_cache_service=cart_cache_service,
+        one_c_integration_service=OneCIntegrationService(),
+        notification_service=notification_service,
+        email_service=FakeEmailService(),
+        telegram_service=FakeTelegramService(),
+    )
+    return SimpleNamespace(
+        response=response,
+        order=order,
+        product=product,
+        promo_usage_repository=promo_usage_repository,
+        commiter=commiter,
+        order_cache_service=order_cache_service,
+        profile_cache_service=profile_cache_service,
+        product_cache_service=product_cache_service,
+        cart_cache_service=cart_cache_service,
+        notification_service=notification_service,
     )
 
 
@@ -808,3 +896,89 @@ async def test_get_order_detail_response_is_cached() -> None:
     await execute_get_order_detail(order_cache_service=cache)
     assert "orders:detail:1:101" in cache.values
     assert cache.ttls["orders:detail:1:101"] == 60
+
+
+@pytest.mark.asyncio
+async def test_cancel_order_new_success() -> None:
+    order = build_order_detail()
+    order.status = "new"
+    result = await execute_cancel_order(order=order)
+    assert result.response.message == "Заказ отменён"
+    assert result.response.order.status == "cancelled"
+    assert result.response.order.cancel_reason == "Передумал"
+
+
+@pytest.mark.asyncio
+async def test_cancel_order_pending_payment_success() -> None:
+    order = build_order_detail()
+    order.status = "pending_payment"
+    result = await execute_cancel_order(order=order)
+    assert result.response.order.status == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_cancel_order_access_denied() -> None:
+    order = build_order_detail(user_id=2)
+    with pytest.raises(OrderAccessDeniedError):
+        await execute_cancel_order(order=order)
+
+
+@pytest.mark.asyncio
+async def test_cancel_order_not_found() -> None:
+    with pytest.raises(OrderNotFoundError):
+        await execute_cancel_order(order=None)
+
+
+@pytest.mark.asyncio
+async def test_cancel_order_already_cancelled_error() -> None:
+    order = build_order_detail()
+    order.status = "cancelled"
+    with pytest.raises(OrderAlreadyCancelledError):
+        await execute_cancel_order(order=order)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["assembling", "delivering"])
+async def test_cancel_order_disallowed_status_error(status: str) -> None:
+    order = build_order_detail()
+    order.status = status
+    with pytest.raises(OrderCancellationNotAllowedError):
+        await execute_cancel_order(order=order)
+
+
+@pytest.mark.asyncio
+async def test_cancel_order_releases_stock_and_cancels_promo_usage() -> None:
+    order = build_order_detail()
+    order.status = "new"
+    result = await execute_cancel_order(order=order)
+    assert result.product.stock_quantity == Decimal("9.5")
+    assert result.promo_usage_repository.cancelled is True
+
+
+@pytest.mark.asyncio
+async def test_cancel_order_marks_pending_cancel_for_synced_order() -> None:
+    order = build_order_detail()
+    order.status = "new"
+    order.sync_status = "sent"
+    result = await execute_cancel_order(order=order)
+    assert result.order.sync_status == "pending_cancel"
+
+
+@pytest.mark.asyncio
+async def test_cancel_order_invalidates_cache() -> None:
+    order = build_order_detail()
+    order.status = "new"
+    result = await execute_cancel_order(order=order)
+    assert result.order_cache_service.invalidated is True
+    assert result.profile_cache_service.orders_invalidated is True
+    assert result.profile_cache_service.summary_deleted is True
+    assert result.product_cache_service.invalidated is True
+    assert result.cart_cache_service.summary_invalidated is True
+
+
+@pytest.mark.asyncio
+async def test_cancel_order_rolls_back_on_error() -> None:
+    order = build_order_detail()
+    order.status = "new"
+    with pytest.raises(RuntimeError):
+        await execute_cancel_order(order=order, fail_update=True)

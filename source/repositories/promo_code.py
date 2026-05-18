@@ -34,9 +34,25 @@ class PromoCodeUsageRepository:
         )
         return result.scalar_one()
 
-    async def create(self, *, session: AsyncSession, promo_code_id: int, user_id: int, status: str = "reserved") -> PromoCodeUsage:
-        usage = PromoCodeUsage(promo_code_id=promo_code_id, user_id=user_id, status=status)
+    async def create(
+        self,
+        *,
+        session: AsyncSession,
+        promo_code_id: int,
+        user_id: int,
+        order_id: int | None = None,
+        status: str = "reserved",
+    ) -> PromoCodeUsage:
+        usage = PromoCodeUsage(promo_code_id=promo_code_id, user_id=user_id, order_id=order_id, status=status)
         session.add(usage)
         await session.flush()
         await session.refresh(usage)
         return usage
+
+    async def cancel_by_order_id(self, *, session: AsyncSession, order_id: int) -> None:
+        result = await session.execute(select(PromoCodeUsage).where(PromoCodeUsage.order_id == order_id))
+        usage = result.scalar_one_or_none()
+        if usage is not None:
+            usage.status = "cancelled"
+            session.add(usage)
+            await session.flush()

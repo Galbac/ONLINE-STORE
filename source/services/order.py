@@ -1,4 +1,5 @@
 from decimal import Decimal
+from datetime import datetime
 
 from source.config.settings import settings
 from source.errors.auth import (
@@ -13,7 +14,10 @@ from source.errors.auth import (
     OrderAddressNotFoundError,
     OrderCartNotFoundError,
     OrderAccessDeniedError,
+    OrderAlreadyCancelledError,
+    OrderCancellationNotAllowedError,
     OrderNotFoundError,
+    OrderPaidCancellationRequiresManagerError,
     OrderPickupPointInactiveError,
     OrderPickupPointNotFoundError,
     OrderPromoCodeInvalidError,
@@ -21,6 +25,8 @@ from source.errors.auth import (
 )
 from source.schemas.pydantic.order import (
     OrderAddressResponse,
+    OrderCancelRequest,
+    OrderCancelResponse,
     OrderCreateResponse,
     OrderDetailResponse,
     OrderItemResponse,
@@ -28,12 +34,117 @@ from source.schemas.pydantic.order import (
     OrderMyListResponse,
     OrderPaymentResponse,
     OrderPickupPointResponse,
+    OrderShortStatusResponse,
 )
 from source.utils.query_hash import build_query_hash
-from source.utils.order import calculate_order_totals, generate_order_number
+from source.utils.order import calculate_order_totals, generate_order_number, is_order_cancel_allowed
 
 
 class OrderService:
+    async def cancel_order(
+        self,
+        *,
+        session,
+        commiter,
+        redis_service,
+        user,
+        order_id: int,
+        data: OrderCancelRequest,
+        order_repository,
+        order_item_repository,
+        product_repository,
+        promo_code_usage_repository,
+        payment_repository,
+        stock_service,
+        promo_code_service,
+        payment_service,
+        order_cache_service,
+        profile_cache_service,
+        product_cache_service,
+        cart_cache_service,
+        one_c_integration_service,
+        notification_service,
+        email_service,
+        telegram_service,
+    ) -> OrderCancelResponse:
+        if not user.is_active or user.is_deleted:
+            raise InactiveUserError
+
+        order = await order_repository.get_by_id(session=session, order_id=order_id)
+        if order is None:
+            raise OrderNotFoundError
+        if order.user_id != user.id:
+            raise OrderAccessDeniedError
+        if order.status == "cancelled":
+            raise OrderAlreadyCancelledError
+        if not is_order_cancel_allowed(status=order.status, allowed_statuses=settings.orders.cancel_allowed_statuses):
+            raise OrderCancellationNotAllowedError
+
+        payment = await payment_repository.get_by_order_id(session=session, order_id=order.id)
+        if (
+            order.payment_method == "online"
+            and order.payment_status == "paid"
+            and not settings.payments.auto_refund_enabled
+        ):
+            raise OrderPaidCancellationRequiresManagerError
+
+        order_items = await order_item_repository.get_by_order_id(session=session, order_id=order.id)
+        products = await product_repository.get_by_ids(
+            session=session,
+            product_ids=[item.product_id for item in order_items],
+        )
+        products_by_id = {product.id: product for product in products}
+
+        try:
+            await order_repository.update_status(session=session, order=order, status="cancelled")
+            order.cancel_reason = data.reason
+            order.cancelled_at = datetime.now(settings.tz)
+            order.cancelled_by = "customer"
+            released_products = await stock_service.release_reserved_items(
+                product_repository=product_repository,
+                session=session,
+                products_by_id=products_by_id,
+                order_items=order_items,
+            )
+            await promo_code_service.cancel_usage(
+                promo_code_usage_repository=promo_code_usage_repository,
+                session=session,
+                order_id=order.id,
+            )
+            if payment is not None and order.payment_method == "online" and order.payment_status == "paid":
+                await payment_service.create_refund_request(order=order)
+            await one_c_integration_service.mark_order_cancel_pending_sync(order=order)
+            await commiter.commit()
+        except Exception:
+            await commiter.rollback()
+            raise
+
+        await order_cache_service.invalidate_order(
+            redis_service=redis_service,
+            user_id=user.id,
+            order_id=order.id,
+        )
+        await profile_cache_service.invalidate_orders(redis_service=redis_service, user_id=user.id)
+        await profile_cache_service.delete_summary(redis_service=redis_service, user_id=user.id)
+        await product_cache_service.invalidate_by_stock_changes(redis_service=redis_service, products=released_products)
+        await cart_cache_service.invalidate_summary(redis_service=redis_service, user_id=user.id)
+        await notification_service.notify_order_cancelled(
+            email_service=email_service,
+            telegram_service=telegram_service,
+            order=order,
+        )
+        return OrderCancelResponse(
+            message="Заказ отменён",
+            order=OrderShortStatusResponse(
+                id=order.id,
+                order_number=order.order_number,
+                status=order.status,
+                payment_status=order.payment_status,
+                cancel_reason=order.cancel_reason,
+                cancelled_at=order.cancelled_at,
+            ),
+        )
+
     async def get_order_detail(
         self,
         *,
@@ -392,6 +503,7 @@ class OrderService:
                     session=session,
                     promo_code_id=promo_code.id,
                     user_id=user.id,
+                    order_id=order.id,
                 )
             await cart_item_repository.delete_by_cart_id(session=session, cart_id=cart.id)
             await cart_repository.clear_promo_code(session=session, cart=cart)

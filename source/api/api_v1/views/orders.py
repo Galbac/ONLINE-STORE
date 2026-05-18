@@ -13,6 +13,8 @@ from source.errors.auth import (
     CartEmptyError,
     InactiveUserError,
     OrderAddressAccessDeniedError,
+    OrderAlreadyCancelledError,
+    OrderCancellationNotAllowedError,
     OrderAddressNotFoundError,
     OrderCartNotFoundError,
     OrderAccessDeniedError,
@@ -20,6 +22,7 @@ from source.errors.auth import (
     OrderPickupPointInactiveError,
     OrderPickupPointNotFoundError,
     OrderPromoCodeInvalidError,
+    OrderPaidCancellationRequiresManagerError,
     OrderUnavailableItemsError,
 )
 from source.repositories.address import AddressRepository
@@ -34,6 +37,8 @@ from source.repositories.promo_code import PromoCodeRepository, PromoCodeUsageRe
 from source.schemas.pydantic.order import (
     OrderCreateRequest,
     OrderCreateResponse,
+    OrderCancelRequest,
+    OrderCancelResponse,
     OrderDetailResponse,
     OrderMyListQueryParams,
     OrderMyListResponse,
@@ -130,6 +135,77 @@ async def get_order_detail(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Заказ не найден") from error
     except OrderAccessDeniedError as error:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Заказ принадлежит другому пользователю") from error
+
+
+@router.post("/orders/{order_id}/cancel", response_model=OrderCancelResponse, status_code=status.HTTP_200_OK)
+@inject
+async def cancel_order(
+    order_id: int,
+    body: OrderCancelRequest = Body(default_factory=OrderCancelRequest),
+    current_user: User = Depends(get_current_user),
+    session: FromDishka[AsyncSession] = None,
+    commiter: FromDishka[Commiter] = None,
+    redis_service: FromDishka[RedisService] = None,
+    order_service: FromDishka[OrderService] = None,
+    order_repository: FromDishka[OrderRepository] = None,
+    order_item_repository: FromDishka[OrderItemRepository] = None,
+    product_repository: FromDishka[ProductRepository] = None,
+    promo_code_usage_repository: FromDishka[PromoCodeUsageRepository] = None,
+    payment_repository: FromDishka[PaymentRepository] = None,
+    stock_service: FromDishka[StockService] = None,
+    promo_code_service: FromDishka[PromoCodeService] = None,
+    payment_service: FromDishka[PaymentService] = None,
+    order_cache_service: FromDishka[OrderCacheService] = None,
+    profile_cache_service: FromDishka[ProfileCacheService] = None,
+    product_cache_service: FromDishka[ProductCacheService] = None,
+    cart_cache_service: FromDishka[CartCacheService] = None,
+    one_c_integration_service: FromDishka[OneCIntegrationService] = None,
+    notification_service: FromDishka[NotificationService] = None,
+    email_service: FromDishka[EmailService] = None,
+    telegram_service: FromDishka[TelegramNotificationService] = None,
+) -> OrderCancelResponse:
+    if order_id <= 0:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Неверный order_id")
+    try:
+        return await order_service.cancel_order(
+            session=session,
+            commiter=commiter,
+            redis_service=redis_service,
+            user=current_user,
+            order_id=order_id,
+            data=body,
+            order_repository=order_repository,
+            order_item_repository=order_item_repository,
+            product_repository=product_repository,
+            promo_code_usage_repository=promo_code_usage_repository,
+            payment_repository=payment_repository,
+            stock_service=stock_service,
+            promo_code_service=promo_code_service,
+            payment_service=payment_service,
+            order_cache_service=order_cache_service,
+            profile_cache_service=profile_cache_service,
+            product_cache_service=product_cache_service,
+            cart_cache_service=cart_cache_service,
+            one_c_integration_service=one_c_integration_service,
+            notification_service=notification_service,
+            email_service=email_service,
+            telegram_service=telegram_service,
+        )
+    except InactiveUserError as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Пользователь заблокирован или удалён") from error
+    except OrderNotFoundError as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Заказ не найден") from error
+    except OrderAccessDeniedError as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Заказ принадлежит другому пользователю") from error
+    except OrderAlreadyCancelledError as error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Заказ уже отменён") from error
+    except OrderCancellationNotAllowedError as error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Заказ нельзя отменить на текущем статусе") from error
+    except OrderPaidCancellationRequiresManagerError as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Заказ оплачен, требуется возврат через менеджера",
+        ) from error
 
 
 @router.post("/orders", response_model=OrderCreateResponse, status_code=status.HTTP_201_CREATED)

@@ -81,3 +81,7 @@ class OrderCacheService:
             await redis_service.delete(self._detail_key(user_id=user_id, order_id=order_id))
             return
         await redis_service.delete_by_pattern(f"orders:detail:{user_id}:*")
+
+    async def invalidate_order(self, *, redis_service: RedisService, user_id: int, order_id: int) -> None:
+        await self.invalidate_detail(redis_service=redis_service, user_id=user_id, order_id=order_id)
+        await self.invalidate_my_orders(redis_service=redis_service, user_id=user_id)

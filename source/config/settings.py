@@ -223,8 +223,16 @@ class OrdersSettings(BaseSettings):
     number_prefix: str = Field(default="ORD", alias="ORDER_NUMBER_PREFIX")
     default_status: str = Field(default="new", alias="ORDER_DEFAULT_STATUS")
     online_payment_status: str = Field(default="pending_payment", alias="ORDER_ONLINE_PAYMENT_STATUS")
+    cancel_allowed_statuses_raw: str = Field(
+        default="new,pending_payment,confirmed,awaiting_confirmation",
+        alias="ORDER_CANCEL_ALLOWED_STATUSES",
+    )
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+    @property
+    def cancel_allowed_statuses(self) -> set[str]:
+        return {status.strip() for status in self.cancel_allowed_statuses_raw.split(",") if status.strip()}
 
 
 class OrdersMySettings(BaseSettings):
@@ -243,6 +251,12 @@ class OrderDetailSettings(BaseSettings):
 
 class OneCSettings(BaseSettings):
     sync_enabled: bool = Field(default=True, alias="ONE_C_SYNC_ENABLED")
+
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+
+class PaymentsSettings(BaseSettings):
+    auto_refund_enabled: bool = Field(default=False, alias="AUTO_REFUND_ENABLED")
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
@@ -308,6 +322,7 @@ class Settings(BaseSettings):
     orders_my: OrdersMySettings = OrdersMySettings()
     order_detail: OrderDetailSettings = OrderDetailSettings()
     one_c: OneCSettings = OneCSettings()
+    payments: PaymentsSettings = PaymentsSettings()
     categories: CategoriesSettings = CategoriesSettings()
     products: ProductsSettings = ProductsSettings()
 

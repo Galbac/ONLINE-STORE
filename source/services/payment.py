@@ -12,3 +12,6 @@ class PaymentService:
             payment_url=payment_url,
         )
         return payment_url
+
+    async def create_refund_request(self, *, order) -> None:
+        return None

@@ -1,8 +1,8 @@
 from decimal import Decimal
 
-from datetime import date
+from datetime import date, datetime
 
-from sqlalchemy import Date, ForeignKey, Numeric, String, Text
+from sqlalchemy import Date, DateTime, ForeignKey, Numeric, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from source.db.models.base import Base
@@ -40,5 +40,8 @@ class Order(IdBigIntPkMixin, CreateUpdateMixin, Base):
     customer_phone: Mapped[str] = mapped_column(String(32), nullable=False)
     customer_email: Mapped[str | None] = mapped_column(String(255))
     comment: Mapped[str | None] = mapped_column(Text)
+    cancel_reason: Mapped[str | None] = mapped_column(Text)
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    cancelled_by: Mapped[str | None] = mapped_column(String(50))
     sync_status: Mapped[str] = mapped_column(String(50), default="pending", server_default="pending", nullable=False)
     items_count: Mapped[int] = mapped_column(default=0, server_default="0", nullable=False)

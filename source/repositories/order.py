@@ -28,6 +28,13 @@ class OrderRepository:
         result = await session.execute(select(Order).where(Order.id == order_id))
         return result.scalar_one_or_none()
 
+    async def update_status(self, *, session: AsyncSession, order: Order, status: str) -> Order:
+        order.status = status
+        session.add(order)
+        await session.flush()
+        await session.refresh(order)
+        return order
+
     async def count_by_user_id(
         self,
         *,

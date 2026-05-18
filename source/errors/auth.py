@@ -193,3 +193,15 @@ class OrderUnavailableItemsError(Exception):
 
 class OrderPromoCodeInvalidError(Exception):
     pass
+
+
+class OrderAlreadyCancelledError(Exception):
+    pass
+
+
+class OrderCancellationNotAllowedError(Exception):
+    pass
+
+
+class OrderPaidCancellationRequiresManagerError(Exception):
+    pass

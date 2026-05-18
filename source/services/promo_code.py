@@ -109,10 +109,15 @@ class PromoCodeService:
         session,
         promo_code_id: int,
         user_id: int,
+        order_id: int | None = None,
     ):
         return await promo_code_usage_repository.create(
             session=session,
             promo_code_id=promo_code_id,
             user_id=user_id,
+            order_id=order_id,
             status="reserved",
         )
+
+    async def cancel_usage(self, *, promo_code_usage_repository, session, order_id: int) -> None:
+        await promo_code_usage_repository.cancel_by_order_id(session=session, order_id=order_id)

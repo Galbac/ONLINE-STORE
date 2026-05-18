@@ -43,3 +43,14 @@ def calculate_order_totals(*, subtotal: Decimal, discount_amount: Decimal, promo
 
 def generate_order_number(*, prefix: str, order_id: int) -> str:
     return f"{prefix}-{order_id:06d}"
+
+
+def is_order_cancel_allowed(*, status: str, allowed_statuses: set[str]) -> bool:
+    return status in allowed_statuses
+
+
+def normalize_cancel_reason(reason: str | None) -> str | None:
+    if reason is None:
+        return None
+    normalized = " ".join(reason.strip().split())
+    return normalized or None

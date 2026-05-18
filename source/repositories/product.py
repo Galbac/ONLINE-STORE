@@ -356,6 +356,18 @@ class ProductRepository:
         result = await session.execute(select(Product).where(Product.id.in_(product_ids)))
         return list(result.scalars().all())
 
+    async def release_stock(self, *, session: AsyncSession, products_by_id: dict[int, Product], order_items: list) -> list[Product]:
+        products: list[Product] = []
+        for item in order_items:
+            product = products_by_id.get(item.product_id)
+            if product is None:
+                continue
+            product.stock_quantity += item.quantity
+            session.add(product)
+            products.append(product)
+        await session.flush()
+        return products
+
     async def get_active_by_id(
         self,
         *,

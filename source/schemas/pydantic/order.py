@@ -170,3 +170,28 @@ class OrderDetailResponse(BaseModel):
     comment: str | None = None
     created_at: datetime
     updated_at: datetime
+
+
+class OrderCancelRequest(BaseModel):
+    reason: str | None = Field(default=None, max_length=500)
+
+    @field_validator("reason", mode="before")
+    @classmethod
+    def normalize_reason(cls, value: str | None) -> str | None:
+        from source.utils.order import normalize_cancel_reason
+
+        return normalize_cancel_reason(value)
+
+
+class OrderShortStatusResponse(BaseModel):
+    id: int
+    order_number: str
+    status: str
+    payment_status: str | None = None
+    cancel_reason: str | None = None
+    cancelled_at: datetime | None = None
+
+
+class OrderCancelResponse(BaseModel):
+    message: str
+    order: OrderShortStatusResponse
