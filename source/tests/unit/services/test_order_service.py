@@ -19,7 +19,7 @@ from source.errors.auth import (
     OrderUnavailableItemsError,
 )
 from source.schemas.pydantic.order import OrderCancelRequest, OrderCreateRequest
-from source.schemas.pydantic.order import OrderDetailResponse, OrderMyListQueryParams, OrderMyListResponse, OrderShortResponse
+from source.schemas.pydantic.order import OrderDetailResponse, OrderMyListQueryParams, OrderMyListResponse, OrderShortResponse, OrderStatusResponse
 from source.services.cart import CartCalculatorService
 from source.services.delivery import DeliveryService
 from source.services.one_c import OneCIntegrationService
@@ -152,6 +152,10 @@ class FakeOrderDetailRepository:
         order.status = status
         return order
 
+    async def get_status_by_id(self, *, session, order_id: int):
+        self.requested_order_id = order_id
+        return self.order if self.order is not None and self.order.id == order_id else None
+
 
 class FakeMyOrderRepository:
     def __init__(self, orders=None) -> None:
@@ -275,6 +279,18 @@ class FakeOrderCacheService:
         self.invalidated = True
 
     async def invalidate_order(self, *, redis_service, user_id: int, order_id: int) -> None:
+        self.invalidated = True
+
+    async def get_status(self, *, redis_service, user_id: int, order_id: int):
+        value = self.values.get(f"orders:status:{user_id}:{order_id}")
+        return None if value is None else OrderStatusResponse.model_validate_json(value)
+
+    async def set_status(self, *, redis_service, user_id: int, order_id: int, response, ttl_seconds: int):
+        key = f"orders:status:{user_id}:{order_id}"
+        self.values[key] = response.model_dump_json()
+        self.ttls[key] = ttl_seconds
+
+    async def invalidate_status(self, *, redis_service, user_id: int, order_id: int | None = None) -> None:
         self.invalidated = True
 
 
@@ -557,6 +573,17 @@ async def execute_get_order_detail(
         payment_repository=FakeOrderDetailPaymentRepository(
             SimpleNamespace(id=9, amount=Decimal("375.00"), status="paid", payment_url=None),
         ),
+        order_cache_service=order_cache_service or FakeOrderCacheService(),
+    )
+
+
+async def execute_get_order_status(*, order=None, order_cache_service=None, order_repository=None):
+    return await OrderService().get_order_status(
+        session=None,
+        redis_service=FakeRedisService(),
+        user=SimpleNamespace(id=1, is_active=True, is_deleted=False),
+        order_id=101,
+        order_repository=order_repository or FakeOrderDetailRepository(order or build_order_detail()),
         order_cache_service=order_cache_service or FakeOrderCacheService(),
     )
 
@@ -982,3 +1009,67 @@ async def test_cancel_order_rolls_back_on_error() -> None:
     order.status = "new"
     with pytest.raises(RuntimeError):
         await execute_cancel_order(order=order, fail_update=True)
+
+
+@pytest.mark.asyncio
+async def test_get_order_status_success() -> None:
+    response = await execute_get_order_status()
+    assert response.status == "assembling"
+    assert response.status_label == "Собирается"
+    assert response.payment_status_label == "Оплачен"
+
+
+@pytest.mark.asyncio
+async def test_get_order_status_from_cache_success() -> None:
+    cache = FakeOrderCacheService()
+    cached = await execute_get_order_status()
+    cache.values["orders:status:1:101"] = cached.model_dump_json()
+    repository = FakeOrderDetailRepository(None)
+    response = await execute_get_order_status(order_cache_service=cache, order_repository=repository)
+    assert response.id == 101
+    assert repository.requested_order_id is None
+
+
+@pytest.mark.asyncio
+async def test_get_order_status_access_denied() -> None:
+    with pytest.raises(OrderAccessDeniedError):
+        await execute_get_order_status(order=build_order_detail(user_id=2))
+
+
+@pytest.mark.asyncio
+async def test_get_order_status_not_found() -> None:
+    with pytest.raises(OrderNotFoundError):
+        await execute_get_order_status(order_repository=FakeOrderDetailRepository(None))
+
+
+@pytest.mark.asyncio
+async def test_get_order_status_next_action_pay_for_pending_payment() -> None:
+    order = build_order_detail()
+    order.status = "pending_payment"
+    order.payment_status = "unpaid"
+    response = await execute_get_order_status(order=order)
+    assert response.next_action is not None
+    assert response.next_action.type == "pay"
+
+
+@pytest.mark.asyncio
+async def test_get_order_status_next_action_null_for_completed() -> None:
+    order = build_order_detail()
+    order.status = "completed"
+    response = await execute_get_order_status(order=order)
+    assert response.next_action is None
+
+
+@pytest.mark.asyncio
+async def test_order_cache_invalidate_order_covers_status_cache() -> None:
+    cache = FakeOrderCacheService()
+    await cache.invalidate_order(redis_service=FakeRedisService(), user_id=1, order_id=101)
+    assert cache.invalidated is True
+
+
+@pytest.mark.asyncio
+async def test_get_order_status_response_is_cached() -> None:
+    cache = FakeOrderCacheService()
+    await execute_get_order_status(order_cache_service=cache)
+    assert "orders:status:1:101" in cache.values
+    assert cache.ttls["orders:status:1:101"] == 30

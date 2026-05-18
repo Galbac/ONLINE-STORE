@@ -249,6 +249,12 @@ class OrderDetailSettings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 
+class OrderStatusSettings(BaseSettings):
+    cache_ttl_seconds: int = Field(default=30, alias="ORDER_STATUS_CACHE_TTL_SECONDS")
+
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+
 class OneCSettings(BaseSettings):
     sync_enabled: bool = Field(default=True, alias="ONE_C_SYNC_ENABLED")
 
@@ -321,6 +327,7 @@ class Settings(BaseSettings):
     orders: OrdersSettings = OrdersSettings()
     orders_my: OrdersMySettings = OrdersMySettings()
     order_detail: OrderDetailSettings = OrderDetailSettings()
+    order_status: OrderStatusSettings = OrderStatusSettings()
     one_c: OneCSettings = OneCSettings()
     payments: PaymentsSettings = PaymentsSettings()
     categories: CategoriesSettings = CategoriesSettings()

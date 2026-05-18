@@ -42,6 +42,7 @@ from source.schemas.pydantic.order import (
     OrderDetailResponse,
     OrderMyListQueryParams,
     OrderMyListResponse,
+    OrderStatusResponse,
 )
 from source.services.cart import CartCalculatorService
 from source.services.cart_cache import CartCacheService
@@ -97,6 +98,36 @@ async def get_my_orders(
         )
     except InactiveUserError as error:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Пользователь заблокирован или удалён") from error
+
+
+@router.get("/orders/{order_id}/status", response_model=OrderStatusResponse, status_code=status.HTTP_200_OK)
+@inject
+async def get_order_status(
+    order_id: int,
+    current_user: User = Depends(get_current_user),
+    session: FromDishka[AsyncSession] = None,
+    redis_service: FromDishka[RedisService] = None,
+    order_service: FromDishka[OrderService] = None,
+    order_repository: FromDishka[OrderRepository] = None,
+    order_cache_service: FromDishka[OrderCacheService] = None,
+) -> OrderStatusResponse:
+    if order_id <= 0:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Неверный order_id")
+    try:
+        return await order_service.get_order_status(
+            session=session,
+            redis_service=redis_service,
+            user=current_user,
+            order_id=order_id,
+            order_repository=order_repository,
+            order_cache_service=order_cache_service,
+        )
+    except InactiveUserError as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Пользователь заблокирован или удалён") from error
+    except OrderNotFoundError as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Заказ не найден") from error
+    except OrderAccessDeniedError as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Заказ принадлежит другому пользователю") from error
 
 
 @router.get("/orders/{order_id}", response_model=OrderDetailResponse, status_code=status.HTTP_200_OK)

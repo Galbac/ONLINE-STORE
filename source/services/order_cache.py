@@ -1,4 +1,4 @@
-from source.schemas.pydantic.order import OrderDetailResponse, OrderMyListResponse
+from source.schemas.pydantic.order import OrderDetailResponse, OrderMyListResponse, OrderStatusResponse
 from source.services.redis import RedisService
 
 
@@ -8,6 +8,9 @@ class OrderCacheService:
 
     def _detail_key(self, *, user_id: int, order_id: int) -> str:
         return f"orders:detail:{user_id}:{order_id}"
+
+    def _status_key(self, *, user_id: int, order_id: int) -> str:
+        return f"orders:status:{user_id}:{order_id}"
 
     async def get_my_orders(
         self,
@@ -84,4 +87,46 @@ class OrderCacheService:
 
     async def invalidate_order(self, *, redis_service: RedisService, user_id: int, order_id: int) -> None:
         await self.invalidate_detail(redis_service=redis_service, user_id=user_id, order_id=order_id)
+        await self.invalidate_status(redis_service=redis_service, user_id=user_id, order_id=order_id)
         await self.invalidate_my_orders(redis_service=redis_service, user_id=user_id)
+
+    async def get_status(
+        self,
+        *,
+        redis_service: RedisService,
+        user_id: int,
+        order_id: int,
+    ) -> OrderStatusResponse | None:
+        cached_status = await redis_service.get(self._status_key(user_id=user_id, order_id=order_id))
+        if cached_status is None:
+            return None
+        if isinstance(cached_status, bytes):
+            cached_status = cached_status.decode("utf-8")
+        return OrderStatusResponse.model_validate_json(cached_status)
+
+    async def set_status(
+        self,
+        *,
+        redis_service: RedisService,
+        user_id: int,
+        order_id: int,
+        response: OrderStatusResponse,
+        ttl_seconds: int,
+    ) -> None:
+        await redis_service.set(
+            self._status_key(user_id=user_id, order_id=order_id),
+            response.model_dump_json(),
+            ttl_seconds=ttl_seconds,
+        )
+
+    async def invalidate_status(
+        self,
+        *,
+        redis_service: RedisService,
+        user_id: int,
+        order_id: int | None = None,
+    ) -> None:
+        if order_id is not None:
+            await redis_service.delete(self._status_key(user_id=user_id, order_id=order_id))
+            return
+        await redis_service.delete_by_pattern(f"orders:status:{user_id}:*")

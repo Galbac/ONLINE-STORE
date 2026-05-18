@@ -35,12 +35,67 @@ from source.schemas.pydantic.order import (
     OrderPaymentResponse,
     OrderPickupPointResponse,
     OrderShortStatusResponse,
+    OrderStatusResponse,
 )
 from source.utils.query_hash import build_query_hash
-from source.utils.order import calculate_order_totals, generate_order_number, is_order_cancel_allowed
+from source.utils.order import (
+    build_order_next_action,
+    calculate_order_totals,
+    generate_order_number,
+    get_order_status_label,
+    get_payment_status_label,
+    is_order_cancel_allowed,
+)
 
 
 class OrderService:
+    async def get_order_status(
+        self,
+        *,
+        session,
+        redis_service,
+        user,
+        order_id: int,
+        order_repository,
+        order_cache_service,
+    ) -> OrderStatusResponse:
+        if not user.is_active or user.is_deleted:
+            raise InactiveUserError
+
+        cached_status = await order_cache_service.get_status(
+            redis_service=redis_service,
+            user_id=user.id,
+            order_id=order_id,
+        )
+        if cached_status is not None:
+            return cached_status
+
+        order = await order_repository.get_status_by_id(session=session, order_id=order_id)
+        if order is None:
+            raise OrderNotFoundError
+        if order.user_id != user.id:
+            raise OrderAccessDeniedError
+
+        response = OrderStatusResponse(
+            id=order.id,
+            order_number=order.order_number,
+            status=order.status,
+            status_label=get_order_status_label(order.status),
+            payment_status=order.payment_status,
+            payment_status_label=get_payment_status_label(order.payment_status),
+            delivery_type=order.delivery_type,
+            next_action=build_order_next_action(status=order.status, payment_status=order.payment_status),
+            updated_at=order.updated_date,
+        )
+        await order_cache_service.set_status(
+            redis_service=redis_service,
+            user_id=user.id,
+            order_id=order.id,
+            response=response,
+            ttl_seconds=settings.order_status.cache_ttl_seconds,
+        )
+        return response
+
     async def cancel_order(
         self,
         *,

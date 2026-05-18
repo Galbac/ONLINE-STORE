@@ -195,3 +195,20 @@ class OrderShortStatusResponse(BaseModel):
 class OrderCancelResponse(BaseModel):
     message: str
     order: OrderShortStatusResponse
+
+
+class OrderNextActionResponse(BaseModel):
+    type: str
+    label: str
+
+
+class OrderStatusResponse(BaseModel):
+    id: int
+    order_number: str
+    status: str
+    status_label: str
+    payment_status: str | None = None
+    payment_status_label: str | None = None
+    delivery_type: str
+    next_action: OrderNextActionResponse | None = None
+    updated_at: datetime
