@@ -219,6 +219,20 @@ class CartSettings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 
+class OrdersSettings(BaseSettings):
+    number_prefix: str = Field(default="ORD", alias="ORDER_NUMBER_PREFIX")
+    default_status: str = Field(default="new", alias="ORDER_DEFAULT_STATUS")
+    online_payment_status: str = Field(default="pending_payment", alias="ORDER_ONLINE_PAYMENT_STATUS")
+
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+
+class OneCSettings(BaseSettings):
+    sync_enabled: bool = Field(default=True, alias="ONE_C_SYNC_ENABLED")
+
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+
 class CategoriesSettings(BaseSettings):
     cache_ttl_seconds: int = Field(default=600, alias="CATEGORIES_LIST_CACHE_TTL_SECONDS")
     tree_cache_ttl_seconds: int = Field(default=600, alias="CATEGORIES_TREE_CACHE_TTL_SECONDS")
@@ -276,6 +290,8 @@ class Settings(BaseSettings):
     profile_addresses: ProfileAddressesSettings = ProfileAddressesSettings()
     profile_orders: ProfileOrdersSettings = ProfileOrdersSettings()
     cart: CartSettings = CartSettings()
+    orders: OrdersSettings = OrdersSettings()
+    one_c: OneCSettings = OneCSettings()
     categories: CategoriesSettings = CategoriesSettings()
     products: ProductsSettings = ProductsSettings()
 

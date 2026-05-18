@@ -27,3 +27,4 @@ class PromoCode(IdBigIntPkMixin, CreateUpdateMixin, Base):
 class PromoCodeUsage(IdBigIntPkMixin, CreateUpdateMixin, Base):
     promo_code_id: Mapped[int] = mapped_column(ForeignKey("promo_codes.id", ondelete="CASCADE"), index=True, nullable=False)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False)
+    status: Mapped[str] = mapped_column(String(20), default="reserved", server_default="reserved", nullable=False)

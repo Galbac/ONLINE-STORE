@@ -13,6 +13,10 @@ class PromoCodeRepository:
         result = await session.execute(select(PromoCode).where(PromoCode.code == code))
         return result.scalar_one_or_none()
 
+    async def get_active_by_code(self, *, session: AsyncSession, code: str) -> PromoCode | None:
+        result = await session.execute(select(PromoCode).where(PromoCode.code == code, PromoCode.is_active.is_(True)))
+        return result.scalar_one_or_none()
+
 
 class PromoCodeUsageRepository:
     async def count_by_code(self, *, session: AsyncSession, promo_code_id: int) -> int:
@@ -29,3 +33,10 @@ class PromoCodeUsageRepository:
             ),
         )
         return result.scalar_one()
+
+    async def create(self, *, session: AsyncSession, promo_code_id: int, user_id: int, status: str = "reserved") -> PromoCodeUsage:
+        usage = PromoCodeUsage(promo_code_id=promo_code_id, user_id=user_id, status=status)
+        session.add(usage)
+        await session.flush()
+        await session.refresh(usage)
+        return usage

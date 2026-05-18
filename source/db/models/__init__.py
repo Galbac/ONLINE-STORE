@@ -5,6 +5,8 @@ from source.db.models.cart_item import CartItem
 from source.db.models.category import Category
 from source.db.models.order import Order
 from source.db.models.order_item import OrderItem
+from source.db.models.payment import Payment
+from source.db.models.pickup_point import PickupPoint
 from source.db.models.product import Product
 from source.db.models.product_image import ProductImage
 from source.db.models.promo_code import PromoCode, PromoCodeUsage
@@ -19,6 +21,8 @@ __all__ = (
     "Category",
     "Order",
     "OrderItem",
+    "Payment",
+    "PickupPoint",
     "Product",
     "ProductImage",
     "PromoCode",

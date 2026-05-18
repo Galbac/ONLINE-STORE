@@ -11,6 +11,13 @@ ACTIVE_ORDER_STATUSES = ("new", "paid", "assembling", "delivering", "in_progress
 
 
 class OrderRepository:
+    async def create(self, *, session: AsyncSession, **data) -> Order:
+        order = Order(**data)
+        session.add(order)
+        await session.flush()
+        await session.refresh(order)
+        return order
+
     async def get_by_id(
         self,
         *,

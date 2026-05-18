@@ -156,3 +156,40 @@ class CartPromoCodeMinAmountError(Exception):
 
 class CartPromoCodeNotApplicableError(Exception):
     pass
+
+
+class OrderCartNotFoundError(Exception):
+    pass
+
+
+class OrderAddressRequiredError(Exception):
+    pass
+
+
+class OrderPickupPointRequiredError(Exception):
+    pass
+
+
+class OrderAddressNotFoundError(Exception):
+    pass
+
+
+class OrderAddressAccessDeniedError(Exception):
+    pass
+
+
+class OrderPickupPointNotFoundError(Exception):
+    pass
+
+
+class OrderPickupPointInactiveError(Exception):
+    pass
+
+
+class OrderUnavailableItemsError(Exception):
+    def __init__(self, items: list) -> None:
+        self.items = items
+
+
+class OrderPromoCodeInvalidError(Exception):
+    pass

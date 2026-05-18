@@ -22,3 +22,35 @@ class StockService:
     def check_available_stock(self, *, product: Product, quantity: Decimal) -> None:
         if product.stock_quantity < quantity:
             raise CartInsufficientStockError
+
+    def validate_order_items(self, *, cart_items: list, products_by_id: dict[int, Product]) -> list[dict]:
+        unavailable_items: list[dict] = []
+        for item in cart_items:
+            product = products_by_id.get(item.product_id)
+            if product is None or not product.is_active or product.is_deleted or not product.is_available:
+                unavailable_items.append(
+                    {
+                        "product_id": item.product_id,
+                        "name": item.name,
+                        "reason": "Товар недоступен",
+                        "requested_quantity": item.quantity,
+                        "available_quantity": Decimal("0"),
+                    },
+                )
+                continue
+            if product.stock_quantity < item.quantity:
+                unavailable_items.append(
+                    {
+                        "product_id": product.id,
+                        "name": product.name,
+                        "reason": "Недостаточно остатка",
+                        "requested_quantity": item.quantity,
+                        "available_quantity": product.stock_quantity,
+                    },
+                )
+        return unavailable_items
+
+    async def reserve_items(self, *, products_by_id: dict[int, Product], cart_items: list) -> None:
+        for item in cart_items:
+            product = products_by_id[item.product_id]
+            product.stock_quantity -= item.quantity

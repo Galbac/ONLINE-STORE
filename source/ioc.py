@@ -21,6 +21,8 @@ from source.repositories.cart_item import CartItemRepository
 from source.repositories.category import CategoryRepository
 from source.repositories.order import OrderRepository
 from source.repositories.order_item import OrderItemRepository
+from source.repositories.payment import PaymentRepository
+from source.repositories.pickup_point import PickupPointRepository
 from source.repositories.product import ProductRepository
 from source.repositories.product_image import ProductImageRepository
 from source.repositories.promo_code import PromoCodeRepository, PromoCodeUsageRepository
@@ -32,6 +34,11 @@ from source.services.cart_cache import CartCacheService
 from source.services.category import CategoryService
 from source.services.category_cache import CategoryCacheService
 from source.services.notifications import EmailService, TelegramNotificationService
+from source.services.notifications import NotificationService
+from source.services.delivery import DeliveryService
+from source.services.one_c import OneCIntegrationService
+from source.services.order import OrderService
+from source.services.payment import PaymentService
 from source.services.product import ProductService
 from source.services.product_cache import ProductCacheService
 from source.services.profile import ProfileService
@@ -139,6 +146,14 @@ class AppProvider(Provider):
         OrderItemRepository,
         scope=Scope.REQUEST,
     )
+    payment_repository = provide(
+        PaymentRepository,
+        scope=Scope.REQUEST,
+    )
+    pickup_point_repository = provide(
+        PickupPointRepository,
+        scope=Scope.REQUEST,
+    )
     product_repository = provide(
         ProductRepository,
         scope=Scope.REQUEST,
@@ -183,6 +198,22 @@ class AppProvider(Provider):
         PromoCodeService,
         scope=Scope.REQUEST,
     )
+    order_service = provide(
+        OrderService,
+        scope=Scope.REQUEST,
+    )
+    payment_service = provide(
+        PaymentService,
+        scope=Scope.REQUEST,
+    )
+    delivery_service = provide(
+        DeliveryService,
+        scope=Scope.REQUEST,
+    )
+    one_c_integration_service = provide(
+        OneCIntegrationService,
+        scope=Scope.REQUEST,
+    )
     cart_cache_service = provide(
         CartCacheService,
         scope=Scope.REQUEST,
@@ -193,6 +224,10 @@ class AppProvider(Provider):
     )
     telegram_service = provide(
         TelegramNotificationService,
+        scope=Scope.REQUEST,
+    )
+    notification_service = provide(
+        NotificationService,
         scope=Scope.REQUEST,
     )
 
