@@ -48,7 +48,7 @@ from source.schemas.pydantic.order import (
     RepeatOrderRequest,
     RepeatOrderResponse,
 )
-from source.services.cart import CartCalculatorService
+from source.services.cart import CartCalculatorService, CartService
 from source.services.cart_cache import CartCacheService
 from source.services.delivery import DeliveryService
 from source.services.notifications import EmailService, NotificationService, TelegramNotificationService
