@@ -24,6 +24,8 @@ from source.errors.auth import (
     OrderPromoCodeInvalidError,
     OrderPaidCancellationRequiresManagerError,
     OrderUnavailableItemsError,
+    OrderItemsNotFoundError,
+    RepeatOrderUnavailableError,
 )
 from source.repositories.address import AddressRepository
 from source.repositories.cart import CartRepository
@@ -43,6 +45,8 @@ from source.schemas.pydantic.order import (
     OrderMyListQueryParams,
     OrderMyListResponse,
     OrderStatusResponse,
+    RepeatOrderRequest,
+    RepeatOrderResponse,
 )
 from source.services.cart import CartCalculatorService
 from source.services.cart_cache import CartCacheService
@@ -128,6 +132,56 @@ async def get_order_status(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Заказ не найден") from error
     except OrderAccessDeniedError as error:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Заказ принадлежит другому пользователю") from error
+
+
+@router.post("/orders/{order_id}/repeat", response_model=RepeatOrderResponse, status_code=status.HTTP_200_OK)
+@inject
+async def repeat_order(
+    order_id: int,
+    body: RepeatOrderRequest = Body(default_factory=RepeatOrderRequest),
+    current_user: User = Depends(get_current_user),
+    session: FromDishka[AsyncSession] = None,
+    redis_service: FromDishka[RedisService] = None,
+    order_service: FromDishka[OrderService] = None,
+    order_repository: FromDishka[OrderRepository] = None,
+    order_item_repository: FromDishka[OrderItemRepository] = None,
+    product_repository: FromDishka[ProductRepository] = None,
+    cart_repository: FromDishka[CartRepository] = None,
+    cart_item_repository: FromDishka[CartItemRepository] = None,
+    promo_code_repository: FromDishka[PromoCodeRepository] = None,
+    cart_service: FromDishka[CartService] = None,
+    cart_cache_service: FromDishka[CartCacheService] = None,
+    cart_calculator_service: FromDishka[CartCalculatorService] = None,
+) -> RepeatOrderResponse:
+    if order_id <= 0:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Неверный order_id")
+    try:
+        return await order_service.repeat_order(
+            session=session,
+            redis_service=redis_service,
+            user=current_user,
+            order_id=order_id,
+            data=body,
+            order_repository=order_repository,
+            order_item_repository=order_item_repository,
+            product_repository=product_repository,
+            cart_repository=cart_repository,
+            cart_item_repository=cart_item_repository,
+            promo_code_repository=promo_code_repository,
+            cart_service=cart_service,
+            cart_cache_service=cart_cache_service,
+            cart_calculator_service=cart_calculator_service,
+        )
+    except InactiveUserError as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Пользователь заблокирован или удалён") from error
+    except OrderNotFoundError as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Заказ не найден") from error
+    except OrderAccessDeniedError as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Заказ принадлежит другому пользователю") from error
+    except OrderItemsNotFoundError as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="В заказе нет товаров") from error
+    except RepeatOrderUnavailableError as error:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Все товары из заказа недоступны для повторения") from error
 
 
 @router.get("/orders/{order_id}", response_model=OrderDetailResponse, status_code=status.HTTP_200_OK)

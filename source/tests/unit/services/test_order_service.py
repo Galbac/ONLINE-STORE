@@ -14,13 +14,15 @@ from source.errors.auth import (
     OrderNotFoundError,
     OrderAlreadyCancelledError,
     OrderCancellationNotAllowedError,
+    OrderItemsNotFoundError,
     OrderPickupPointInactiveError,
     OrderPromoCodeInvalidError,
     OrderUnavailableItemsError,
+    RepeatOrderUnavailableError,
 )
-from source.schemas.pydantic.order import OrderCancelRequest, OrderCreateRequest
+from source.schemas.pydantic.order import OrderCancelRequest, OrderCreateRequest, RepeatOrderRequest
 from source.schemas.pydantic.order import OrderDetailResponse, OrderMyListQueryParams, OrderMyListResponse, OrderShortResponse, OrderStatusResponse
-from source.services.cart import CartCalculatorService
+from source.services.cart import CartCalculatorService, CartService
 from source.services.delivery import DeliveryService
 from source.services.one_c import OneCIntegrationService
 from source.services.order import OrderService
@@ -50,6 +52,11 @@ class FakeCartRepository:
     async def get_by_user_id(self, *, session, user_id: int):
         return self.cart if self.cart and self.cart.user_id == user_id else None
 
+    async def get_or_create_by_user_id(self, *, session, user_id: int):
+        if self.cart is None:
+            self.cart = SimpleNamespace(id=10, user_id=user_id, promo_code_id=None)
+        return self.cart
+
     async def clear_promo_code(self, *, session, cart):
         cart.promo_code_id = None
         return cart
@@ -66,6 +73,28 @@ class FakeCartItemRepository:
     async def delete_by_cart_id(self, *, session, cart_id: int) -> None:
         self.items = []
         self.cleared = True
+
+    async def create_or_update(self, *, session, cart_id: int, product, quantity: Decimal):
+        item = next((item for item in self.items if item.product_id == product.id), None)
+        if item is None:
+            item = SimpleNamespace(
+                id=len(self.items) + 1,
+                cart_id=cart_id,
+                product_id=product.id,
+                name=product.name,
+                quantity=quantity,
+                unit=product.unit,
+                price=product.price,
+                total_price=product.price * quantity,
+            )
+            self.items.append(item)
+        else:
+            item.name = product.name
+            item.quantity += quantity
+            item.unit = product.unit
+            item.price = product.price
+            item.total_price = product.price * item.quantity
+        return item
 
 
 class FakeProductRepository:
@@ -333,19 +362,30 @@ class FakeTelegramService:
     pass
 
 
-def build_product(*, stock_quantity=Decimal("10"), is_active=True, is_available=True):
+def build_product(
+    *,
+    product_id: int = 55,
+    stock_quantity=Decimal("10"),
+    is_active=True,
+    is_available=True,
+    is_deleted=False,
+    price=Decimal("150.00"),
+    product_type="weight",
+    quantity_step=Decimal("0.5"),
+):
     return SimpleNamespace(
-        id=55,
+        id=product_id,
         name="Яблоки красные",
-        slug="yabloki-krasnye",
+        slug=f"product-{product_id}",
         preview_image_url="/media/products/yabloki-krasnye.png",
         unit="kg",
-        product_type="weight",
-        price=Decimal("150.00"),
+        product_type=product_type,
+        price=price,
         old_price=Decimal("180.00"),
         stock_quantity=stock_quantity,
+        quantity_step=quantity_step,
         is_active=is_active,
-        is_deleted=False,
+        is_deleted=is_deleted,
         is_available=is_available,
         category_id=1,
     )
@@ -585,6 +625,42 @@ async def execute_get_order_status(*, order=None, order_cache_service=None, orde
         order_id=101,
         order_repository=order_repository or FakeOrderDetailRepository(order or build_order_detail()),
         order_cache_service=order_cache_service or FakeOrderCacheService(),
+    )
+
+
+async def execute_repeat_order(
+    *,
+    order="default",
+    order_items=None,
+    products=None,
+    replace_cart: bool = False,
+    cart_items=None,
+):
+    order = build_order_detail() if order == "default" else order
+    cart_repository = FakeCartRepository(SimpleNamespace(id=10, user_id=1, promo_code_id=7))
+    cart_item_repository = FakeCartItemRepository(cart_items or [])
+    cart_cache_service = FakeCartCacheService()
+    response = await OrderService().repeat_order(
+        session=None,
+        redis_service=FakeRedisService(),
+        user=SimpleNamespace(id=1, is_active=True, is_deleted=False),
+        order_id=101,
+        data=RepeatOrderRequest(replace_cart=replace_cart),
+        order_repository=FakeOrderDetailRepository(order),
+        order_item_repository=FakeOrderDetailItemRepository(order_items if order_items is not None else [build_order_item()]),
+        product_repository=FakeProductRepository(products if products is not None else [build_product()]),
+        cart_repository=cart_repository,
+        cart_item_repository=cart_item_repository,
+        promo_code_repository=FakePromoCodeRepository(),
+        cart_service=CartService(),
+        cart_cache_service=cart_cache_service,
+        cart_calculator_service=CartCalculatorService(),
+    )
+    return SimpleNamespace(
+        response=response,
+        cart_repository=cart_repository,
+        cart_item_repository=cart_item_repository,
+        cart_cache_service=cart_cache_service,
     )
 
 
@@ -1073,3 +1149,105 @@ async def test_get_order_status_response_is_cached() -> None:
     await execute_get_order_status(order_cache_service=cache)
     assert "orders:status:1:101" in cache.values
     assert cache.ttls["orders:status:1:101"] == 30
+
+
+@pytest.mark.asyncio
+async def test_repeat_order_success() -> None:
+    result = await execute_repeat_order()
+    assert result.response.message == "Товары из заказа добавлены в корзину"
+    assert result.response.cart.items[0].product_id == 55
+
+
+@pytest.mark.asyncio
+async def test_repeat_order_replace_cart_false_adds_to_current_cart() -> None:
+    existing_item = SimpleNamespace(
+        id=1,
+        cart_id=10,
+        product_id=99,
+        name="Груши",
+        quantity=Decimal("1"),
+        unit="kg",
+        price=Decimal("120.00"),
+        total_price=Decimal("120.00"),
+    )
+    result = await execute_repeat_order(cart_items=[existing_item])
+    assert {item.product_id for item in result.response.cart.items} == {55, 99}
+
+
+@pytest.mark.asyncio
+async def test_repeat_order_replace_cart_true_clears_cart_and_promo() -> None:
+    existing_item = SimpleNamespace(
+        id=1,
+        cart_id=10,
+        product_id=99,
+        name="Груши",
+        quantity=Decimal("1"),
+        unit="kg",
+        price=Decimal("120.00"),
+        total_price=Decimal("120.00"),
+    )
+    result = await execute_repeat_order(replace_cart=True, cart_items=[existing_item])
+    assert result.cart_item_repository.cleared is True
+    assert result.cart_repository.cart.promo_code_id is None
+    assert [item.product_id for item in result.response.cart.items] == [55]
+
+
+@pytest.mark.asyncio
+async def test_repeat_order_access_denied() -> None:
+    with pytest.raises(OrderAccessDeniedError):
+        await execute_repeat_order(order=build_order_detail(user_id=2))
+
+
+@pytest.mark.asyncio
+async def test_repeat_order_not_found() -> None:
+    with pytest.raises(OrderNotFoundError):
+        await execute_repeat_order(order=None)
+
+
+@pytest.mark.asyncio
+async def test_repeat_order_without_items() -> None:
+    with pytest.raises(OrderItemsNotFoundError):
+        await execute_repeat_order(order_items=[])
+
+
+@pytest.mark.asyncio
+async def test_repeat_order_unavailable_product_goes_to_warnings() -> None:
+    order_items = [
+        build_order_item(),
+        SimpleNamespace(**{**build_order_item().__dict__, "product_id": 77, "product_name": "Молоко"}),
+    ]
+    products = [build_product(), build_product(product_id=77, is_available=False)]
+    result = await execute_repeat_order(order_items=order_items, products=products)
+    assert [item.product_id for item in result.response.cart.items] == [55]
+    assert result.response.warnings[0].product_id == 77
+
+
+@pytest.mark.asyncio
+async def test_repeat_order_insufficient_stock_warning_and_partial_quantity() -> None:
+    item = build_order_item()
+    item.quantity = Decimal("5")
+    result = await execute_repeat_order(order_items=[item], products=[build_product(stock_quantity=Decimal("2.5"))])
+    assert result.response.cart.items[0].quantity == Decimal("2.5")
+    assert result.response.warnings[0].requested_quantity == Decimal("5")
+    assert result.response.warnings[0].added_quantity == Decimal("2.5")
+
+
+@pytest.mark.asyncio
+async def test_repeat_order_uses_actual_product_price_not_old_snapshot_price() -> None:
+    item = build_order_item()
+    item.price = Decimal("999.00")
+    result = await execute_repeat_order(order_items=[item], products=[build_product(price=Decimal("150.00"))])
+    assert result.response.cart.items[0].price == Decimal("150.00")
+    assert result.response.cart.items[0].price != item.price
+
+
+@pytest.mark.asyncio
+async def test_repeat_order_all_items_unavailable() -> None:
+    with pytest.raises(RepeatOrderUnavailableError):
+        await execute_repeat_order(products=[build_product(is_available=False)])
+
+
+@pytest.mark.asyncio
+async def test_repeat_order_invalidates_cart_cache() -> None:
+    result = await execute_repeat_order()
+    assert result.cart_cache_service.invalidated is True

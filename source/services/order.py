@@ -22,6 +22,8 @@ from source.errors.auth import (
     OrderPickupPointNotFoundError,
     OrderPromoCodeInvalidError,
     OrderUnavailableItemsError,
+    OrderItemsNotFoundError,
+    RepeatOrderUnavailableError,
 )
 from source.schemas.pydantic.order import (
     OrderAddressResponse,
@@ -36,6 +38,9 @@ from source.schemas.pydantic.order import (
     OrderPickupPointResponse,
     OrderShortStatusResponse,
     OrderStatusResponse,
+    RepeatOrderRequest,
+    RepeatOrderResponse,
+    RepeatOrderWarningResponse,
 )
 from source.utils.query_hash import build_query_hash
 from source.utils.order import (
@@ -46,9 +51,154 @@ from source.utils.order import (
     get_payment_status_label,
     is_order_cancel_allowed,
 )
+from source.utils.cart import validate_product_quantity
 
 
 class OrderService:
+    async def repeat_order(
+        self,
+        *,
+        session,
+        redis_service,
+        user,
+        order_id: int,
+        data: RepeatOrderRequest,
+        order_repository,
+        order_item_repository,
+        product_repository,
+        cart_repository,
+        cart_item_repository,
+        promo_code_repository,
+        cart_service,
+        cart_cache_service,
+        cart_calculator_service,
+    ) -> RepeatOrderResponse:
+        if not user.is_active or user.is_deleted:
+            raise InactiveUserError
+
+        order = await order_repository.get_by_id(session=session, order_id=order_id)
+        if order is None:
+            raise OrderNotFoundError
+        if order.user_id != user.id:
+            raise OrderAccessDeniedError
+
+        order_items = await order_item_repository.get_by_order_id(session=session, order_id=order.id)
+        if not order_items:
+            raise OrderItemsNotFoundError
+
+        cart = await cart_service.get_or_create_cart(
+            session=session,
+            cart_repository=cart_repository,
+            user_id=user.id,
+        )
+        if data.replace_cart:
+            await cart_service.clear_cart(
+                session=session,
+                cart_item_repository=cart_item_repository,
+                cart=cart,
+            )
+            await cart_repository.clear_promo_code(session=session, cart=cart)
+
+        current_cart_items = await cart_item_repository.get_by_cart_id(session=session, cart_id=cart.id)
+        current_cart_quantities = {item.product_id: item.quantity for item in current_cart_items}
+        products = await product_repository.get_by_ids(
+            session=session,
+            product_ids=[item.product_id for item in order_items],
+        )
+        products_by_id = {product.id: product for product in products}
+        warnings: list[RepeatOrderWarningResponse] = []
+        added_items_count = 0
+
+        for order_item in order_items:
+            product = products_by_id.get(order_item.product_id)
+            if product is None:
+                warnings.append(
+                    RepeatOrderWarningResponse(
+                        product_id=order_item.product_id,
+                        product_name=order_item.product_name,
+                        reason="Товар больше не найден",
+                    ),
+                )
+                continue
+            if not product.is_active or product.is_deleted or not product.is_available:
+                warnings.append(
+                    RepeatOrderWarningResponse(
+                        product_id=product.id,
+                        product_name=product.name,
+                        reason="Товар сейчас недоступен",
+                    ),
+                )
+                continue
+
+            available_quantity = product.stock_quantity - current_cart_quantities.get(product.id, Decimal("0"))
+            quantity_to_add = validate_product_quantity(
+                quantity=order_item.quantity,
+                available_quantity=available_quantity,
+                quantity_step=product.quantity_step,
+            )
+            if product.product_type == "piece":
+                quantity_to_add = quantity_to_add.to_integral_value()
+            if quantity_to_add <= 0:
+                warnings.append(
+                    RepeatOrderWarningResponse(
+                        product_id=product.id,
+                        product_name=product.name,
+                        reason="Товара нет в наличии",
+                        requested_quantity=order_item.quantity,
+                        added_quantity=Decimal("0"),
+                    ),
+                )
+                continue
+            if quantity_to_add < order_item.quantity:
+                if not settings.orders.repeat_add_available_partial_quantity:
+                    warnings.append(
+                        RepeatOrderWarningResponse(
+                            product_id=product.id,
+                            product_name=product.name,
+                            reason="Недостаточно остатка",
+                            requested_quantity=order_item.quantity,
+                            added_quantity=Decimal("0"),
+                        ),
+                    )
+                    continue
+                warnings.append(
+                    RepeatOrderWarningResponse(
+                        product_id=product.id,
+                        product_name=product.name,
+                        reason="Недостаточно остатка, добавлено доступное количество",
+                        requested_quantity=order_item.quantity,
+                        added_quantity=quantity_to_add,
+                    ),
+                )
+
+            await cart_service.add_product_to_cart(
+                session=session,
+                cart_item_repository=cart_item_repository,
+                cart=cart,
+                product=product,
+                quantity=quantity_to_add,
+            )
+            current_cart_quantities[product.id] = current_cart_quantities.get(product.id, Decimal("0")) + quantity_to_add
+            added_items_count += 1
+
+        if added_items_count == 0:
+            raise RepeatOrderUnavailableError
+
+        cart_response = await cart_service.recalculate_current_cart(
+            session=session,
+            cart_item_repository=cart_item_repository,
+            product_repository=product_repository,
+            promo_code_repository=promo_code_repository,
+            cart_calculator_service=cart_calculator_service,
+            cart=cart,
+        )
+        await cart_cache_service.invalidate_cart(redis_service=redis_service, user_id=user.id)
+        return RepeatOrderResponse(
+            message="Товары из заказа добавлены в корзину",
+            cart=cart_response,
+            warnings=warnings,
+        )
+
     async def get_order_status(
         self,
         *,

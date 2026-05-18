@@ -227,6 +227,10 @@ class OrdersSettings(BaseSettings):
         default="new,pending_payment,confirmed,awaiting_confirmation",
         alias="ORDER_CANCEL_ALLOWED_STATUSES",
     )
+    repeat_add_available_partial_quantity: bool = Field(
+        default=True,
+        alias="ORDER_REPEAT_ADD_AVAILABLE_PARTIAL_QUANTITY",
+    )
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

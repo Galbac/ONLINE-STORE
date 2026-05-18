@@ -212,3 +212,26 @@ class OrderStatusResponse(BaseModel):
     delivery_type: str
     next_action: OrderNextActionResponse | None = None
     updated_at: datetime
+
+
+class RepeatOrderRequest(BaseModel):
+    replace_cart: bool = False
+
+
+class RepeatOrderWarningResponse(BaseModel):
+    product_id: int
+    product_name: str
+    reason: str
+    requested_quantity: Decimal | None = None
+    added_quantity: Decimal | None = None
+
+
+class RepeatOrderResponse(BaseModel):
+    message: str
+    cart: "CartResponse"
+    warnings: list[RepeatOrderWarningResponse]
+
+
+from source.schemas.pydantic.cart import CartResponse
+
+RepeatOrderResponse.model_rebuild()
