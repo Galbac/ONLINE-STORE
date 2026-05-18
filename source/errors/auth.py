@@ -229,3 +229,19 @@ class PaymentNotFoundError(Exception):
 
 class PaymentAccessDeniedError(Exception):
     pass
+
+
+class PaymentConfirmationNotSupportedError(Exception):
+    pass
+
+
+class PaymentConfirmationStatusNotAllowedError(Exception):
+    pass
+
+
+class PaymentAlreadyConfirmedError(Exception):
+    pass
+
+
+class PaymentProviderConfirmError(Exception):
+    pass

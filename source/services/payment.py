@@ -4,11 +4,15 @@ from decimal import Decimal
 from source.config.settings import settings
 from source.errors.auth import (
     InactiveUserError,
+    PaymentAlreadyConfirmedError,
     PaymentAccessDeniedError,
+    PaymentConfirmationNotSupportedError,
+    PaymentConfirmationStatusNotAllowedError,
     PaymentNotFoundError,
+    PaymentProviderConfirmError,
     PaymentProviderCreateError,
 )
-from source.schemas.pydantic.payment import PaymentCreateResponse, PaymentDetailResponse
+from source.schemas.pydantic.payment import PaymentConfirmResponse, PaymentCreateResponse, PaymentDetailResponse
 
 
 @dataclass(slots=True)
@@ -50,6 +54,18 @@ class PaymentProviderService:
 
     async def get_payment_status(self, *, provider_payment_id: str) -> ProviderPaymentStatus:
         return ProviderPaymentStatus(status="pending")
+
+    async def confirm_payment(
+        self,
+        *,
+        provider_payment_id: str,
+        amount: Decimal | None = None,
+    ) -> ProviderPaymentStatus:
+        if settings.payments.capture_mode != "manual":
+            raise PaymentConfirmationNotSupportedError
+        if not provider_payment_id:
+            raise PaymentProviderConfirmError
+        return ProviderPaymentStatus(status="paid")
 
 
 class PaymentService:
@@ -206,6 +222,93 @@ class PaymentService:
             ttl_seconds=settings.payments.detail_cache_ttl_seconds,
         )
         return response
+
+    async def confirm_payment(
+        self,
+        *,
+        session,
+        commiter,
+        redis_service,
+        user,
+        payment_id: int,
+        amount: Decimal | None,
+        payment_repository,
+        order_repository,
+        payment_provider_service: PaymentProviderService,
+        payment_cache_service,
+        order_cache_service,
+    ) -> PaymentConfirmResponse:
+        if not user.is_active or user.is_deleted:
+            raise InactiveUserError
+
+        payment = await payment_repository.get_by_id(session=session, payment_id=payment_id)
+        if payment is None:
+            raise PaymentNotFoundError
+        order = await order_repository.get_by_id(session=session, order_id=payment.order_id)
+        if order is None:
+            raise PaymentNotFoundError
+        if order.user_id != user.id:
+            raise PaymentAccessDeniedError
+        if payment.status == "paid":
+            raise PaymentAlreadyConfirmedError
+        if payment.status not in {"waiting_for_capture", "authorized"}:
+            raise PaymentConfirmationStatusNotAllowedError
+        if settings.payments.capture_mode != "manual":
+            raise PaymentConfirmationNotSupportedError
+
+        try:
+            provider_status = await payment_provider_service.confirm_payment(
+                provider_payment_id=payment.provider_payment_id,
+                amount=amount,
+            )
+            normalized_status = "paid" if provider_status.status in {"paid", "succeeded"} else provider_status.status
+            payment = await payment_repository.update_status(
+                session=session,
+                payment=payment,
+                status=normalized_status,
+                paid_at=provider_status.paid_at,
+            )
+            if normalized_status == "paid":
+                await order_repository.update_payment_status(
+                    session=session,
+                    order=order,
+                    payment_status="paid",
+                )
+                if order.status == "pending_payment":
+                    await order_repository.update_status(
+                        session=session,
+                        order=order,
+                        status="new",
+                    )
+            await commiter.commit()
+        except (
+            PaymentConfirmationNotSupportedError,
+            PaymentProviderConfirmError,
+        ):
+            await commiter.rollback()
+            raise
+        except Exception:
+            await commiter.rollback()
+            raise
+
+        await order_cache_service.invalidate_order(
+            redis_service=redis_service,
+            user_id=user.id,
+            order_id=order.id,
+        )
+        await payment_cache_service.invalidate_detail(
+            redis_service=redis_service,
+            user_id=user.id,
+            payment_id=payment.id,
+        )
+        return PaymentConfirmResponse(
+            id=payment.id,
+            order_id=order.id,
+            status=payment.status,
+            amount=payment.amount,
+            currency=payment.currency,
+            paid_at=payment.paid_at,
+        )
 
     def _build_response(self, *, order, payment) -> PaymentCreateResponse:
         return PaymentCreateResponse(

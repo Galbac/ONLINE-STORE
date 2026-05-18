@@ -276,6 +276,7 @@ class PaymentsSettings(BaseSettings):
     provider_secret_key: str = Field(default="", alias="PAYMENT_PROVIDER_SECRET_KEY")
     detail_cache_ttl_seconds: int = Field(default=30, alias="PAYMENT_DETAIL_CACHE_TTL_SECONDS")
     status_sync_enabled: bool = Field(default=False, alias="PAYMENT_STATUS_SYNC_ENABLED")
+    capture_mode: str = Field(default="automatic", alias="PAYMENT_CAPTURE_MODE")
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

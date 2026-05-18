@@ -11,13 +11,23 @@ from source.errors.auth import (
     OrderAlreadyPaidError,
     OrderPaymentMethodNotOnlineError,
     OrderPaymentStatusNotAllowedError,
+    PaymentAlreadyConfirmedError,
     PaymentAccessDeniedError,
+    PaymentConfirmationNotSupportedError,
+    PaymentConfirmationStatusNotAllowedError,
     PaymentNotFoundError,
+    PaymentProviderConfirmError,
     PaymentProviderCreateError,
 )
 from source.repositories.order import OrderRepository
 from source.repositories.payment import PaymentRepository
-from source.schemas.pydantic.payment import PaymentCreateRequest, PaymentCreateResponse, PaymentDetailResponse
+from source.schemas.pydantic.payment import (
+    PaymentConfirmRequest,
+    PaymentConfirmResponse,
+    PaymentCreateRequest,
+    PaymentCreateResponse,
+    PaymentDetailResponse,
+)
 from source.services.order import OrderService
 from source.services.order_cache import OrderCacheService
 from source.services.payment_cache import PaymentCacheService
@@ -110,3 +120,51 @@ async def get_payment_detail(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Платёж не найден") from error
     except PaymentAccessDeniedError as error:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Платёж принадлежит другому пользователю") from error
+
+
+@router.post("/payments/{payment_id}/confirm", response_model=PaymentConfirmResponse, status_code=status.HTTP_200_OK)
+@inject
+async def confirm_payment(
+    payment_id: int,
+    body: PaymentConfirmRequest,
+    current_user: User = Depends(get_current_user),
+    session: FromDishka[AsyncSession] = None,
+    commiter: FromDishka[Commiter] = None,
+    redis_service: FromDishka[RedisService] = None,
+    order_repository: FromDishka[OrderRepository] = None,
+    payment_repository: FromDishka[PaymentRepository] = None,
+    payment_service: FromDishka[PaymentService] = None,
+    payment_provider_service: FromDishka[PaymentProviderService] = None,
+    payment_cache_service: FromDishka[PaymentCacheService] = None,
+    order_cache_service: FromDishka[OrderCacheService] = None,
+) -> PaymentConfirmResponse:
+    if payment_id <= 0:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Неверный payment_id")
+    try:
+        return await payment_service.confirm_payment(
+            session=session,
+            commiter=commiter,
+            redis_service=redis_service,
+            user=current_user,
+            payment_id=payment_id,
+            amount=body.amount,
+            payment_repository=payment_repository,
+            order_repository=order_repository,
+            payment_provider_service=payment_provider_service,
+            payment_cache_service=payment_cache_service,
+            order_cache_service=order_cache_service,
+        )
+    except InactiveUserError as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Пользователь заблокирован или удалён") from error
+    except PaymentNotFoundError as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Платёж не найден") from error
+    except PaymentAccessDeniedError as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Платёж принадлежит другому пользователю") from error
+    except PaymentConfirmationNotSupportedError as error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Провайдер не требует подтверждения") from error
+    except PaymentAlreadyConfirmedError as error:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Платёж уже подтверждён") from error
+    except PaymentConfirmationStatusNotAllowedError as error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Платёж не в статусе ожидания подтверждения") from error
+    except PaymentProviderConfirmError as error:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Ошибка провайдера") from error

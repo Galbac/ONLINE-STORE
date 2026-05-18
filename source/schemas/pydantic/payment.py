@@ -8,6 +8,10 @@ class PaymentCreateRequest(BaseModel):
     order_id: int = Field(gt=0)
 
 
+class PaymentConfirmRequest(BaseModel):
+    amount: Decimal | None = Field(default=None, gt=0)
+
+
 class PaymentCreateResponse(BaseModel):
     id: int
     order_id: int
@@ -32,3 +36,12 @@ class PaymentDetailResponse(BaseModel):
     paid_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
+
+
+class PaymentConfirmResponse(BaseModel):
+    id: int
+    order_id: int
+    status: str
+    amount: Decimal
+    currency: str
+    paid_at: datetime | None = None
