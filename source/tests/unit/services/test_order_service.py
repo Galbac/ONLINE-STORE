@@ -9,13 +9,15 @@ from pydantic import ValidationError
 from source.api.dependencies import resolve_access_token
 from source.errors.auth import (
     CartEmptyError,
+    OrderAccessDeniedError,
     OrderAddressAccessDeniedError,
+    OrderNotFoundError,
     OrderPickupPointInactiveError,
     OrderPromoCodeInvalidError,
     OrderUnavailableItemsError,
 )
 from source.schemas.pydantic.order import OrderCreateRequest
-from source.schemas.pydantic.order import OrderMyListQueryParams, OrderMyListResponse, OrderShortResponse
+from source.schemas.pydantic.order import OrderDetailResponse, OrderMyListQueryParams, OrderMyListResponse, OrderShortResponse
 from source.services.cart import CartCalculatorService
 from source.services.delivery import DeliveryService
 from source.services.one_c import OneCIntegrationService
@@ -123,6 +125,16 @@ class FakeOrderRepository:
         return self.order
 
 
+class FakeOrderDetailRepository:
+    def __init__(self, order=None) -> None:
+        self.order = order
+        self.requested_order_id = None
+
+    async def get_by_id(self, *, session, order_id: int):
+        self.requested_order_id = order_id
+        return self.order if self.order is not None and self.order.id == order_id else None
+
+
 class FakeMyOrderRepository:
     def __init__(self, orders=None) -> None:
         self.orders = orders if orders is not None else [
@@ -167,6 +179,14 @@ class FakeOrderItemRepository:
         return items
 
 
+class FakeOrderDetailItemRepository:
+    def __init__(self, items=None) -> None:
+        self.items = items if items is not None else [build_order_item()]
+
+    async def get_by_order_id(self, *, session, order_id: int):
+        return self.items
+
+
 class FakePaymentRepository:
     def __init__(self) -> None:
         self.created = False
@@ -174,6 +194,14 @@ class FakePaymentRepository:
     async def create(self, **kwargs):
         self.created = True
         return SimpleNamespace(**kwargs)
+
+
+class FakeOrderDetailPaymentRepository:
+    def __init__(self, payment=None) -> None:
+        self.payment = payment
+
+    async def get_by_order_id(self, *, session, order_id: int):
+        return self.payment
 
 
 class FakeRedisService:
@@ -211,6 +239,18 @@ class FakeOrderCacheService:
         self.ttls[key] = ttl_seconds
 
     async def invalidate_my_orders(self, *, redis_service, user_id: int) -> None:
+        self.invalidated = True
+
+    async def get_detail(self, *, redis_service, user_id: int, order_id: int):
+        value = self.values.get(f"orders:detail:{user_id}:{order_id}")
+        return None if value is None else OrderDetailResponse.model_validate_json(value)
+
+    async def set_detail(self, *, redis_service, user_id: int, order_id: int, response, ttl_seconds: int):
+        key = f"orders:detail:{user_id}:{order_id}"
+        self.values[key] = response.model_dump_json()
+        self.ttls[key] = ttl_seconds
+
+    async def invalidate_detail(self, *, redis_service, user_id: int, order_id: int | None = None) -> None:
         self.invalidated = True
 
 
@@ -322,6 +362,52 @@ def build_short_order(
     return order
 
 
+def build_order_detail(*, user_id: int = 1):
+    return SimpleNamespace(
+        id=101,
+        user_id=user_id,
+        order_number="ORD-000101",
+        status="assembling",
+        payment_method="online",
+        payment_status="paid",
+        delivery_type="delivery",
+        address_id=5,
+        pickup_point_id=None,
+        customer_name="Иван Иванов",
+        customer_phone="+79990000000",
+        customer_email="ivan@example.com",
+        subtotal=Decimal("270.00"),
+        discount_amount=Decimal("45.00"),
+        promo_discount_amount=Decimal("100.00"),
+        delivery_price=Decimal("250.00"),
+        final_price=Decimal("375.00"),
+        comment="Позвонить за 10 минут",
+        created_date=datetime(2026, 5, 12, 10, 0, 0),
+        updated_date=datetime(2026, 5, 12, 11, 0, 0),
+        external_1c_id="secret",
+        sync_error="secret",
+        internal_comment="secret",
+        manager_id=7,
+    )
+
+
+def build_order_item():
+    return SimpleNamespace(
+        id=1,
+        product_id=55,
+        product_name="Яблоки красные",
+        product_slug="yabloki-krasnye",
+        quantity=Decimal("1.5"),
+        unit="kg",
+        product_type="weight",
+        price=Decimal("150.00"),
+        old_price=Decimal("180.00"),
+        discount_amount=Decimal("45.00"),
+        total_price=Decimal("270.00"),
+        final_price=Decimal("225.00"),
+    )
+
+
 async def execute_create_order(
     *,
     delivery_type="delivery",
@@ -412,6 +498,37 @@ async def execute_get_my_orders(*, order_repository=None, order_cache_service=No
         user=SimpleNamespace(id=1, is_active=True, is_deleted=False),
         query=query or OrderMyListQueryParams(),
         order_repository=order_repository or FakeMyOrderRepository(),
+        order_cache_service=order_cache_service or FakeOrderCacheService(),
+    )
+
+
+async def execute_get_order_detail(
+    *,
+    order=None,
+    order_cache_service=None,
+    order_repository=None,
+):
+    return await OrderService().get_order_detail(
+        session=None,
+        redis_service=FakeRedisService(),
+        user=SimpleNamespace(id=1, is_active=True, is_deleted=False),
+        order_id=101,
+        order_repository=order_repository or FakeOrderDetailRepository(order or build_order_detail()),
+        order_item_repository=FakeOrderDetailItemRepository(),
+        address_repository=FakeAddressRepository(
+            SimpleNamespace(
+                id=5,
+                city="Москва",
+                street="Тверская",
+                house="10",
+                apartment="15",
+                comment="Позвонить за 10 минут",
+            ),
+        ),
+        pickup_point_repository=FakePickupPointRepository(None),
+        payment_repository=FakeOrderDetailPaymentRepository(
+            SimpleNamespace(id=9, amount=Decimal("375.00"), status="paid", payment_url=None),
+        ),
         order_cache_service=order_cache_service or FakeOrderCacheService(),
     )
 
@@ -638,3 +755,56 @@ async def test_get_my_orders_without_access_token() -> None:
 def test_get_my_orders_invalid_query_params() -> None:
     with pytest.raises(ValidationError):
         OrderMyListQueryParams(delivery_type="courier")
+
+
+@pytest.mark.asyncio
+async def test_get_order_detail_success() -> None:
+    response = await execute_get_order_detail()
+    assert response.id == 101
+    assert response.address is not None
+    assert response.address.city == "Москва"
+    assert response.payment is not None
+    assert response.payment.status == "paid"
+
+
+@pytest.mark.asyncio
+async def test_get_order_detail_from_cache_success() -> None:
+    cache = FakeOrderCacheService()
+    cached = await execute_get_order_detail()
+    cache.values["orders:detail:1:101"] = cached.model_dump_json()
+    repository = FakeOrderDetailRepository(None)
+    response = await execute_get_order_detail(order_cache_service=cache, order_repository=repository)
+    assert response.id == 101
+    assert repository.requested_order_id is None
+
+
+@pytest.mark.asyncio
+async def test_get_order_detail_access_denied() -> None:
+    with pytest.raises(OrderAccessDeniedError):
+        await execute_get_order_detail(order=build_order_detail(user_id=2))
+
+
+@pytest.mark.asyncio
+async def test_get_order_detail_not_found() -> None:
+    with pytest.raises(OrderNotFoundError):
+        await execute_get_order_detail(order_repository=FakeOrderDetailRepository(None))
+
+
+@pytest.mark.asyncio
+async def test_get_order_detail_items_are_snapshot_and_service_fields_hidden() -> None:
+    response = await execute_get_order_detail()
+    assert response.items[0].product_name == "Яблоки красные"
+    assert response.items[0].price == Decimal("150.00")
+    dumped = response.model_dump()
+    assert "external_1c_id" not in dumped
+    assert "sync_error" not in dumped
+    assert "internal_comment" not in dumped
+    assert "manager_id" not in dumped
+
+
+@pytest.mark.asyncio
+async def test_get_order_detail_response_is_cached() -> None:
+    cache = FakeOrderCacheService()
+    await execute_get_order_detail(order_cache_service=cache)
+    assert "orders:detail:1:101" in cache.values
+    assert cache.ttls["orders:detail:1:101"] == 60

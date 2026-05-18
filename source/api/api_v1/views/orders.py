@@ -15,6 +15,8 @@ from source.errors.auth import (
     OrderAddressAccessDeniedError,
     OrderAddressNotFoundError,
     OrderCartNotFoundError,
+    OrderAccessDeniedError,
+    OrderNotFoundError,
     OrderPickupPointInactiveError,
     OrderPickupPointNotFoundError,
     OrderPromoCodeInvalidError,
@@ -29,7 +31,13 @@ from source.repositories.payment import PaymentRepository
 from source.repositories.pickup_point import PickupPointRepository
 from source.repositories.product import ProductRepository
 from source.repositories.promo_code import PromoCodeRepository, PromoCodeUsageRepository
-from source.schemas.pydantic.order import OrderCreateRequest, OrderCreateResponse, OrderMyListQueryParams, OrderMyListResponse
+from source.schemas.pydantic.order import (
+    OrderCreateRequest,
+    OrderCreateResponse,
+    OrderDetailResponse,
+    OrderMyListQueryParams,
+    OrderMyListResponse,
+)
 from source.services.cart import CartCalculatorService
 from source.services.cart_cache import CartCacheService
 from source.services.delivery import DeliveryService
@@ -84,6 +92,44 @@ async def get_my_orders(
         )
     except InactiveUserError as error:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Пользователь заблокирован или удалён") from error
+
+
+@router.get("/orders/{order_id}", response_model=OrderDetailResponse, status_code=status.HTTP_200_OK)
+@inject
+async def get_order_detail(
+    order_id: int,
+    current_user: User = Depends(get_current_user),
+    session: FromDishka[AsyncSession] = None,
+    redis_service: FromDishka[RedisService] = None,
+    order_service: FromDishka[OrderService] = None,
+    order_repository: FromDishka[OrderRepository] = None,
+    order_item_repository: FromDishka[OrderItemRepository] = None,
+    address_repository: FromDishka[AddressRepository] = None,
+    pickup_point_repository: FromDishka[PickupPointRepository] = None,
+    payment_repository: FromDishka[PaymentRepository] = None,
+    order_cache_service: FromDishka[OrderCacheService] = None,
+) -> OrderDetailResponse:
+    if order_id <= 0:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Неверный order_id")
+    try:
+        return await order_service.get_order_detail(
+            session=session,
+            redis_service=redis_service,
+            user=current_user,
+            order_id=order_id,
+            order_repository=order_repository,
+            order_item_repository=order_item_repository,
+            address_repository=address_repository,
+            pickup_point_repository=pickup_point_repository,
+            payment_repository=payment_repository,
+            order_cache_service=order_cache_service,
+        )
+    except InactiveUserError as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Пользователь заблокирован или удалён") from error
+    except OrderNotFoundError as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Заказ не найден") from error
+    except OrderAccessDeniedError as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Заказ принадлежит другому пользователю") from error
 
 
 @router.post("/orders", response_model=OrderCreateResponse, status_code=status.HTTP_201_CREATED)

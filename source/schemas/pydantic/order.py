@@ -40,6 +40,7 @@ class OrderCreateRequest(BaseModel):
 
 
 class OrderItemResponse(BaseModel):
+    id: int | None = None
     product_id: int
     product_name: str
     product_slug: str
@@ -124,3 +125,48 @@ class OrderCreateResponse(BaseModel):
     final_price: Decimal
     payment_url: str | None = None
     created_at: datetime
+
+
+class OrderAddressResponse(BaseModel):
+    id: int
+    city: str
+    street: str
+    house: str
+    apartment: str | None = None
+    comment: str | None = None
+
+
+class OrderPickupPointResponse(BaseModel):
+    id: int
+    name: str
+
+
+class OrderPaymentResponse(BaseModel):
+    id: int
+    amount: Decimal
+    status: str
+    payment_url: str | None = None
+
+
+class OrderDetailResponse(BaseModel):
+    id: int
+    order_number: str
+    status: str
+    payment_method: str | None = None
+    payment_status: str | None = None
+    delivery_type: str
+    customer_name: str
+    customer_phone: str
+    customer_email: EmailStr | None = None
+    address: OrderAddressResponse | None = None
+    pickup_point: OrderPickupPointResponse | None = None
+    payment: OrderPaymentResponse | None = None
+    items: list[OrderItemResponse]
+    subtotal: Decimal
+    discount_amount: Decimal
+    promo_discount_amount: Decimal
+    delivery_price: Decimal
+    final_price: Decimal
+    comment: str | None = None
+    created_at: datetime
+    updated_at: datetime

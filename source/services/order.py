@@ -12,18 +12,142 @@ from source.errors.auth import (
     OrderAddressAccessDeniedError,
     OrderAddressNotFoundError,
     OrderCartNotFoundError,
+    OrderAccessDeniedError,
+    OrderNotFoundError,
     OrderPickupPointInactiveError,
     OrderPickupPointNotFoundError,
     OrderPromoCodeInvalidError,
     OrderUnavailableItemsError,
 )
-from source.schemas.pydantic.order import OrderCreateResponse
-from source.schemas.pydantic.order import OrderMyListQueryParams, OrderMyListResponse
+from source.schemas.pydantic.order import (
+    OrderAddressResponse,
+    OrderCreateResponse,
+    OrderDetailResponse,
+    OrderItemResponse,
+    OrderMyListQueryParams,
+    OrderMyListResponse,
+    OrderPaymentResponse,
+    OrderPickupPointResponse,
+)
 from source.utils.query_hash import build_query_hash
 from source.utils.order import calculate_order_totals, generate_order_number
 
 
 class OrderService:
+    async def get_order_detail(
+        self,
+        *,
+        session,
+        redis_service,
+        user,
+        order_id: int,
+        order_repository,
+        order_item_repository,
+        address_repository,
+        pickup_point_repository,
+        payment_repository,
+        order_cache_service,
+    ) -> OrderDetailResponse:
+        if not user.is_active or user.is_deleted:
+            raise InactiveUserError
+
+        cached_order = await order_cache_service.get_detail(
+            redis_service=redis_service,
+            user_id=user.id,
+            order_id=order_id,
+        )
+        if cached_order is not None:
+            return cached_order
+
+        order = await order_repository.get_by_id(session=session, order_id=order_id)
+        if order is None:
+            raise OrderNotFoundError
+        if order.user_id != user.id:
+            raise OrderAccessDeniedError
+
+        order_items = await order_item_repository.get_by_order_id(session=session, order_id=order.id)
+        address = None
+        pickup_point = None
+        if order.delivery_type == "delivery" and order.address_id is not None:
+            stored_address = await address_repository.get_by_id(session=session, address_id=order.address_id)
+            if stored_address is not None:
+                address = OrderAddressResponse(
+                    id=stored_address.id,
+                    city=stored_address.city,
+                    street=stored_address.street,
+                    house=stored_address.house,
+                    apartment=stored_address.apartment,
+                    comment=stored_address.comment,
+                )
+        elif order.delivery_type == "pickup" and order.pickup_point_id is not None:
+            stored_pickup_point = await pickup_point_repository.get_by_id(
+                session=session,
+                pickup_point_id=order.pickup_point_id,
+            )
+            if stored_pickup_point is not None:
+                pickup_point = OrderPickupPointResponse(
+                    id=stored_pickup_point.id,
+                    name=stored_pickup_point.name,
+                )
+
+        payment_record = await payment_repository.get_by_order_id(session=session, order_id=order.id)
+        payment = None
+        if payment_record is not None:
+            payment = OrderPaymentResponse(
+                id=payment_record.id,
+                amount=payment_record.amount,
+                status=payment_record.status,
+                payment_url=payment_record.payment_url,
+            )
+
+        response = OrderDetailResponse(
+            id=order.id,
+            order_number=order.order_number,
+            status=order.status,
+            payment_method=order.payment_method,
+            payment_status=order.payment_status,
+            delivery_type=order.delivery_type,
+            customer_name=order.customer_name,
+            customer_phone=order.customer_phone,
+            customer_email=order.customer_email,
+            address=address,
+            pickup_point=pickup_point,
+            payment=payment,
+            items=[
+                OrderItemResponse(
+                    id=item.id,
+                    product_id=item.product_id,
+                    product_name=item.product_name,
+                    product_slug=item.product_slug,
+                    quantity=item.quantity,
+                    unit=item.unit,
+                    product_type=item.product_type,
+                    price=item.price,
+                    old_price=item.old_price,
+                    discount_amount=item.discount_amount,
+                    total_price=item.total_price,
+                    final_price=item.final_price,
+                )
+                for item in order_items
+            ],
+            subtotal=order.subtotal,
+            discount_amount=order.discount_amount,
+            promo_discount_amount=order.promo_discount_amount,
+            delivery_price=order.delivery_price,
+            final_price=order.final_price,
+            comment=order.comment,
+            created_at=order.created_date,
+            updated_at=order.updated_date,
+        )
+        await order_cache_service.set_detail(
+            redis_service=redis_service,
+            user_id=user.id,
+            order_id=order.id,
+            response=response,
+            ttl_seconds=settings.order_detail.cache_ttl_seconds,
+        )
+        return response
+
     async def get_my_orders(
         self,
         *,
