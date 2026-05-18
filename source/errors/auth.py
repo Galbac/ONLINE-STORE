@@ -253,3 +253,15 @@ class InvalidPaymentWebhookSignatureError(Exception):
 
 class InvalidPaymentWebhookPayloadError(Exception):
     pass
+
+
+class PaymentCancellationStatusNotAllowedError(Exception):
+    pass
+
+
+class PaymentAlreadyPaidError(Exception):
+    pass
+
+
+class PaymentProviderCancelError(Exception):
+    pass

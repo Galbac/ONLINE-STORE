@@ -86,9 +86,11 @@ class PaymentRepository:
         payment: Payment,
         status: str,
         paid_at=None,
+        cancelled_at=None,
     ) -> Payment:
         payment.status = status
         payment.paid_at = paid_at
+        payment.cancelled_at = cancelled_at
         session.add(payment)
         await session.flush()
         await session.refresh(payment)

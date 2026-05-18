@@ -12,6 +12,10 @@ class PaymentConfirmRequest(BaseModel):
     amount: Decimal | None = Field(default=None, gt=0)
 
 
+class PaymentCancelRequest(BaseModel):
+    reason: str | None = Field(default=None, max_length=500)
+
+
 class PaymentCreateResponse(BaseModel):
     id: int
     order_id: int
@@ -49,3 +53,17 @@ class PaymentConfirmResponse(BaseModel):
 
 class PaymentWebhookResponse(BaseModel):
     message: str
+
+
+class PaymentCancelPaymentResponse(BaseModel):
+    id: int
+    order_id: int
+    status: str
+    amount: Decimal
+    currency: str
+    cancelled_at: datetime | None = None
+
+
+class PaymentCancelResponse(BaseModel):
+    message: str
+    payment: PaymentCancelPaymentResponse

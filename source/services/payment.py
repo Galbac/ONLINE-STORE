@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from decimal import Decimal
+from datetime import datetime
 import hashlib
 import hmac
 import json
@@ -7,17 +8,26 @@ import json
 from source.config.settings import settings
 from source.errors.auth import (
     InactiveUserError,
+    PaymentAlreadyPaidError,
     PaymentAlreadyConfirmedError,
     PaymentAccessDeniedError,
+    PaymentCancellationStatusNotAllowedError,
     PaymentConfirmationNotSupportedError,
     PaymentConfirmationStatusNotAllowedError,
     PaymentNotFoundError,
     PaymentProviderConfirmError,
+    PaymentProviderCancelError,
     PaymentProviderCreateError,
     InvalidPaymentWebhookPayloadError,
     InvalidPaymentWebhookSignatureError,
 )
-from source.schemas.pydantic.payment import PaymentConfirmResponse, PaymentCreateResponse, PaymentDetailResponse
+from source.schemas.pydantic.payment import (
+    PaymentCancelPaymentResponse,
+    PaymentCancelResponse,
+    PaymentConfirmResponse,
+    PaymentCreateResponse,
+    PaymentDetailResponse,
+)
 
 
 @dataclass(slots=True)
@@ -81,6 +91,16 @@ class PaymentProviderService:
         if not provider_payment_id:
             raise PaymentProviderConfirmError
         return ProviderPaymentStatus(status="paid")
+
+    async def cancel_payment(
+        self,
+        *,
+        provider_payment_id: str,
+        reason: str | None = None,
+    ) -> ProviderPaymentStatus:
+        if not provider_payment_id:
+            raise PaymentProviderCancelError
+        return ProviderPaymentStatus(status="cancelled")
 
     def verify_webhook_signature(self, *, raw_body: bytes, signature: str | None) -> bool:
         if not settings.payments.webhook_verify_signature:
@@ -369,6 +389,83 @@ class PaymentService:
             amount=payment.amount,
             currency=payment.currency,
             paid_at=payment.paid_at,
+        )
+
+    async def cancel_payment(
+        self,
+        *,
+        session,
+        commiter,
+        redis_service,
+        user,
+        payment_id: int,
+        reason: str | None,
+        payment_repository,
+        order_repository,
+        payment_provider_service: PaymentProviderService,
+        payment_cache_service,
+        order_cache_service,
+    ) -> PaymentCancelResponse:
+        if not user.is_active or user.is_deleted:
+            raise InactiveUserError
+
+        payment = await payment_repository.get_by_id(session=session, payment_id=payment_id)
+        if payment is None:
+            raise PaymentNotFoundError
+        order = await order_repository.get_by_id(session=session, order_id=payment.order_id)
+        if order is None:
+            raise PaymentNotFoundError
+        if order.user_id != user.id:
+            raise PaymentAccessDeniedError
+        if payment.status == "paid":
+            raise PaymentAlreadyPaidError
+        if payment.status not in {"pending", "waiting_for_capture", "authorized"}:
+            raise PaymentCancellationStatusNotAllowedError
+
+        try:
+            provider_status = await payment_provider_service.cancel_payment(
+                provider_payment_id=payment.provider_payment_id,
+                reason=reason,
+            )
+            payment = await payment_repository.update_status(
+                session=session,
+                payment=payment,
+                status=provider_status.status,
+                cancelled_at=datetime.now(settings.tz),
+            )
+            await order_repository.update_payment_status(
+                session=session,
+                order=order,
+                payment_status="unpaid",
+            )
+            await commiter.commit()
+        except PaymentProviderCancelError:
+            await commiter.rollback()
+            raise
+        except Exception:
+            await commiter.rollback()
+            raise
+
+        await order_cache_service.invalidate_order(
+            redis_service=redis_service,
+            user_id=user.id,
+            order_id=order.id,
+        )
+        await payment_cache_service.invalidate_detail(
+            redis_service=redis_service,
+            user_id=user.id,
+            payment_id=payment.id,
+        )
+        return PaymentCancelResponse(
+            message="Платёж отменён",
+            payment=PaymentCancelPaymentResponse(
+                id=payment.id,
+                order_id=order.id,
+                status=payment.status,
+                amount=payment.amount,
+                currency=payment.currency,
+                cancelled_at=payment.cancelled_at,
+            ),
         )
 
     def _build_response(self, *, order, payment) -> PaymentCreateResponse:

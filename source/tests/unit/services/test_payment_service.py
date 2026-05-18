@@ -11,9 +11,12 @@ from source.errors.auth import (
     OrderAlreadyPaidError,
     OrderPaymentMethodNotOnlineError,
     PaymentAlreadyConfirmedError,
+    PaymentAlreadyPaidError,
     PaymentAccessDeniedError,
+    PaymentCancellationStatusNotAllowedError,
     PaymentConfirmationNotSupportedError,
     PaymentNotFoundError,
+    PaymentProviderCancelError,
     PaymentProviderCreateError,
     InvalidPaymentWebhookSignatureError,
 )
@@ -92,18 +95,27 @@ class FakePaymentRepository:
         self.updated_provider_data = True
         return payment
 
-    async def update_status(self, *, session, payment, status: str, paid_at=None):
+    async def update_status(self, *, session, payment, status: str, paid_at=None, cancelled_at=None):
         payment.status = status
         payment.paid_at = paid_at
+        payment.cancelled_at = cancelled_at
         self.updated_status = status
         return payment
 
 
 class FakeProviderService(PaymentProviderService):
-    def __init__(self, *, fail: bool = False, status: str = "pending", confirm_supported: bool = True) -> None:
+    def __init__(
+        self,
+        *,
+        fail: bool = False,
+        status: str = "pending",
+        confirm_supported: bool = True,
+        cancel_fail: bool = False,
+    ) -> None:
         self.fail = fail
         self.status = status
         self.confirm_supported = confirm_supported
+        self.cancel_fail = cancel_fail
         self.calls = []
 
     async def create_payment(self, **kwargs):
@@ -131,6 +143,12 @@ class FakeProviderService(PaymentProviderService):
             status=self.status,
             paid_at=datetime(2026, 5, 12, 10, 10, 0) if self.status in {"paid", "succeeded"} else None,
         )
+
+    async def cancel_payment(self, *, provider_payment_id: str, reason=None):
+        self.calls.append({"provider_payment_id": provider_payment_id, "reason": reason})
+        if self.cancel_fail:
+            raise PaymentProviderCancelError
+        return ProviderPaymentStatus(status="cancelled")
 
 
 class FakeOrderCacheService:
@@ -235,6 +253,7 @@ def build_payment(*, status: str = "pending"):
         provider_payment_id="provider-123",
         payment_url="https://payment.example.com/pay/existing",
         paid_at=None,
+        cancelled_at=None,
         created_date=datetime(2026, 5, 12, 9, 0, 0),
         updated_date=datetime(2026, 5, 12, 9, 5, 0),
         provider_secret="secret",
@@ -319,6 +338,39 @@ async def execute_confirm_payment(*, order=None, payment=None, provider_status="
         user=SimpleNamespace(id=1, is_active=True, is_deleted=False),
         payment_id=500,
         amount=None,
+        payment_repository=payment_repository,
+        order_repository=order_repository,
+        payment_provider_service=provider_service,
+        payment_cache_service=payment_cache_service,
+        order_cache_service=order_cache_service,
+    )
+    return SimpleNamespace(
+        response=response,
+        payment_repository=payment_repository,
+        order_repository=order_repository,
+        provider_service=provider_service,
+        payment_cache_service=payment_cache_service,
+        order_cache_service=order_cache_service,
+        commiter=commiter,
+    )
+
+
+async def execute_cancel_payment(*, order=None, payment="default", cancel_fail=False):
+    order = build_order() if order is None else order
+    payment = build_payment(status="pending") if payment == "default" else payment
+    payment_repository = FakePaymentRepository(payment=payment)
+    order_repository = FakeOrderRepository(order)
+    provider_service = FakeProviderService(cancel_fail=cancel_fail)
+    payment_cache_service = FakePaymentCacheService()
+    order_cache_service = FakeOrderCacheService()
+    commiter = FakeCommiter()
+    response = await PaymentService().cancel_payment(
+        session=None,
+        commiter=commiter,
+        redis_service=None,
+        user=SimpleNamespace(id=1, is_active=True, is_deleted=False),
+        payment_id=500,
+        reason="Передумал оплачивать онлайн",
         payment_repository=payment_repository,
         order_repository=order_repository,
         payment_provider_service=provider_service,
@@ -642,3 +694,40 @@ async def test_webhook_invalidates_redis_cache(monkeypatch):
     assert result.payment_cache_service.invalidated == [(1, 500)]
     assert result.order_cache_service.invalidated == [(1, 101)]
     assert result.profile_cache_service.deleted == [1]
+
+
+@pytest.mark.asyncio
+async def test_cancel_payment_success():
+    result = await execute_cancel_payment()
+
+    assert result.response.message == "Платёж отменён"
+    assert result.response.payment.status == "cancelled"
+    assert result.response.payment.cancelled_at is not None
+    assert result.order_repository.updated_payment_status == "unpaid"
+    assert result.payment_cache_service.values == {}
+    assert result.order_cache_service.invalidated == [(1, 101)]
+    assert result.commiter.committed is True
+
+
+@pytest.mark.asyncio
+async def test_cancel_payment_rejects_paid_payment():
+    with pytest.raises(PaymentAlreadyPaidError):
+        await execute_cancel_payment(payment=build_payment(status="paid"))
+
+
+@pytest.mark.asyncio
+async def test_cancel_payment_rejects_foreign_payment():
+    with pytest.raises(PaymentAccessDeniedError):
+        await execute_cancel_payment(order=build_order(user_id=2))
+
+
+@pytest.mark.asyncio
+async def test_cancel_payment_reports_missing_payment():
+    with pytest.raises(PaymentNotFoundError):
+        await execute_cancel_payment(payment=None)
+
+
+@pytest.mark.asyncio
+async def test_cancel_payment_reports_provider_error():
+    with pytest.raises(PaymentProviderCancelError):
+        await execute_cancel_payment(cancel_fail=True)

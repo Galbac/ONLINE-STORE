@@ -12,11 +12,14 @@ from source.errors.auth import (
     OrderPaymentMethodNotOnlineError,
     OrderPaymentStatusNotAllowedError,
     PaymentAlreadyConfirmedError,
+    PaymentAlreadyPaidError,
     PaymentAccessDeniedError,
+    PaymentCancellationStatusNotAllowedError,
     PaymentConfirmationNotSupportedError,
     PaymentConfirmationStatusNotAllowedError,
     PaymentNotFoundError,
     PaymentProviderConfirmError,
+    PaymentProviderCancelError,
     PaymentProviderCreateError,
     InvalidPaymentWebhookPayloadError,
     InvalidPaymentWebhookSignatureError,
@@ -27,6 +30,8 @@ from source.repositories.payment_webhook_log import PaymentWebhookLogRepository
 from source.schemas.pydantic.payment import (
     PaymentConfirmRequest,
     PaymentConfirmResponse,
+    PaymentCancelRequest,
+    PaymentCancelResponse,
     PaymentCreateRequest,
     PaymentCreateResponse,
     PaymentDetailResponse,
@@ -175,6 +180,52 @@ async def confirm_payment(
     except PaymentConfirmationStatusNotAllowedError as error:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Платёж не в статусе ожидания подтверждения") from error
     except PaymentProviderConfirmError as error:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Ошибка провайдера") from error
+
+
+@router.post("/payments/{payment_id}/cancel", response_model=PaymentCancelResponse, status_code=status.HTTP_200_OK)
+@inject
+async def cancel_payment(
+    payment_id: int,
+    body: PaymentCancelRequest,
+    current_user: User = Depends(get_current_user),
+    session: FromDishka[AsyncSession] = None,
+    commiter: FromDishka[Commiter] = None,
+    redis_service: FromDishka[RedisService] = None,
+    order_repository: FromDishka[OrderRepository] = None,
+    payment_repository: FromDishka[PaymentRepository] = None,
+    payment_service: FromDishka[PaymentService] = None,
+    payment_provider_service: FromDishka[PaymentProviderService] = None,
+    payment_cache_service: FromDishka[PaymentCacheService] = None,
+    order_cache_service: FromDishka[OrderCacheService] = None,
+) -> PaymentCancelResponse:
+    if payment_id <= 0:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Неверный payment_id")
+    try:
+        return await payment_service.cancel_payment(
+            session=session,
+            commiter=commiter,
+            redis_service=redis_service,
+            user=current_user,
+            payment_id=payment_id,
+            reason=body.reason,
+            payment_repository=payment_repository,
+            order_repository=order_repository,
+            payment_provider_service=payment_provider_service,
+            payment_cache_service=payment_cache_service,
+            order_cache_service=order_cache_service,
+        )
+    except InactiveUserError as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Пользователь заблокирован или удалён") from error
+    except PaymentNotFoundError as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Платёж не найден") from error
+    except PaymentAccessDeniedError as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Платёж принадлежит другому пользователю") from error
+    except PaymentAlreadyPaidError as error:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Платёж уже оплачен, нужен возврат") from error
+    except PaymentCancellationStatusNotAllowedError as error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Платёж нельзя отменить в текущем статусе") from error
+    except PaymentProviderCancelError as error:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Ошибка провайдера") from error
 
 
