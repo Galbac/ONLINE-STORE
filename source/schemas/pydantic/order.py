@@ -1,7 +1,7 @@
 from datetime import date, datetime
 from decimal import Decimal
 
-from pydantic import BaseModel, EmailStr, Field, field_validator, model_validator
+from pydantic import BaseModel, EmailStr, Field, computed_field, field_validator, model_validator
 
 from source.utils.order import normalize_phone
 
@@ -65,6 +65,55 @@ class OrderShortResponse(BaseModel):
     id: int
     order_number: str
     status: str
+    payment_method: str | None = None
+    payment_status: str | None = None
+    delivery_type: str | None = None
+    items_count: int = 0
+    final_price: Decimal
+    created_at: datetime
+
+
+class OrderMyListQueryParams(BaseModel):
+    status: str | None = Field(default=None, max_length=50)
+    payment_status: str | None = Field(default=None, max_length=50)
+    delivery_type: str | None = Field(default=None, pattern="^(delivery|pickup)$")
+    date_from: date | None = None
+    date_to: date | None = None
+    page: int = Field(default=1, ge=1)
+    limit: int = Field(default=20, ge=1, le=100)
+
+    @field_validator("status", "payment_status", "delivery_type", mode="before")
+    @classmethod
+    def normalize_string(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        normalized_value = value.strip()
+        return normalized_value or None
+
+    @model_validator(mode="after")
+    def validate_dates(self) -> "OrderMyListQueryParams":
+        if self.date_from is not None and self.date_to is not None and self.date_from > self.date_to:
+            raise ValueError("date_from must be less than or equal to date_to")
+        return self
+
+    @computed_field
+    @property
+    def offset(self) -> int:
+        return (self.page - 1) * self.limit
+
+
+class OrderMyListResponse(BaseModel):
+    items: list[OrderShortResponse]
+    total: int
+    page: int
+    limit: int
+    pages: int
+
+
+class OrderCreateResponse(BaseModel):
+    id: int
+    order_number: str
+    status: str
     payment_method: str
     payment_status: str
     delivery_type: str
@@ -75,7 +124,3 @@ class OrderShortResponse(BaseModel):
     final_price: Decimal
     payment_url: str | None = None
     created_at: datetime
-
-
-class OrderCreateResponse(OrderShortResponse):
-    pass

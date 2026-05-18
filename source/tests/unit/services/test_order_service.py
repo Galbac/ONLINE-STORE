@@ -3,7 +3,10 @@ from decimal import Decimal
 from types import SimpleNamespace
 
 import pytest
+from fastapi import HTTPException
+from pydantic import ValidationError
 
+from source.api.dependencies import resolve_access_token
 from source.errors.auth import (
     CartEmptyError,
     OrderAddressAccessDeniedError,
@@ -12,10 +15,13 @@ from source.errors.auth import (
     OrderUnavailableItemsError,
 )
 from source.schemas.pydantic.order import OrderCreateRequest
+from source.schemas.pydantic.order import OrderMyListQueryParams, OrderMyListResponse, OrderShortResponse
 from source.services.cart import CartCalculatorService
 from source.services.delivery import DeliveryService
 from source.services.one_c import OneCIntegrationService
 from source.services.order import OrderService
+from source.services.order_cache import OrderCacheService
+from source.utils.query_hash import build_query_hash
 from source.services.payment import PaymentService
 from source.services.promo_code import PromoCodeService
 from source.services.stock import StockService
@@ -117,6 +123,41 @@ class FakeOrderRepository:
         return self.order
 
 
+class FakeMyOrderRepository:
+    def __init__(self, orders=None) -> None:
+        self.orders = orders if orders is not None else [
+            build_short_order(order_id=101, user_id=1, created_at=datetime(2026, 5, 18)),
+            build_short_order(order_id=102, user_id=1, status="completed", payment_status="paid", delivery_type="pickup", created_at=datetime(2026, 5, 17)),
+            build_short_order(order_id=103, user_id=2, created_at=datetime(2026, 5, 19)),
+        ]
+        self.requested_user_id = None
+
+    async def get_by_user_id(self, *, session, user_id: int, query: OrderMyListQueryParams):
+        self.requested_user_id = user_id
+        orders = self._filter(user_id=user_id, query=query)
+        orders.sort(key=lambda order: order.created_at, reverse=True)
+        return orders[query.offset : query.offset + query.limit]
+
+    async def count_by_user_id(self, *, session, user_id: int, query: OrderMyListQueryParams | None = None):
+        return len(self._filter(user_id=user_id, query=query))
+
+    def _filter(self, *, user_id: int, query: OrderMyListQueryParams | None):
+        orders = [order for order in self.orders if order.user_id == user_id]
+        if query is None:
+            return orders
+        if query.status is not None:
+            orders = [order for order in orders if order.status == query.status]
+        if query.payment_status is not None:
+            orders = [order for order in orders if order.payment_status == query.payment_status]
+        if query.delivery_type is not None:
+            orders = [order for order in orders if order.delivery_type == query.delivery_type]
+        if query.date_from is not None:
+            orders = [order for order in orders if order.created_at.date() >= query.date_from]
+        if query.date_to is not None:
+            orders = [order for order in orders if order.created_at.date() <= query.date_to]
+        return orders
+
+
 class FakeOrderItemRepository:
     def __init__(self) -> None:
         self.items = []
@@ -151,6 +192,25 @@ class FakeCartCacheService:
         self.invalidated = False
 
     async def invalidate_cart(self, *, redis_service, user_id: int) -> None:
+        self.invalidated = True
+
+
+class FakeOrderCacheService:
+    def __init__(self) -> None:
+        self.values = {}
+        self.ttls = {}
+        self.invalidated = False
+
+    async def get_my_orders(self, *, redis_service, user_id: int, query_hash: str):
+        value = self.values.get(f"orders:my:{user_id}:{query_hash}")
+        return None if value is None else OrderMyListResponse.model_validate_json(value)
+
+    async def set_my_orders(self, *, redis_service, user_id: int, query_hash: str, response, ttl_seconds: int):
+        key = f"orders:my:{user_id}:{query_hash}"
+        self.values[key] = response.model_dump_json()
+        self.ttls[key] = ttl_seconds
+
+    async def invalidate_my_orders(self, *, redis_service, user_id: int) -> None:
         self.invalidated = True
 
 
@@ -238,6 +298,30 @@ def build_promo_code(*, is_active=True):
     )
 
 
+def build_short_order(
+    *,
+    order_id: int,
+    user_id: int,
+    status: str = "assembling",
+    payment_status: str = "unpaid",
+    delivery_type: str = "delivery",
+    created_at: datetime,
+):
+    order = OrderShortResponse(
+        id=order_id,
+        order_number=f"ORD-{order_id:06d}",
+        status=status,
+        payment_method="online",
+        payment_status=payment_status,
+        delivery_type=delivery_type,
+        items_count=2,
+        final_price=Decimal("100.00"),
+        created_at=created_at,
+    )
+    object.__setattr__(order, "user_id", user_id)
+    return order
+
+
 async def execute_create_order(
     *,
     delivery_type="delivery",
@@ -261,6 +345,7 @@ async def execute_create_order(
     order_item_repository = FakeOrderItemRepository()
     payment_repository = FakePaymentRepository()
     cart_cache_service = FakeCartCacheService()
+    order_cache_service = FakeOrderCacheService()
     profile_cache_service = FakeProfileCacheService()
     product_cache_service = FakeProductCacheService()
     notification_service = FakeNotificationService()
@@ -295,6 +380,7 @@ async def execute_create_order(
         delivery_service=DeliveryService(),
         payment_service=PaymentService(),
         cart_cache_service=cart_cache_service,
+        order_cache_service=order_cache_service,
         profile_cache_service=profile_cache_service,
         product_cache_service=product_cache_service,
         one_c_integration_service=OneCIntegrationService(),
@@ -311,10 +397,22 @@ async def execute_create_order(
         order_item_repository=order_item_repository,
         payment_repository=payment_repository,
         cart_cache_service=cart_cache_service,
+        order_cache_service=order_cache_service,
         profile_cache_service=profile_cache_service,
         product_cache_service=product_cache_service,
         notification_service=notification_service,
         promo_code_usage_repository=promo_code_usage_repository,
+    )
+
+
+async def execute_get_my_orders(*, order_repository=None, order_cache_service=None, query=None):
+    return await OrderService().get_my_orders(
+        session=None,
+        redis_service=FakeRedisService(),
+        user=SimpleNamespace(id=1, is_active=True, is_deleted=False),
+        query=query or OrderMyListQueryParams(),
+        order_repository=order_repository or FakeMyOrderRepository(),
+        order_cache_service=order_cache_service or FakeOrderCacheService(),
     )
 
 
@@ -406,6 +504,7 @@ async def test_create_order_clears_cart_and_invalidates_cache() -> None:
     assert result.profile_cache_service.orders_invalidated is True
     assert result.profile_cache_service.summary_deleted is True
     assert result.product_cache_service.invalidated is True
+    assert result.order_cache_service.invalidated is True
 
 
 @pytest.mark.asyncio
@@ -447,6 +546,7 @@ async def test_create_order_rolls_back_on_error() -> None:
             delivery_service=DeliveryService(),
             payment_service=PaymentService(),
             cart_cache_service=FakeCartCacheService(),
+            order_cache_service=FakeOrderCacheService(),
             profile_cache_service=FakeProfileCacheService(),
             product_cache_service=FakeProductCacheService(),
             one_c_integration_service=OneCIntegrationService(),
@@ -455,3 +555,86 @@ async def test_create_order_rolls_back_on_error() -> None:
             telegram_service=FakeTelegramService(),
         )
     assert commiter.rolled_back is True
+
+
+@pytest.mark.asyncio
+async def test_get_my_orders_success() -> None:
+    response = await execute_get_my_orders()
+    assert response.total == 2
+    assert response.page == 1
+    assert response.limit == 20
+    assert response.pages == 1
+    assert [order.id for order in response.items] == [101, 102]
+
+
+@pytest.mark.asyncio
+async def test_get_my_orders_from_redis_cache_success() -> None:
+    cache = FakeOrderCacheService()
+    query = OrderMyListQueryParams()
+    cached_response = OrderMyListResponse(
+        items=[build_short_order(order_id=201, user_id=1, created_at=datetime(2026, 5, 18))],
+        total=1,
+        page=1,
+        limit=20,
+        pages=1,
+    )
+    cache.values[f"orders:my:1:{build_query_hash(query.model_dump())}"] = cached_response.model_dump_json()
+    repository = FakeMyOrderRepository()
+    response = await execute_get_my_orders(order_repository=repository, order_cache_service=cache, query=query)
+    assert [order.id for order in response.items] == [201]
+    assert repository.requested_user_id is None
+
+
+@pytest.mark.asyncio
+async def test_get_my_orders_current_user_only() -> None:
+    repository = FakeMyOrderRepository()
+    response = await execute_get_my_orders(order_repository=repository)
+    assert repository.requested_user_id == 1
+    assert [order.id for order in response.items] == [101, 102]
+
+
+@pytest.mark.asyncio
+async def test_get_my_orders_filters() -> None:
+    response = await execute_get_my_orders(query=OrderMyListQueryParams(status="completed"))
+    assert [order.id for order in response.items] == [102]
+    response = await execute_get_my_orders(query=OrderMyListQueryParams(payment_status="paid"))
+    assert [order.id for order in response.items] == [102]
+    response = await execute_get_my_orders(query=OrderMyListQueryParams(delivery_type="pickup"))
+    assert [order.id for order in response.items] == [102]
+
+
+@pytest.mark.asyncio
+async def test_get_my_orders_date_filter_pagination_and_sorting() -> None:
+    response = await execute_get_my_orders(
+        query=OrderMyListQueryParams(
+            date_from=datetime(2026, 5, 17).date(),
+            date_to=datetime(2026, 5, 18).date(),
+            page=2,
+            limit=1,
+        ),
+    )
+    assert response.total == 2
+    assert response.pages == 2
+    assert [order.id for order in response.items] == [102]
+
+
+@pytest.mark.asyncio
+async def test_get_my_orders_response_is_cached() -> None:
+    cache = FakeOrderCacheService()
+    query = OrderMyListQueryParams(status="assembling")
+    await execute_get_my_orders(order_cache_service=cache, query=query)
+    key = f"orders:my:1:{build_query_hash(query.model_dump())}"
+    assert key in cache.values
+    assert cache.ttls[key] == 60
+
+
+@pytest.mark.asyncio
+async def test_get_my_orders_without_access_token() -> None:
+    with pytest.raises(HTTPException) as exc_info:
+        await resolve_access_token(authorization=None, redis_service=FakeRedisService())
+    assert exc_info.value.status_code == 401
+
+
+def test_get_my_orders_invalid_query_params() -> None:
+    with pytest.raises(ValidationError):
+        OrderMyListQueryParams(delivery_type="courier")

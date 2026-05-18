@@ -22,6 +22,20 @@ def validate_payment_method(value: str) -> str:
     return value
 
 
+def validate_order_status(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = value.strip()
+    return normalized or None
+
+
+def validate_payment_status(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = value.strip()
+    return normalized or None
+
+
 def calculate_order_totals(*, subtotal: Decimal, discount_amount: Decimal, promo_discount_amount: Decimal, delivery_price: Decimal) -> Decimal:
     final_price = subtotal - discount_amount - promo_discount_amount + delivery_price
     return max(final_price, Decimal("0"))

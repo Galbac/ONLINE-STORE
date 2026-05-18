@@ -4,6 +4,7 @@ from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from source.db.models.order import Order
+from source.schemas.pydantic.order import OrderMyListQueryParams, OrderShortResponse
 from source.schemas.pydantic.profile import ProfileOrderListQueryParams, ProfileOrderShortResponse
 
 
@@ -32,7 +33,7 @@ class OrderRepository:
         *,
         session: AsyncSession,
         user_id: int,
-        query: ProfileOrderListQueryParams | None = None,
+        query: ProfileOrderListQueryParams | OrderMyListQueryParams | None = None,
     ) -> int:
         statement = select(func.count(Order.id)).where(Order.user_id == user_id)
         statement = self._apply_filters(statement, query=query)
@@ -44,12 +45,14 @@ class OrderRepository:
         *,
         session: AsyncSession,
         user_id: int,
-        query: ProfileOrderListQueryParams,
-    ) -> list[ProfileOrderShortResponse]:
+        query: ProfileOrderListQueryParams | OrderMyListQueryParams,
+    ) -> list[ProfileOrderShortResponse | OrderShortResponse]:
         statement = select(Order).where(Order.user_id == user_id)
         statement = self._apply_filters(statement, query=query)
         statement = statement.order_by(desc(Order.created_date)).limit(query.limit).offset(query.offset)
         result = await session.execute(statement)
+        if isinstance(query, OrderMyListQueryParams):
+            return [self._build_my_order_response(order) for order in result.scalars().all()]
         return [self._build_order_response(order) for order in result.scalars().all()]
 
     async def get_recent_by_user_id(
@@ -102,7 +105,7 @@ class OrderRepository:
         )
         return result.scalar_one_or_none() is not None
 
-    def _apply_filters(self, statement, *, query: ProfileOrderListQueryParams | None):
+    def _apply_filters(self, statement, *, query: ProfileOrderListQueryParams | OrderMyListQueryParams | None):
         if query is None:
             return statement
         if query.status is not None:
@@ -119,6 +122,19 @@ class OrderRepository:
 
     def _build_order_response(self, order: Order) -> ProfileOrderShortResponse:
         return ProfileOrderShortResponse(
+            id=order.id,
+            order_number=order.order_number,
+            status=order.status,
+            payment_method=order.payment_method,
+            payment_status=order.payment_status,
+            delivery_type=order.delivery_type,
+            final_price=order.final_price,
+            items_count=order.items_count,
+            created_at=order.created_date,
+        )
+
+    def _build_my_order_response(self, order: Order) -> OrderShortResponse:
+        return OrderShortResponse(
             id=order.id,
             order_number=order.order_number,
             status=order.status,

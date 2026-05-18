@@ -18,10 +18,61 @@ from source.errors.auth import (
     OrderUnavailableItemsError,
 )
 from source.schemas.pydantic.order import OrderCreateResponse
+from source.schemas.pydantic.order import OrderMyListQueryParams, OrderMyListResponse
+from source.utils.query_hash import build_query_hash
 from source.utils.order import calculate_order_totals, generate_order_number
 
 
 class OrderService:
+    async def get_my_orders(
+        self,
+        *,
+        session,
+        redis_service,
+        user,
+        query: OrderMyListQueryParams,
+        order_repository,
+        order_cache_service,
+    ) -> OrderMyListResponse:
+        if not user.is_active or user.is_deleted:
+            raise InactiveUserError
+
+        query_hash = build_query_hash(query.model_dump())
+        cached_orders = await order_cache_service.get_my_orders(
+            redis_service=redis_service,
+            user_id=user.id,
+            query_hash=query_hash,
+        )
+        if cached_orders is not None:
+            return cached_orders
+
+        items = await order_repository.get_by_user_id(
+            session=session,
+            user_id=user.id,
+            query=query,
+        )
+        total = await order_repository.count_by_user_id(
+            session=session,
+            user_id=user.id,
+            query=query,
+        )
+        pages = (total + query.limit - 1) // query.limit if total else 0
+        response = OrderMyListResponse(
+            items=items,
+            total=total,
+            page=query.page,
+            limit=query.limit,
+            pages=pages,
+        )
+        await order_cache_service.set_my_orders(
+            redis_service=redis_service,
+            user_id=user.id,
+            query_hash=query_hash,
+            response=response,
+            ttl_seconds=settings.orders_my.cache_ttl_seconds,
+        )
+        return response
+
     async def create_order(
         self,
         *,
@@ -46,6 +97,7 @@ class OrderService:
         delivery_service,
         payment_service,
         cart_cache_service,
+        order_cache_service,
         profile_cache_service,
         product_cache_service,
         one_c_integration_service,
@@ -233,6 +285,7 @@ class OrderService:
             raise
 
         await cart_cache_service.invalidate_cart(redis_service=redis_service, user_id=user.id)
+        await order_cache_service.invalidate_my_orders(redis_service=redis_service, user_id=user.id)
         await profile_cache_service.invalidate_orders(redis_service=redis_service, user_id=user.id)
         await profile_cache_service.delete_summary(redis_service=redis_service, user_id=user.id)
         await product_cache_service.invalidate_by_stock_changes(redis_service=redis_service, products=products)
