@@ -1,4 +1,7 @@
+from datetime import date, datetime
 from decimal import Decimal
+
+from source.config.settings import settings
 
 
 def normalize_address(
@@ -25,3 +28,13 @@ def normalize_address_part(value: str | None) -> str | None:
 
 def normalize_amount(value: Decimal) -> str:
     return str(value.quantize(Decimal("0.01")))
+
+
+def validate_future_date(value: date) -> date:
+    if value < datetime.now(settings.tz).date():
+        raise ValueError("date не должна быть в прошлом")
+    return value
+
+
+def get_weekday(value: date) -> int:
+    return value.weekday()

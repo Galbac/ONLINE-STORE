@@ -27,9 +27,11 @@ from source.errors.auth import (
     OrderItemsNotFoundError,
     RepeatOrderUnavailableError,
 )
+from source.errors.delivery import DeliveryTimeSlotUnavailableError
 from source.repositories.address import AddressRepository
 from source.repositories.cart import CartRepository
 from source.repositories.cart_item import CartItemRepository
+from source.repositories.delivery_time_slot import DeliveryTimeSlotRepository
 from source.repositories.order import OrderRepository
 from source.repositories.order_item import OrderItemRepository
 from source.repositories.payment import PaymentRepository
@@ -50,7 +52,8 @@ from source.schemas.pydantic.order import (
 )
 from source.services.cart import CartCalculatorService, CartService
 from source.services.cart_cache import CartCacheService
-from source.services.delivery import DeliveryService
+from source.services.delivery import DeliveryService, DeliveryTimeSlotService
+from source.services.delivery_cache import DeliveryCacheService
 from source.services.notifications import EmailService, NotificationService, TelegramNotificationService
 from source.services.one_c import OneCIntegrationService
 from source.services.order import OrderService
@@ -316,6 +319,9 @@ async def create_order(
     stock_service: FromDishka[StockService] = None,
     promo_code_service: FromDishka[PromoCodeService] = None,
     delivery_service: FromDishka[DeliveryService] = None,
+    delivery_cache_service: FromDishka[DeliveryCacheService] = None,
+    delivery_time_slot_service: FromDishka[DeliveryTimeSlotService] = None,
+    delivery_time_slot_repository: FromDishka[DeliveryTimeSlotRepository] = None,
     payment_service: FromDishka[PaymentService] = None,
     cart_cache_service: FromDishka[CartCacheService] = None,
     order_cache_service: FromDishka[OrderCacheService] = None,
@@ -347,6 +353,9 @@ async def create_order(
             stock_service=stock_service,
             promo_code_service=promo_code_service,
             delivery_service=delivery_service,
+            delivery_cache_service=delivery_cache_service,
+            delivery_time_slot_service=delivery_time_slot_service,
+            delivery_time_slot_repository=delivery_time_slot_repository,
             payment_service=payment_service,
             cart_cache_service=cart_cache_service,
             order_cache_service=order_cache_service,
@@ -371,6 +380,8 @@ async def create_order(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Точка самовывоза не найдена") from error
     except OrderPickupPointInactiveError as error:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Точка самовывоза неактивна") from error
+    except DeliveryTimeSlotUnavailableError as error:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Временной интервал недоступен") from error
     except OrderPromoCodeInvalidError as error:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Промокод больше недействителен") from error
     except OrderUnavailableItemsError as error:

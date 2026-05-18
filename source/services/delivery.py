@@ -10,23 +10,36 @@ from source.db.models.delivery_zone import DeliveryZone
 from source.errors.delivery import (
     DeliveryAddressAccessDeniedError,
     DeliveryAddressNotFoundError,
+    DeliveryDateInPastError,
     DeliveryDisabledError,
     DeliveryMinOrderAmountError,
+    PickupDisabledError,
+    PickupPointInactiveError,
+    PickupPointNotFoundError,
 )
 from source.repositories.address import AddressRepository
 from source.repositories.delivery_settings import DeliverySettingsRepository
+from source.repositories.delivery_time_slot import DeliveryTimeSlotRepository
 from source.repositories.delivery_zone import DeliveryZoneRepository
+from source.repositories.order import OrderRepository
 from source.repositories.pickup_point import PickupPointRepository
 from source.schemas.pydantic.delivery import (
     DeliveryCalculateRequest,
     DeliveryCalculateResponse,
     DeliveryOptionItemResponse,
     DeliveryOptionsResponse,
+    DeliveryTimeSlotResponse,
+    DeliveryTimeSlotsQueryParams,
+    DeliveryTimeSlotsResponse,
     DeliveryZoneShortResponse,
+    PickupPointDetailResponse,
+    PickupPointListQueryParams,
+    PickupPointListResponse,
+    PickupPointResponse,
 )
 from source.services.delivery_cache import DeliveryCacheService
 from source.services.redis import RedisService
-from source.utils.delivery import normalize_address, normalize_amount
+from source.utils.delivery import normalize_address, normalize_amount, validate_future_date
 from source.utils.query_hash import build_query_hash
 
 
@@ -131,6 +144,73 @@ class DeliveryService:
         )
         return response
 
+    async def get_pickup_points(
+        self,
+        *,
+        session: AsyncSession,
+        redis_service: RedisService,
+        delivery_cache_service: DeliveryCacheService,
+        pickup_point_repository: PickupPointRepository,
+        query: PickupPointListQueryParams,
+    ) -> PickupPointListResponse:
+        query_hash = build_query_hash(query.model_dump())
+        cached_pickup_points = await delivery_cache_service.get_pickup_points(
+            redis_service=redis_service,
+            query_hash=query_hash,
+        )
+        if cached_pickup_points is not None:
+            return cached_pickup_points
+
+        pickup_points = await pickup_point_repository.get_list(session=session, query=query)
+        total = await pickup_point_repository.count(session=session, query=query)
+        response = PickupPointListResponse(
+            items=[
+                self._build_pickup_point_response(pickup_point=pickup_point)
+                for pickup_point in pickup_points
+            ],
+            total=total,
+            limit=query.limit,
+            offset=query.offset,
+        )
+        await delivery_cache_service.set_pickup_points(
+            redis_service=redis_service,
+            query_hash=query_hash,
+            response=response,
+            ttl_seconds=settings.delivery_pickup_points.list_cache_ttl_seconds,
+        )
+        return response
+
+    async def get_pickup_point_by_id(
+        self,
+        *,
+        session: AsyncSession,
+        redis_service: RedisService,
+        delivery_cache_service: DeliveryCacheService,
+        pickup_point_repository: PickupPointRepository,
+        point_id: int,
+    ) -> PickupPointDetailResponse:
+        cached_pickup_point = await delivery_cache_service.get_pickup_point(
+            redis_service=redis_service,
+            point_id=point_id,
+        )
+        if cached_pickup_point is not None:
+            return cached_pickup_point
+
+        pickup_point = await pickup_point_repository.get_by_id(session=session, pickup_point_id=point_id)
+        if pickup_point is None:
+            raise PickupPointNotFoundError
+        if not pickup_point.is_active:
+            raise PickupPointInactiveError
+
+        response = self._build_pickup_point_detail_response(pickup_point=pickup_point)
+        await delivery_cache_service.set_pickup_point(
+            redis_service=redis_service,
+            point_id=point_id,
+            response=response,
+            ttl_seconds=settings.delivery_pickup_points.detail_cache_ttl_seconds,
+        )
+        return response
+
     def _build_options_response(
         self,
         *,
@@ -182,6 +262,25 @@ class DeliveryService:
                 name=zone.name,
             ),
             message="Доставка доступна",
+        )
+
+    def _build_pickup_point_response(self, *, pickup_point) -> PickupPointResponse:
+        return PickupPointResponse(
+            id=pickup_point.id,
+            name=pickup_point.name,
+            city=pickup_point.city,
+            address=pickup_point.address,
+            working_hours=pickup_point.working_hours,
+            phone=pickup_point.phone,
+            is_active=pickup_point.is_active,
+            latitude=pickup_point.latitude,
+            longitude=pickup_point.longitude,
+        )
+
+    def _build_pickup_point_detail_response(self, *, pickup_point) -> PickupPointDetailResponse:
+        return PickupPointDetailResponse(
+            **self._build_pickup_point_response(pickup_point=pickup_point).model_dump(),
+            description=pickup_point.description,
         )
 
     async def _resolve_address(
@@ -246,3 +345,128 @@ class DeliveryZoneService:
         delivery_zone_repository: DeliveryZoneRepository,
     ) -> DeliveryZone | None:
         return await delivery_zone_repository.find_by_city(session=session, city=city)
+
+
+class DeliveryTimeSlotService:
+    async def get_available_slots(
+        self,
+        *,
+        session: AsyncSession,
+        redis_service: RedisService,
+        delivery_cache_service: DeliveryCacheService,
+        delivery_settings_repository: DeliverySettingsRepository,
+        delivery_time_slot_repository: DeliveryTimeSlotRepository,
+        pickup_point_repository: PickupPointRepository,
+        order_repository: OrderRepository,
+        query: DeliveryTimeSlotsQueryParams,
+    ) -> DeliveryTimeSlotsResponse:
+        try:
+            validate_future_date(query.date)
+        except ValueError as error:
+            raise DeliveryDateInPastError from error
+
+        delivery_settings = await delivery_settings_repository.get_settings(session=session)
+        if delivery_settings is None:
+            delivery_settings = DeliveryService()._default_settings()
+        if query.delivery_type == "delivery" and not delivery_settings.delivery_enabled:
+            raise DeliveryDisabledError
+        if query.delivery_type == "pickup" and not delivery_settings.pickup_enabled:
+            raise PickupDisabledError
+        if query.delivery_type == "pickup" and query.pickup_point_id is not None:
+            pickup_point = await pickup_point_repository.get_active_by_id(
+                session=session,
+                pickup_point_id=query.pickup_point_id,
+            )
+            if pickup_point is None:
+                raise PickupPointNotFoundError
+
+        query_hash = build_query_hash(query.model_dump())
+        cached_time_slots = await delivery_cache_service.get_time_slots(
+            redis_service=redis_service,
+            query_hash=query_hash,
+        )
+        if cached_time_slots is not None:
+            return cached_time_slots
+
+        slots = await delivery_time_slot_repository.get_by_day(
+            session=session,
+            date_=query.date,
+            delivery_type=query.delivery_type,
+            pickup_point_id=query.pickup_point_id,
+        )
+        response = DeliveryTimeSlotsResponse(
+            date=query.date,
+            delivery_type=query.delivery_type,
+            items=[
+                slot_response
+                for slot in slots
+                if (slot_response := await self._build_slot_response(
+                    session=session,
+                    order_repository=order_repository,
+                    slot=slot,
+                    query=query,
+                )) is not None
+            ],
+        )
+        await delivery_cache_service.set_time_slots(
+            redis_service=redis_service,
+            query_hash=query_hash,
+            response=response,
+            ttl_seconds=settings.delivery_time_slots.cache_ttl_seconds,
+        )
+        return response
+
+    async def check_slot_capacity(
+        self,
+        *,
+        session: AsyncSession,
+        order_repository: OrderRepository,
+        delivery_date,
+        delivery_type: str,
+        delivery_time_slot_id: int,
+        orders_limit: int,
+        pickup_point_id: int | None = None,
+    ) -> bool:
+        orders_count = await order_repository.count_orders_by_time_slot(
+            session=session,
+            delivery_date=delivery_date,
+            delivery_time_slot_id=delivery_time_slot_id,
+            delivery_type=delivery_type,
+            pickup_point_id=pickup_point_id,
+        )
+        return orders_count < orders_limit
+
+    async def _build_slot_response(
+        self,
+        *,
+        session: AsyncSession,
+        order_repository: OrderRepository,
+        slot,
+        query: DeliveryTimeSlotsQueryParams,
+    ) -> DeliveryTimeSlotResponse | None:
+        if not slot.is_active or not self._slot_time_available(date_=query.date, end_time=slot.end_time):
+            return None
+        orders_count = await order_repository.count_orders_by_time_slot(
+            session=session,
+            delivery_date=query.date,
+            delivery_time_slot_id=slot.id,
+            delivery_type=query.delivery_type,
+            pickup_point_id=query.pickup_point_id,
+        )
+        available = orders_count < slot.orders_limit
+        return DeliveryTimeSlotResponse(
+            id=slot.id,
+            start_time=slot.start_time.strftime("%H:%M"),
+            end_time=slot.end_time.strftime("%H:%M"),
+            label=slot.label or f"{slot.start_time.strftime('%H:%M')}–{slot.end_time.strftime('%H:%M')}",
+            available=available,
+            orders_limit=slot.orders_limit,
+            orders_count=orders_count,
+            reason=None if available else "Интервал заполнен",
+        )
+
+    def _slot_time_available(self, *, date_, end_time) -> bool:
+        from datetime import datetime
+
+        now = datetime.now(settings.tz)
+        return date_ != now.date() or end_time > now.time()

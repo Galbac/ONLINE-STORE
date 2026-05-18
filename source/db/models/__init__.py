@@ -4,6 +4,7 @@ from source.db.models.cart import Cart
 from source.db.models.cart_item import CartItem
 from source.db.models.category import Category
 from source.db.models.delivery_settings import DeliverySettings
+from source.db.models.delivery_time_slot import DeliveryTimeSlot
 from source.db.models.delivery_zone import DeliveryZone
 from source.db.models.order import Order
 from source.db.models.order_item import OrderItem
@@ -24,6 +25,7 @@ __all__ = (
     "CartItem",
     "Category",
     "DeliverySettings",
+    "DeliveryTimeSlot",
     "DeliveryZone",
     "Order",
     "OrderItem",

@@ -24,6 +24,7 @@ from source.schemas.pydantic.order import OrderCancelRequest, OrderCreateRequest
 from source.schemas.pydantic.order import OrderDetailResponse, OrderMyListQueryParams, OrderMyListResponse, OrderShortResponse, OrderStatusResponse
 from source.services.cart import CartCalculatorService, CartService
 from source.services.delivery import DeliveryService
+from source.services.delivery_cache import DeliveryCacheService
 from source.services.one_c import OneCIntegrationService
 from source.services.order import OrderService
 from source.services.order_cache import OrderCacheService
@@ -503,6 +504,7 @@ async def execute_create_order(
     pickup_point=None,
     promo_code=None,
     fail_create=False,
+    delivery_cache_service=None,
 ):
     items = [build_cart_item()] if items is None else items
     product = build_product() if product is None else product
@@ -520,10 +522,11 @@ async def execute_create_order(
     product_cache_service = FakeProductCacheService()
     notification_service = FakeNotificationService()
     promo_code_usage_repository = FakePromoCodeUsageRepository()
+    redis_service = FakeRedisService()
     response = await OrderService().create_order(
         session=None,
         commiter=commiter,
-        redis_service=FakeRedisService(),
+        redis_service=redis_service,
         user=SimpleNamespace(id=1, is_active=True, is_deleted=False),
         data=OrderCreateRequest(
             delivery_type=delivery_type,
@@ -548,6 +551,7 @@ async def execute_create_order(
         stock_service=StockService(),
         promo_code_service=PromoCodeService(),
         delivery_service=DeliveryService(),
+        delivery_cache_service=delivery_cache_service,
         payment_service=PaymentService(),
         cart_cache_service=cart_cache_service,
         order_cache_service=order_cache_service,
@@ -572,6 +576,7 @@ async def execute_create_order(
         product_cache_service=product_cache_service,
         notification_service=notification_service,
         promo_code_usage_repository=promo_code_usage_repository,
+        redis_service=redis_service,
     )
 
 
@@ -729,6 +734,13 @@ async def test_create_order_delivery_success() -> None:
     result = await execute_create_order()
     assert result.response.delivery_type == "delivery"
     assert result.response.delivery_price == Decimal("250.00")
+
+
+@pytest.mark.asyncio
+async def test_create_order_invalidates_time_slots_cache() -> None:
+    result = await execute_create_order(delivery_cache_service=DeliveryCacheService())
+
+    assert "delivery:time_slots:*" in result.redis_service.deleted
 
 
 @pytest.mark.asyncio

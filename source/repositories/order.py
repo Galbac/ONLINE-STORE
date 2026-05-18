@@ -1,4 +1,4 @@
-from datetime import datetime, time
+from datetime import date, datetime, time
 
 from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -122,6 +122,26 @@ class OrderRepository:
             .limit(1),
         )
         return result.scalar_one_or_none() is not None
+
+    async def count_orders_by_time_slot(
+        self,
+        *,
+        session: AsyncSession,
+        delivery_date: date,
+        delivery_time_slot_id: int,
+        delivery_type: str,
+        pickup_point_id: int | None = None,
+    ) -> int:
+        statement = select(func.count(Order.id)).where(
+            Order.delivery_date == delivery_date,
+            Order.delivery_time_slot_id == delivery_time_slot_id,
+            Order.delivery_type == delivery_type,
+            Order.status.in_(ACTIVE_ORDER_STATUSES),
+        )
+        if pickup_point_id is not None:
+            statement = statement.where(Order.pickup_point_id == pickup_point_id)
+        result = await session.execute(statement)
+        return int(result.scalar_one())
 
     def _apply_filters(self, statement, *, query: ProfileOrderListQueryParams | OrderMyListQueryParams | None):
         if query is None:

@@ -326,6 +326,19 @@ class DeliveryCalculateSettings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 
+class DeliveryPickupPointsSettings(BaseSettings):
+    list_cache_ttl_seconds: int = Field(default=600, alias="DELIVERY_PICKUP_POINTS_CACHE_TTL_SECONDS")
+    detail_cache_ttl_seconds: int = Field(default=600, alias="DELIVERY_PICKUP_POINT_CACHE_TTL_SECONDS")
+
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+
+class DeliveryTimeSlotsSettings(BaseSettings):
+    cache_ttl_seconds: int = Field(default=120, alias="DELIVERY_TIME_SLOTS_CACHE_TTL_SECONDS")
+
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=(".env.example", ".env"),
@@ -362,6 +375,8 @@ class Settings(BaseSettings):
     products: ProductsSettings = ProductsSettings()
     delivery_options: DeliveryOptionsSettings = DeliveryOptionsSettings()
     delivery_calculate: DeliveryCalculateSettings = DeliveryCalculateSettings()
+    delivery_pickup_points: DeliveryPickupPointsSettings = DeliveryPickupPointsSettings()
+    delivery_time_slots: DeliveryTimeSlotsSettings = DeliveryTimeSlotsSettings()
 
     @property
     def tz(self) -> tzinfo:

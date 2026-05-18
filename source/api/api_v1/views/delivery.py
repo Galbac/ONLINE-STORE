@@ -1,21 +1,38 @@
+from datetime import date
+
 from dishka.integrations.fastapi import FromDishka, inject
-from fastapi import APIRouter, Body, Header, HTTPException, status
+from fastapi import APIRouter, Body, Header, HTTPException, Query, status
 from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from source.api.dependencies import resolve_current_user
 from source.errors.delivery import (
     DeliveryAddressAccessDeniedError,
+    DeliveryDateInPastError,
     DeliveryAddressNotFoundError,
     DeliveryDisabledError,
     DeliveryMinOrderAmountError,
+    PickupDisabledError,
+    PickupPointInactiveError,
+    PickupPointNotFoundError,
 )
 from source.repositories.address import AddressRepository
 from source.repositories.delivery_settings import DeliverySettingsRepository
+from source.repositories.delivery_time_slot import DeliveryTimeSlotRepository
 from source.repositories.delivery_zone import DeliveryZoneRepository
+from source.repositories.order import OrderRepository
 from source.repositories.pickup_point import PickupPointRepository
-from source.schemas.pydantic.delivery import DeliveryCalculateRequest, DeliveryCalculateResponse, DeliveryOptionsResponse
-from source.services.delivery import DeliveryService, DeliveryZoneService
+from source.schemas.pydantic.delivery import (
+    DeliveryCalculateRequest,
+    DeliveryCalculateResponse,
+    DeliveryOptionsResponse,
+    DeliveryTimeSlotsQueryParams,
+    DeliveryTimeSlotsResponse,
+    PickupPointDetailResponse,
+    PickupPointListQueryParams,
+    PickupPointListResponse,
+)
+from source.services.delivery import DeliveryService, DeliveryTimeSlotService, DeliveryZoneService
 from source.services.delivery_cache import DeliveryCacheService
 from source.services.redis import RedisService
 
@@ -45,6 +62,129 @@ async def get_delivery_options(
             delivery_settings_repository=delivery_settings_repository,
             pickup_point_repository=pickup_point_repository,
         )
+    except Exception as error:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Внутренняя ошибка сервера") from error
+
+
+@router.get(
+    "/delivery/pickup-points",
+    response_model=PickupPointListResponse,
+    response_model_exclude_none=True,
+    status_code=status.HTTP_200_OK,
+)
+@inject
+async def get_pickup_points(
+    city: str | None = Query(default=None, max_length=100),
+    only_active: bool = True,
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    session: FromDishka[AsyncSession] = None,
+    redis_service: FromDishka[RedisService] = None,
+    delivery_service: FromDishka[DeliveryService] = None,
+    delivery_cache_service: FromDishka[DeliveryCacheService] = None,
+    pickup_point_repository: FromDishka[PickupPointRepository] = None,
+) -> PickupPointListResponse:
+    try:
+        query = PickupPointListQueryParams(
+            city=city,
+            only_active=only_active,
+            limit=limit,
+            offset=offset,
+        )
+        return await delivery_service.get_pickup_points(
+            session=session,
+            redis_service=redis_service,
+            delivery_cache_service=delivery_cache_service,
+            pickup_point_repository=pickup_point_repository,
+            query=query,
+        )
+    except ValidationError as error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Неверные query params") from error
+    except Exception as error:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Внутренняя ошибка сервера") from error
+
+
+@router.get(
+    "/delivery/pickup-points/{point_id}",
+    response_model=PickupPointDetailResponse,
+    response_model_exclude_none=True,
+    status_code=status.HTTP_200_OK,
+)
+@inject
+async def get_pickup_point(
+    point_id: int,
+    session: FromDishka[AsyncSession] = None,
+    redis_service: FromDishka[RedisService] = None,
+    delivery_service: FromDishka[DeliveryService] = None,
+    delivery_cache_service: FromDishka[DeliveryCacheService] = None,
+    pickup_point_repository: FromDishka[PickupPointRepository] = None,
+) -> PickupPointDetailResponse:
+    if point_id <= 0:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Неверный point_id")
+    try:
+        return await delivery_service.get_pickup_point_by_id(
+            session=session,
+            redis_service=redis_service,
+            delivery_cache_service=delivery_cache_service,
+            pickup_point_repository=pickup_point_repository,
+            point_id=point_id,
+        )
+    except (PickupPointNotFoundError, PickupPointInactiveError) as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Точка самовывоза не найдена") from error
+    except Exception as error:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Внутренняя ошибка сервера") from error
+
+
+@router.get(
+    "/delivery/time-slots",
+    response_model=DeliveryTimeSlotsResponse,
+    response_model_exclude_none=True,
+    status_code=status.HTTP_200_OK,
+)
+@inject
+async def get_delivery_time_slots(
+    date_: date = Query(alias="date"),
+    delivery_type: str = Query(...),
+    pickup_point_id: int | None = Query(default=None, gt=0),
+    address_id: int | None = Query(default=None, gt=0),
+    city: str | None = Query(default=None, max_length=100),
+    session: FromDishka[AsyncSession] = None,
+    redis_service: FromDishka[RedisService] = None,
+    delivery_time_slot_service: FromDishka[DeliveryTimeSlotService] = None,
+    delivery_cache_service: FromDishka[DeliveryCacheService] = None,
+    delivery_settings_repository: FromDishka[DeliverySettingsRepository] = None,
+    delivery_time_slot_repository: FromDishka[DeliveryTimeSlotRepository] = None,
+    pickup_point_repository: FromDishka[PickupPointRepository] = None,
+    order_repository: FromDishka[OrderRepository] = None,
+) -> DeliveryTimeSlotsResponse:
+    try:
+        query = DeliveryTimeSlotsQueryParams(
+            date=date_,
+            delivery_type=delivery_type,
+            pickup_point_id=pickup_point_id,
+            address_id=address_id,
+            city=city,
+        )
+        return await delivery_time_slot_service.get_available_slots(
+            session=session,
+            redis_service=redis_service,
+            delivery_cache_service=delivery_cache_service,
+            delivery_settings_repository=delivery_settings_repository,
+            delivery_time_slot_repository=delivery_time_slot_repository,
+            pickup_point_repository=pickup_point_repository,
+            order_repository=order_repository,
+            query=query,
+        )
+    except ValidationError as error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Неверные query params") from error
+    except DeliveryDateInPastError as error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="date не должна быть в прошлом") from error
+    except PickupPointNotFoundError as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Точка самовывоза не найдена") from error
+    except DeliveryDisabledError as error:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Доставка отключена") from error
+    except PickupDisabledError as error:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Самовывоз отключён") from error
     except Exception as error:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Внутренняя ошибка сервера") from error
 

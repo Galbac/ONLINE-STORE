@@ -28,6 +28,7 @@ from source.errors.auth import (
     OrderAlreadyPaidError,
     OrderPaymentStatusNotAllowedError,
 )
+from source.errors.delivery import DeliveryTimeSlotUnavailableError
 from source.schemas.pydantic.order import (
     OrderAddressResponse,
     OrderCancelRequest,
@@ -559,6 +560,9 @@ class OrderService:
         notification_service,
         email_service,
         telegram_service,
+        delivery_cache_service=None,
+        delivery_time_slot_service=None,
+        delivery_time_slot_repository=None,
     ) -> OrderCreateResponse:
         if not user.is_active or user.is_deleted:
             raise InactiveUserError
@@ -599,6 +603,38 @@ class OrderService:
             if not pickup_point.is_active:
                 raise OrderPickupPointInactiveError
             pickup_point_id = pickup_point.id
+
+        if (
+            data.delivery_time_slot_id is not None
+            and data.delivery_date is not None
+            and delivery_time_slot_service is not None
+            and delivery_time_slot_repository is not None
+        ):
+            time_slot = await delivery_time_slot_repository.get_by_id(
+                session=session,
+                slot_id=data.delivery_time_slot_id,
+            )
+            if (
+                time_slot is None
+                or not time_slot.is_active
+                or time_slot.delivery_type != data.delivery_type
+                or (
+                    data.delivery_type == "pickup"
+                    and time_slot.pickup_point_id not in {None, pickup_point_id}
+                )
+            ):
+                raise DeliveryTimeSlotUnavailableError
+            has_capacity = await delivery_time_slot_service.check_slot_capacity(
+                session=session,
+                order_repository=order_repository,
+                delivery_date=data.delivery_date,
+                delivery_type=data.delivery_type,
+                delivery_time_slot_id=data.delivery_time_slot_id,
+                orders_limit=time_slot.orders_limit,
+                pickup_point_id=pickup_point_id,
+            )
+            if not has_capacity:
+                raise DeliveryTimeSlotUnavailableError
 
         promo_code = None
         promo_discount_amount = Decimal("0")
@@ -745,6 +781,8 @@ class OrderService:
         await profile_cache_service.invalidate_orders(redis_service=redis_service, user_id=user.id)
         await profile_cache_service.delete_summary(redis_service=redis_service, user_id=user.id)
         await product_cache_service.invalidate_by_stock_changes(redis_service=redis_service, products=products)
+        if delivery_cache_service is not None:
+            await delivery_cache_service.invalidate_time_slots(redis_service=redis_service)
         await notification_service.notify_order_created(
             email_service=email_service,
             telegram_service=telegram_service,
