@@ -15,6 +15,7 @@ class Category(IdBigIntPkMixin, CreateUpdateMixin, Base):
     slug: Mapped[str] = mapped_column(String(255), unique=True, index=True, nullable=False)
     description: Mapped[str | None] = mapped_column(Text)
     parent_id: Mapped[int | None] = mapped_column(ForeignKey("categories.id", ondelete="SET NULL"), index=True)
+    image_file_id: Mapped[int | None] = mapped_column(ForeignKey("uploads.id", ondelete="SET NULL"), index=True)
     image_url: Mapped[str | None] = mapped_column(String(500))
     sort_order: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
     meta_title: Mapped[str | None] = mapped_column(String(255))

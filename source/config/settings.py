@@ -352,6 +352,28 @@ class FavoritesSettings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 
+class MediaSettings(BaseSettings):
+    storage: str = Field(default="local", alias="MEDIA_STORAGE")
+    root: Path = Field(default=Path("/app/media"), alias="MEDIA_ROOT")
+    url: str = Field(default="/media", alias="MEDIA_URL")
+    max_image_size_mb: int = Field(default=5, alias="MEDIA_MAX_IMAGE_SIZE_MB")
+    allowed_image_types: str = Field(
+        default="image/jpeg,image/png,image/webp",
+        alias="MEDIA_ALLOWED_IMAGE_TYPES",
+    )
+    base_url: str = Field(default="", alias="MEDIA_BASE_URL")
+    storage_access_key: str = Field(default="", alias="STORAGE_ACCESS_KEY")
+    storage_secret_key: str = Field(default="", alias="STORAGE_SECRET_KEY")
+    storage_bucket: str = Field(default="", alias="STORAGE_BUCKET")
+    detail_cache_ttl_seconds: int = Field(default=300, alias="UPLOAD_DETAIL_CACHE_TTL_SECONDS")
+
+    @property
+    def allowed_image_type_set(self) -> set[str]:
+        return {item.strip() for item in self.allowed_image_types.split(",") if item.strip()}
+
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=(".env.example", ".env"),
@@ -392,6 +414,7 @@ class Settings(BaseSettings):
     delivery_time_slots: DeliveryTimeSlotsSettings = DeliveryTimeSlotsSettings()
     discounts: DiscountsSettings = DiscountsSettings()
     favorites: FavoritesSettings = FavoritesSettings()
+    media: MediaSettings = MediaSettings()
 
     @property
     def tz(self) -> tzinfo:

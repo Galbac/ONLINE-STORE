@@ -11,6 +11,7 @@ from source.api.api_v1.views.orders import router as orders_router
 from source.api.api_v1.views.payments import router as payments_router
 from source.api.api_v1.views.promo_codes import router as promo_codes_router
 from source.api.api_v1.views.users import router as users_router
+from source.api.api_v1.views.uploads import router as uploads_router
 from source.config.settings import settings
 
 router = APIRouter(
@@ -29,3 +30,4 @@ router.include_router(promo_codes_router)
 router.include_router(users_router)
 router.include_router(profile_router)
 router.include_router(favorites_router)
+router.include_router(uploads_router)

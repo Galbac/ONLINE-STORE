@@ -6,6 +6,10 @@ from source.schemas.pydantic.product import ProductImageResponse
 
 
 class ProductImageRepository:
+    async def exists_by_file_id(self, *, session: AsyncSession, file_id: int) -> bool:
+        result = await session.execute(select(ProductImage.id).where(ProductImage.file_id == file_id))
+        return result.scalar_one_or_none() is not None
+
     async def get_by_product_id(
         self,
         *,

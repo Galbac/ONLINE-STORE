@@ -13,6 +13,10 @@ from source.schemas.pydantic.category import (
 
 
 class CategoryRepository:
+    async def exists_by_image_file_id(self, *, session: AsyncSession, file_id: int) -> bool:
+        result = await session.execute(select(Category.id).where(Category.image_file_id == file_id))
+        return result.scalar_one_or_none() is not None
+
     def _base_statement(self, *, query: CategoryListQueryParams):
         active_products_count = func.count(Product.id).label("products_count")
         statement = (

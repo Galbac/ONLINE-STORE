@@ -19,6 +19,7 @@ from source.db.models.promo_code import PromoCode, PromoCodeUsage
 from source.db.models.refresh_token import RefreshToken
 from source.db.models.refund import Refund
 from source.db.models.user import User
+from source.db.models.upload import Upload
 
 __all__ = (
     "Address",
@@ -43,4 +44,5 @@ __all__ = (
     "RefreshToken",
     "Refund",
     "User",
+    "Upload",
 )

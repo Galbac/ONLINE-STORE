@@ -34,6 +34,7 @@ from source.repositories.product import ProductRepository
 from source.repositories.product_image import ProductImageRepository
 from source.repositories.promo_code import PromoCodeRepository, PromoCodeUsageRepository
 from source.repositories.user import UserRepository
+from source.repositories.upload import UploadRepository
 from source.services.auth_cache import AuthCacheService
 from source.services.auth import AuthService
 from source.services.cart import CartCalculatorService, CartService
@@ -63,6 +64,9 @@ from source.services.stock import StockService
 from source.services.promo_code import PromoCodeService
 from source.services.user import UserService
 from source.services.user_cache import UserCacheService
+from source.services.storage import StorageService
+from source.services.upload import UploadService
+from source.services.upload_cache import UploadCacheService
 
 
 class AppProvider(Provider):
@@ -225,6 +229,10 @@ class AppProvider(Provider):
         FavoriteRepository,
         scope=Scope.REQUEST,
     )
+    upload_repository = provide(
+        UploadRepository,
+        scope=Scope.REQUEST,
+    )
     cart_service = provide(
         CartService,
         scope=Scope.REQUEST,
@@ -297,6 +305,14 @@ class AppProvider(Provider):
         FavoriteCacheService,
         scope=Scope.REQUEST,
     )
+    upload_service = provide(
+        UploadService,
+        scope=Scope.REQUEST,
+    )
+    upload_cache_service = provide(
+        UploadCacheService,
+        scope=Scope.REQUEST,
+    )
     one_c_integration_service = provide(
         OneCIntegrationService,
         scope=Scope.REQUEST,
@@ -317,6 +333,10 @@ class AppProvider(Provider):
         NotificationService,
         scope=Scope.REQUEST,
     )
+
+    @provide(scope=Scope.REQUEST)
+    def provide_storage_service(self, config: Settings) -> StorageService:
+        return StorageService(media_settings=config.media)
 
 
 class SessionProvider(Provider):
