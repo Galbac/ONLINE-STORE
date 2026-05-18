@@ -10,6 +10,21 @@ from source.utils.product import build_stock_display, calculate_discount_percent
 
 
 class FavoriteRepository:
+    async def get_by_user_and_product(
+        self,
+        *,
+        session: AsyncSession,
+        user_id: int,
+        product_id: int,
+    ) -> Favorite | None:
+        result = await session.execute(
+            select(Favorite).where(
+                Favorite.user_id == user_id,
+                Favorite.product_id == product_id,
+            ),
+        )
+        return result.scalar_one_or_none()
+
     async def exists(
         self,
         *,
@@ -36,6 +51,15 @@ class FavoriteRepository:
         session.add(favorite)
         await session.flush()
         return favorite
+
+    async def delete(
+        self,
+        *,
+        session: AsyncSession,
+        favorite: Favorite,
+    ) -> None:
+        await session.delete(favorite)
+        await session.flush()
 
     async def get_by_user_id(
         self,

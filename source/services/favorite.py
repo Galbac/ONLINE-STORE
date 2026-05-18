@@ -45,6 +45,37 @@ class FavoriteService:
             product_id=product.id,
         )
 
+    async def remove_from_favorites(
+        self,
+        *,
+        session: AsyncSession,
+        redis_service: RedisService,
+        favorite_cache_service: FavoriteCacheService,
+        favorite_repository: FavoriteRepository,
+        user,
+        product_id: int,
+    ) -> FavoriteActionResponse:
+        if not user.is_active or user.is_deleted:
+            raise InactiveUserError
+
+        favorite = await favorite_repository.get_by_user_and_product(
+            session=session,
+            user_id=user.id,
+            product_id=product_id,
+        )
+        if favorite is None:
+            return FavoriteActionResponse(
+                message="Товара не было в избранном",
+                product_id=product_id,
+            )
+
+        await favorite_repository.delete(session=session, favorite=favorite)
+        await favorite_cache_service.invalidate(redis_service=redis_service, user_id=user.id)
+        return FavoriteActionResponse(
+            message="Товар удалён из избранного",
+            product_id=product_id,
+        )
+
     async def get_favorites(
         self,
         *,

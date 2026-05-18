@@ -41,6 +41,7 @@ class FakeFavoriteRepository:
         self.get_calls = 0
         self.favorites: set[tuple[int, int]] = set()
         self.create_calls = 0
+        self.deleted: list[tuple[int, int]] = []
 
     async def get_by_user_id(self, *, session, user_id: int, query: FavoritesQueryParams):
         self.get_calls += 1
@@ -53,10 +54,19 @@ class FakeFavoriteRepository:
     async def exists(self, *, session, user_id: int, product_id: int) -> bool:
         return (user_id, product_id) in self.favorites
 
+    async def get_by_user_and_product(self, *, session, user_id: int, product_id: int):
+        if (user_id, product_id) not in self.favorites:
+            return None
+        return type("Favorite", (), {"user_id": user_id, "product_id": product_id})()
+
     async def create(self, *, session, user_id: int, product_id: int):
         self.create_calls += 1
         self.favorites.add((user_id, product_id))
         return type("Favorite", (), {"user_id": user_id, "product_id": product_id})()
+
+    async def delete(self, *, session, favorite) -> None:
+        self.deleted.append((favorite.user_id, favorite.product_id))
+        self.favorites.discard((favorite.user_id, favorite.product_id))
 
 
 class FakeProductRepository:
@@ -257,6 +267,88 @@ async def test_add_to_favorites_invalidates_cache() -> None:
 
 @pytest.mark.asyncio
 async def test_add_to_favorites_without_access_token() -> None:
+    with pytest.raises(HTTPException) as exc_info:
+        await resolve_access_token(authorization=None, redis_service=FakeRedisService())
+
+    assert exc_info.value.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_remove_from_favorites_success() -> None:
+    repository = FakeFavoriteRepository()
+    repository.favorites.add((1, 55))
+
+    response = await FavoriteService().remove_from_favorites(
+        session=object(),
+        redis_service=FakeRedisService(),
+        favorite_cache_service=FavoriteCacheService(),
+        favorite_repository=repository,
+        user=FakeUser(),
+        product_id=55,
+    )
+
+    assert response.message == "Товар удалён из избранного"
+    assert response.product_id == 55
+    assert repository.deleted == [(1, 55)]
+    assert repository.favorites == set()
+
+
+@pytest.mark.asyncio
+async def test_remove_from_favorites_missing_item_is_success() -> None:
+    repository = FakeFavoriteRepository()
+
+    response = await FavoriteService().remove_from_favorites(
+        session=object(),
+        redis_service=FakeRedisService(),
+        favorite_cache_service=FavoriteCacheService(),
+        favorite_repository=repository,
+        user=FakeUser(),
+        product_id=55,
+    )
+
+    assert response.message == "Товара не было в избранном"
+    assert repository.deleted == []
+
+
+@pytest.mark.asyncio
+async def test_remove_from_favorites_does_not_touch_other_user_item() -> None:
+    repository = FakeFavoriteRepository()
+    repository.favorites.add((2, 55))
+
+    response = await FavoriteService().remove_from_favorites(
+        session=object(),
+        redis_service=FakeRedisService(),
+        favorite_cache_service=FavoriteCacheService(),
+        favorite_repository=repository,
+        user=FakeUser(),
+        product_id=55,
+    )
+
+    assert response.message == "Товара не было в избранном"
+    assert repository.favorites == {(2, 55)}
+    assert repository.deleted == []
+
+
+@pytest.mark.asyncio
+async def test_remove_from_favorites_invalidates_cache() -> None:
+    redis_service = FakeRedisService()
+    repository = FakeFavoriteRepository()
+    repository.favorites.add((1, 55))
+
+    await FavoriteService().remove_from_favorites(
+        session=object(),
+        redis_service=redis_service,
+        favorite_cache_service=FavoriteCacheService(),
+        favorite_repository=repository,
+        user=FakeUser(),
+        product_id=55,
+    )
+
+    assert redis_service.deleted_patterns == ["favorites:1:*"]
+
+
+@pytest.mark.asyncio
+async def test_remove_from_favorites_without_access_token() -> None:
     with pytest.raises(HTTPException) as exc_info:
         await resolve_access_token(authorization=None, redis_service=FakeRedisService())
 
