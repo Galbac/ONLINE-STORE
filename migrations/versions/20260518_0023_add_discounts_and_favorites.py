@@ -1,7 +1,7 @@
 """add discounts and favorites
 
-Revision ID: 20260518_0022
-Revises: 20260518_0021
+Revision ID: 20260518_0023
+Revises: 20260518_0022
 Create Date: 2026-05-18
 """
 
@@ -11,8 +11,8 @@ import sqlalchemy as sa
 from alembic import op
 
 
-revision: str = "20260518_0022"
-down_revision: str | None = "20260518_0021"
+revision: str = "20260518_0023"
+down_revision: str | None = "20260518_0022"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

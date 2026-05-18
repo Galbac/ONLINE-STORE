@@ -1,7 +1,7 @@
 """add pickup points and time slots
 
-Revision ID: 20260518_0021
-Revises: 20260518_0020
+Revision ID: 20260518_0022
+Revises: 20260518_0021
 Create Date: 2026-05-18
 """
 
@@ -11,8 +11,8 @@ import sqlalchemy as sa
 from alembic import op
 
 
-revision: str = "20260518_0021"
-down_revision: str | None = "20260518_0020"
+revision: str = "20260518_0022"
+down_revision: str | None = "20260518_0021"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
