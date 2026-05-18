@@ -39,6 +39,13 @@ class OrderRepository:
         await session.refresh(order)
         return order
 
+    async def update_payment_status(self, *, session: AsyncSession, order: Order, payment_status: str) -> Order:
+        order.payment_status = payment_status
+        session.add(order)
+        await session.flush()
+        await session.refresh(order)
+        return order
+
     async def count_by_user_id(
         self,
         *,

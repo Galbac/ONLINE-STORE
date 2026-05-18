@@ -267,6 +267,13 @@ class OneCSettings(BaseSettings):
 
 class PaymentsSettings(BaseSettings):
     auto_refund_enabled: bool = Field(default=False, alias="AUTO_REFUND_ENABLED")
+    provider: str = Field(default="yookassa", alias="PAYMENT_PROVIDER")
+    currency: str = Field(default="RUB", alias="PAYMENT_CURRENCY")
+    return_url: str = Field(default="https://site.ru/payment/success", alias="PAYMENT_RETURN_URL")
+    fail_url: str = Field(default="https://site.ru/payment/fail", alias="PAYMENT_FAIL_URL")
+    webhook_url: str = Field(default="https://api.site.ru/api/payments/webhook", alias="PAYMENT_WEBHOOK_URL")
+    provider_shop_id: str = Field(default="", alias="PAYMENT_PROVIDER_SHOP_ID")
+    provider_secret_key: str = Field(default="", alias="PAYMENT_PROVIDER_SECRET_KEY")
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

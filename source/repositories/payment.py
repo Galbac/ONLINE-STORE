@@ -13,10 +13,19 @@ class PaymentRepository:
         session: AsyncSession,
         order_id: int,
         amount: Decimal,
+        currency: str = "RUB",
         status: str,
+        provider: str | None = None,
         payment_url: str | None,
     ) -> Payment:
-        payment = Payment(order_id=order_id, amount=amount, status=status, payment_url=payment_url)
+        payment = Payment(
+            order_id=order_id,
+            amount=amount,
+            currency=currency,
+            status=status,
+            provider=provider,
+            payment_url=payment_url,
+        )
         session.add(payment)
         await session.flush()
         await session.refresh(payment)
@@ -25,3 +34,32 @@ class PaymentRepository:
     async def get_by_order_id(self, *, session: AsyncSession, order_id: int) -> Payment | None:
         result = await session.execute(select(Payment).where(Payment.order_id == order_id))
         return result.scalar_one_or_none()
+
+    async def get_active_by_order_id(self, *, session: AsyncSession, order_id: int) -> Payment | None:
+        result = await session.execute(
+            select(Payment)
+            .where(
+                Payment.order_id == order_id,
+                Payment.status.in_(("unpaid", "pending", "waiting_for_capture")),
+            )
+            .order_by(Payment.created_date.desc())
+            .limit(1),
+        )
+        return result.scalar_one_or_none()
+
+    async def update_provider_data(
+        self,
+        *,
+        session: AsyncSession,
+        payment: Payment,
+        provider_payment_id: str,
+        payment_url: str,
+        status: str,
+    ) -> Payment:
+        payment.provider_payment_id = provider_payment_id
+        payment.payment_url = payment_url
+        payment.status = status
+        session.add(payment)
+        await session.flush()
+        await session.refresh(payment)
+        return payment

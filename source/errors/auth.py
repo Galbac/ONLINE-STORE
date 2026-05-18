@@ -205,3 +205,19 @@ class OrderCancellationNotAllowedError(Exception):
 
 class OrderPaidCancellationRequiresManagerError(Exception):
     pass
+
+
+class OrderPaymentMethodNotOnlineError(Exception):
+    pass
+
+
+class OrderAlreadyPaidError(Exception):
+    pass
+
+
+class OrderPaymentStatusNotAllowedError(Exception):
+    pass
+
+
+class PaymentProviderCreateError(Exception):
+    pass

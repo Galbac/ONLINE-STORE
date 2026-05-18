@@ -24,6 +24,9 @@ from source.errors.auth import (
     OrderUnavailableItemsError,
     OrderItemsNotFoundError,
     RepeatOrderUnavailableError,
+    OrderPaymentMethodNotOnlineError,
+    OrderAlreadyPaidError,
+    OrderPaymentStatusNotAllowedError,
 )
 from source.schemas.pydantic.order import (
     OrderAddressResponse,
@@ -55,6 +58,18 @@ from source.utils.cart import validate_product_quantity
 
 
 class OrderService:
+    def validate_order_for_payment(self, *, order, user) -> None:
+        if not user.is_active or user.is_deleted:
+            raise InactiveUserError
+        if order.user_id != user.id:
+            raise OrderAccessDeniedError
+        if order.payment_method != "online":
+            raise OrderPaymentMethodNotOnlineError
+        if order.payment_status == "paid":
+            raise OrderAlreadyPaidError
+        if order.status not in {"pending_payment", "new"}:
+            raise OrderPaymentStatusNotAllowedError
+
     async def repeat_order(
         self,
         *,
