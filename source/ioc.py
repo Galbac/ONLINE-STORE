@@ -19,6 +19,7 @@ from source.repositories.address import AddressRepository
 from source.repositories.cart import CartRepository
 from source.repositories.cart_item import CartItemRepository
 from source.repositories.category import CategoryRepository
+from source.repositories.delivery_settings import DeliverySettingsRepository
 from source.repositories.order import OrderRepository
 from source.repositories.order_item import OrderItemRepository
 from source.repositories.payment import PaymentRepository
@@ -36,6 +37,7 @@ from source.services.cart_cache import CartCacheService
 from source.services.category import CategoryService
 from source.services.category_cache import CategoryCacheService
 from source.services.notifications import EmailService, TelegramNotificationService
+from source.services.delivery_cache import DeliveryCacheService
 from source.services.notifications import NotificationService
 from source.services.delivery import DeliveryService
 from source.services.one_c import OneCIntegrationService
@@ -195,6 +197,10 @@ class AppProvider(Provider):
         CategoryRepository,
         scope=Scope.REQUEST,
     )
+    delivery_settings_repository = provide(
+        DeliverySettingsRepository,
+        scope=Scope.REQUEST,
+    )
     cart_service = provide(
         CartService,
         scope=Scope.REQUEST,
@@ -237,6 +243,10 @@ class AppProvider(Provider):
     )
     delivery_service = provide(
         DeliveryService,
+        scope=Scope.REQUEST,
+    )
+    delivery_cache_service = provide(
+        DeliveryCacheService,
         scope=Scope.REQUEST,
     )
     one_c_integration_service = provide(

@@ -3,6 +3,7 @@ from source.db.models.address import Address
 from source.db.models.cart import Cart
 from source.db.models.cart_item import CartItem
 from source.db.models.category import Category
+from source.db.models.delivery_settings import DeliverySettings
 from source.db.models.order import Order
 from source.db.models.order_item import OrderItem
 from source.db.models.payment import Payment
@@ -21,6 +22,7 @@ __all__ = (
     "Cart",
     "CartItem",
     "Category",
+    "DeliverySettings",
     "Order",
     "OrderItem",
     "Payment",

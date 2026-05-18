@@ -314,6 +314,12 @@ class ProductsSettings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 
+class DeliveryOptionsSettings(BaseSettings):
+    cache_ttl_seconds: int = Field(default=600, alias="DELIVERY_OPTIONS_CACHE_TTL_SECONDS")
+
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=(".env.example", ".env"),
@@ -348,6 +354,7 @@ class Settings(BaseSettings):
     payments: PaymentsSettings = PaymentsSettings()
     categories: CategoriesSettings = CategoriesSettings()
     products: ProductsSettings = ProductsSettings()
+    delivery_options: DeliveryOptionsSettings = DeliveryOptionsSettings()
 
     @property
     def tz(self) -> tzinfo:
