@@ -1,6 +1,9 @@
 from datetime import datetime
 from decimal import Decimal
 from types import SimpleNamespace
+import hashlib
+import hmac
+import json
 
 import pytest
 from source.errors.auth import (
@@ -12,9 +15,11 @@ from source.errors.auth import (
     PaymentConfirmationNotSupportedError,
     PaymentNotFoundError,
     PaymentProviderCreateError,
+    InvalidPaymentWebhookSignatureError,
 )
 from source.services.order import OrderService
 from source.services.payment import PaymentProviderService, PaymentService, ProviderPayment, ProviderPaymentStatus
+from source.services.payment_webhook import PaymentWebhookService
 
 
 class FakeCommiter:
@@ -62,6 +67,9 @@ class FakePaymentRepository:
 
     async def get_by_id(self, *, session, payment_id: int):
         return self.payment if self.payment is not None and self.payment.id == payment_id else None
+
+    async def get_by_provider_payment_id(self, *, session, provider_payment_id: str):
+        return self.payment if self.payment is not None and self.payment.provider_payment_id == provider_payment_id else None
 
     async def create(self, *, session, order_id: int, amount, currency: str, status: str, provider: str, payment_url):
         self.created_payment = SimpleNamespace(
@@ -137,6 +145,7 @@ class FakePaymentCacheService:
     def __init__(self) -> None:
         self.values = {}
         self.ttls = {}
+        self.invalidated = []
 
     async def get_detail(self, *, redis_service, user_id: int, payment_id: int):
         return self.values.get((user_id, payment_id))
@@ -147,6 +156,54 @@ class FakePaymentCacheService:
 
     async def invalidate_detail(self, *, redis_service, user_id: int, payment_id: int):
         self.values.pop((user_id, payment_id), None)
+
+    async def invalidate_payment(self, *, redis_service, user_id: int, payment_id: int):
+        self.invalidated.append((user_id, payment_id))
+
+
+class FakePaymentWebhookLogRepository:
+    def __init__(self) -> None:
+        self.logs = []
+
+    async def exists_by_event_id(self, *, session, provider_event_id: str):
+        return any(log.provider_event_id == provider_event_id for log in self.logs)
+
+    async def create(self, **kwargs):
+        log = SimpleNamespace(**kwargs)
+        self.logs.append(log)
+        return log
+
+
+class FakeProfileCacheService:
+    def __init__(self) -> None:
+        self.deleted = []
+
+    async def delete_summary(self, *, redis_service, user_id: int):
+        self.deleted.append(user_id)
+
+
+class FakeNotificationService:
+    def __init__(self) -> None:
+        self.payment_success = []
+
+    async def notify_payment_success(self, **kwargs):
+        self.payment_success.append(kwargs["order"].id)
+
+
+class FakeOneCIntegrationService:
+    def __init__(self) -> None:
+        self.marked = []
+
+    async def mark_order_pending_sync(self, *, order):
+        self.marked.append(order.id)
+
+
+class DummyEmailService:
+    pass
+
+
+class DummyTelegramService:
+    pass
 
 
 def build_order(
@@ -275,6 +332,66 @@ async def execute_confirm_payment(*, order=None, payment=None, provider_status="
         provider_service=provider_service,
         payment_cache_service=payment_cache_service,
         order_cache_service=order_cache_service,
+        commiter=commiter,
+    )
+
+
+def build_webhook_body(*, event="payment.succeeded", event_id="evt-1", provider_payment_id="provider-123"):
+    return json.dumps(
+        {
+            "id": event_id,
+            "event": event,
+            "object": {
+                "id": provider_payment_id,
+                "status": "succeeded",
+                "metadata": {"payment_id": "500"},
+            },
+        },
+    ).encode("utf-8")
+
+
+async def execute_webhook(*, body=None, payment="default", order=None, log_repository=None):
+    body = build_webhook_body() if body is None else body
+    payment = build_payment() if payment == "default" else payment
+    order = build_order() if order is None else order
+    payment_repository = FakePaymentRepository(payment=payment)
+    order_repository = FakeOrderRepository(order)
+    log_repository = FakePaymentWebhookLogRepository() if log_repository is None else log_repository
+    payment_cache_service = FakePaymentCacheService()
+    order_cache_service = FakeOrderCacheService()
+    profile_cache_service = FakeProfileCacheService()
+    notification_service = FakeNotificationService()
+    one_c_service = FakeOneCIntegrationService()
+    commiter = FakeCommiter()
+    signature = hmac.new(b"secret", body, hashlib.sha256).hexdigest()
+    response = await PaymentWebhookService().process_webhook(
+        raw_body=body,
+        signature=signature,
+        session=None,
+        commiter=commiter,
+        redis_service=None,
+        payment_provider_service=PaymentProviderService(),
+        payment_repository=payment_repository,
+        payment_webhook_log_repository=log_repository,
+        order_repository=order_repository,
+        payment_cache_service=payment_cache_service,
+        order_cache_service=order_cache_service,
+        profile_cache_service=profile_cache_service,
+        notification_service=notification_service,
+        email_service=DummyEmailService(),
+        telegram_service=DummyTelegramService(),
+        one_c_integration_service=one_c_service,
+    )
+    return SimpleNamespace(
+        response=response,
+        payment_repository=payment_repository,
+        order_repository=order_repository,
+        log_repository=log_repository,
+        payment_cache_service=payment_cache_service,
+        order_cache_service=order_cache_service,
+        profile_cache_service=profile_cache_service,
+        notification_service=notification_service,
+        one_c_service=one_c_service,
         commiter=commiter,
     )
 
@@ -436,3 +553,92 @@ async def test_confirm_payment_marks_order_paid(monkeypatch):
     result = await execute_confirm_payment()
 
     assert result.order_repository.updated_payment_status == "paid"
+
+
+@pytest.mark.asyncio
+async def test_webhook_processes_payment_succeeded(monkeypatch):
+    monkeypatch.setattr("source.services.payment.settings.payments.provider_webhook_secret", "secret")
+    monkeypatch.setattr("source.services.payment.settings.payments.webhook_verify_signature", True)
+
+    result = await execute_webhook()
+
+    assert result.response.message == "Webhook processed"
+    assert result.payment_repository.updated_status == "paid"
+    assert result.order_repository.updated_payment_status == "paid"
+    assert result.order_repository.updated_status == "new"
+    assert result.notification_service.payment_success == [101]
+    assert result.one_c_service.marked == [101]
+
+
+@pytest.mark.asyncio
+async def test_webhook_processes_payment_canceled(monkeypatch):
+    monkeypatch.setattr("source.services.payment.settings.payments.provider_webhook_secret", "secret")
+    monkeypatch.setattr("source.services.payment.settings.payments.webhook_verify_signature", True)
+
+    result = await execute_webhook(body=build_webhook_body(event="payment.canceled", event_id="evt-2"))
+
+    assert result.payment_repository.updated_status == "cancelled"
+    assert result.order_repository.updated_payment_status == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_webhook_rejects_invalid_signature(monkeypatch):
+    monkeypatch.setattr("source.services.payment.settings.payments.provider_webhook_secret", "secret")
+    monkeypatch.setattr("source.services.payment.settings.payments.webhook_verify_signature", True)
+
+    with pytest.raises(InvalidPaymentWebhookSignatureError):
+        await PaymentWebhookService().process_webhook(
+            raw_body=build_webhook_body(),
+            signature="bad",
+            session=None,
+            commiter=FakeCommiter(),
+            redis_service=None,
+            payment_provider_service=PaymentProviderService(),
+            payment_repository=FakePaymentRepository(payment=build_payment()),
+            payment_webhook_log_repository=FakePaymentWebhookLogRepository(),
+            order_repository=FakeOrderRepository(build_order()),
+            payment_cache_service=FakePaymentCacheService(),
+            order_cache_service=FakeOrderCacheService(),
+            profile_cache_service=FakeProfileCacheService(),
+            notification_service=FakeNotificationService(),
+            email_service=DummyEmailService(),
+            telegram_service=DummyTelegramService(),
+            one_c_integration_service=FakeOneCIntegrationService(),
+        )
+
+
+@pytest.mark.asyncio
+async def test_webhook_is_idempotent(monkeypatch):
+    monkeypatch.setattr("source.services.payment.settings.payments.provider_webhook_secret", "secret")
+    monkeypatch.setattr("source.services.payment.settings.payments.webhook_verify_signature", True)
+    logs = FakePaymentWebhookLogRepository()
+
+    first = await execute_webhook(log_repository=logs)
+    second = await execute_webhook(log_repository=logs)
+
+    assert first.payment_repository.updated_status == "paid"
+    assert second.payment_repository.updated_status is None
+    assert len(logs.logs) == 1
+
+
+@pytest.mark.asyncio
+async def test_webhook_logs_missing_payment(monkeypatch):
+    monkeypatch.setattr("source.services.payment.settings.payments.provider_webhook_secret", "secret")
+    monkeypatch.setattr("source.services.payment.settings.payments.webhook_verify_signature", True)
+
+    result = await execute_webhook(payment=None)
+
+    assert result.response.message == "Webhook processed"
+    assert result.log_repository.logs[0].processing_status == "payment_not_found"
+
+
+@pytest.mark.asyncio
+async def test_webhook_invalidates_redis_cache(monkeypatch):
+    monkeypatch.setattr("source.services.payment.settings.payments.provider_webhook_secret", "secret")
+    monkeypatch.setattr("source.services.payment.settings.payments.webhook_verify_signature", True)
+
+    result = await execute_webhook()
+
+    assert result.payment_cache_service.invalidated == [(1, 500)]
+    assert result.order_cache_service.invalidated == [(1, 101)]
+    assert result.profile_cache_service.deleted == [1]

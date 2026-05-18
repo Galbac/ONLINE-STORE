@@ -45,3 +45,7 @@ class PaymentConfirmResponse(BaseModel):
     amount: Decimal
     currency: str
     paid_at: datetime | None = None
+
+
+class PaymentWebhookResponse(BaseModel):
+    message: str

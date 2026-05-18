@@ -19,3 +19,4 @@ class Payment(IdBigIntPkMixin, CreateUpdateMixin, Base):
     provider_payment_id: Mapped[str | None] = mapped_column(String(255), index=True)
     payment_url: Mapped[str | None] = mapped_column(String(500))
     paid_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    refund_status: Mapped[str | None] = mapped_column(String(50))

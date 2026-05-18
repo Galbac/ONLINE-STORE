@@ -37,3 +37,6 @@ class PaymentCacheService:
 
     async def invalidate_detail(self, *, redis_service: RedisService, user_id: int, payment_id: int) -> None:
         await redis_service.delete(self._detail_key(user_id=user_id, payment_id=payment_id))
+
+    async def invalidate_payment(self, *, redis_service: RedisService, user_id: int, payment_id: int) -> None:
+        await self.invalidate_detail(redis_service=redis_service, user_id=user_id, payment_id=payment_id)

@@ -1,5 +1,5 @@
 from dishka.integrations.fastapi import FromDishka, inject
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from source.api.dependencies import get_current_user
@@ -18,20 +18,28 @@ from source.errors.auth import (
     PaymentNotFoundError,
     PaymentProviderConfirmError,
     PaymentProviderCreateError,
+    InvalidPaymentWebhookPayloadError,
+    InvalidPaymentWebhookSignatureError,
 )
 from source.repositories.order import OrderRepository
 from source.repositories.payment import PaymentRepository
+from source.repositories.payment_webhook_log import PaymentWebhookLogRepository
 from source.schemas.pydantic.payment import (
     PaymentConfirmRequest,
     PaymentConfirmResponse,
     PaymentCreateRequest,
     PaymentCreateResponse,
     PaymentDetailResponse,
+    PaymentWebhookResponse,
 )
+from source.services.notifications import EmailService, NotificationService, TelegramNotificationService
+from source.services.one_c import OneCIntegrationService
 from source.services.order import OrderService
 from source.services.order_cache import OrderCacheService
 from source.services.payment_cache import PaymentCacheService
 from source.services.payment import PaymentProviderService, PaymentService
+from source.services.payment_webhook import PaymentWebhookService
+from source.services.profile_cache import ProfileCacheService
 from source.services.redis import RedisService
 
 
@@ -168,3 +176,50 @@ async def confirm_payment(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Платёж не в статусе ожидания подтверждения") from error
     except PaymentProviderConfirmError as error:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Ошибка провайдера") from error
+
+
+@router.post("/payments/webhook", response_model=PaymentWebhookResponse, status_code=status.HTTP_200_OK)
+@inject
+async def process_payment_webhook(
+    request: Request,
+    x_payment_signature: str | None = Header(default=None, alias="X-Payment-Signature"),
+    session: FromDishka[AsyncSession] = None,
+    commiter: FromDishka[Commiter] = None,
+    redis_service: FromDishka[RedisService] = None,
+    payment_provider_service: FromDishka[PaymentProviderService] = None,
+    payment_webhook_service: FromDishka[PaymentWebhookService] = None,
+    payment_repository: FromDishka[PaymentRepository] = None,
+    payment_webhook_log_repository: FromDishka[PaymentWebhookLogRepository] = None,
+    order_repository: FromDishka[OrderRepository] = None,
+    payment_cache_service: FromDishka[PaymentCacheService] = None,
+    order_cache_service: FromDishka[OrderCacheService] = None,
+    profile_cache_service: FromDishka[ProfileCacheService] = None,
+    notification_service: FromDishka[NotificationService] = None,
+    email_service: FromDishka[EmailService] = None,
+    telegram_service: FromDishka[TelegramNotificationService] = None,
+    one_c_integration_service: FromDishka[OneCIntegrationService] = None,
+) -> PaymentWebhookResponse:
+    raw_body = await request.body()
+    try:
+        return await payment_webhook_service.process_webhook(
+            raw_body=raw_body,
+            signature=x_payment_signature,
+            session=session,
+            commiter=commiter,
+            redis_service=redis_service,
+            payment_provider_service=payment_provider_service,
+            payment_repository=payment_repository,
+            payment_webhook_log_repository=payment_webhook_log_repository,
+            order_repository=order_repository,
+            payment_cache_service=payment_cache_service,
+            order_cache_service=order_cache_service,
+            profile_cache_service=profile_cache_service,
+            notification_service=notification_service,
+            email_service=email_service,
+            telegram_service=telegram_service,
+            one_c_integration_service=one_c_integration_service,
+        )
+    except InvalidPaymentWebhookSignatureError as error:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Неверная подпись webhook") from error
+    except InvalidPaymentWebhookPayloadError as error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Неверный формат webhook") from error

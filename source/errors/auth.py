@@ -245,3 +245,11 @@ class PaymentAlreadyConfirmedError(Exception):
 
 class PaymentProviderConfirmError(Exception):
     pass
+
+
+class InvalidPaymentWebhookSignatureError(Exception):
+    pass
+
+
+class InvalidPaymentWebhookPayloadError(Exception):
+    pass

@@ -1,5 +1,8 @@
 from dataclasses import dataclass
 from decimal import Decimal
+import hashlib
+import hmac
+import json
 
 from source.config.settings import settings
 from source.errors.auth import (
@@ -11,6 +14,8 @@ from source.errors.auth import (
     PaymentNotFoundError,
     PaymentProviderConfirmError,
     PaymentProviderCreateError,
+    InvalidPaymentWebhookPayloadError,
+    InvalidPaymentWebhookSignatureError,
 )
 from source.schemas.pydantic.payment import PaymentConfirmResponse, PaymentCreateResponse, PaymentDetailResponse
 
@@ -26,6 +31,16 @@ class ProviderPayment:
 class ProviderPaymentStatus:
     status: str
     paid_at: object | None = None
+
+
+@dataclass(slots=True)
+class ProviderWebhookEvent:
+    provider_event_id: str
+    event_type: str
+    provider_payment_id: str | None
+    payment_id: int | None
+    status: str | None
+    payload: dict
 
 
 class PaymentProviderService:
@@ -66,6 +81,52 @@ class PaymentProviderService:
         if not provider_payment_id:
             raise PaymentProviderConfirmError
         return ProviderPaymentStatus(status="paid")
+
+    def verify_webhook_signature(self, *, raw_body: bytes, signature: str | None) -> bool:
+        if not settings.payments.webhook_verify_signature:
+            return True
+        if not signature or not settings.payments.provider_webhook_secret:
+            return False
+        expected_signature = hmac.new(
+            settings.payments.provider_webhook_secret.encode("utf-8"),
+            raw_body,
+            hashlib.sha256,
+        ).hexdigest()
+        return hmac.compare_digest(signature, expected_signature)
+
+    def parse_webhook_event(self, *, raw_body: bytes) -> ProviderWebhookEvent:
+        try:
+            payload = json.loads(raw_body.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise InvalidPaymentWebhookPayloadError from error
+
+        event_type = payload.get("event")
+        event_object = payload.get("object")
+        if not isinstance(event_type, str) or not isinstance(event_object, dict):
+            raise InvalidPaymentWebhookPayloadError
+
+        provider_payment_id = event_object.get("id")
+        metadata = event_object.get("metadata") or {}
+        payment_id = metadata.get("payment_id")
+        try:
+            parsed_payment_id = int(payment_id) if payment_id is not None else None
+        except (TypeError, ValueError) as error:
+            raise InvalidPaymentWebhookPayloadError from error
+
+        provider_event_id = payload.get("id")
+        if provider_event_id is None:
+            if not provider_payment_id:
+                raise InvalidPaymentWebhookPayloadError
+            provider_event_id = f"{event_type}:{provider_payment_id}"
+
+        return ProviderWebhookEvent(
+            provider_event_id=str(provider_event_id),
+            event_type=event_type,
+            provider_payment_id=str(provider_payment_id) if provider_payment_id is not None else None,
+            payment_id=parsed_payment_id,
+            status=event_object.get("status"),
+            payload=payload,
+        )
 
 
 class PaymentService:

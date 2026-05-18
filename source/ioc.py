@@ -22,6 +22,7 @@ from source.repositories.category import CategoryRepository
 from source.repositories.order import OrderRepository
 from source.repositories.order_item import OrderItemRepository
 from source.repositories.payment import PaymentRepository
+from source.repositories.payment_webhook_log import PaymentWebhookLogRepository
 from source.repositories.pickup_point import PickupPointRepository
 from source.repositories.product import ProductRepository
 from source.repositories.product_image import ProductImageRepository
@@ -41,6 +42,7 @@ from source.services.order import OrderService
 from source.services.order_cache import OrderCacheService
 from source.services.payment_cache import PaymentCacheService
 from source.services.payment import PaymentProviderService, PaymentService
+from source.services.payment_webhook import PaymentWebhookService
 from source.services.product import ProductService
 from source.services.product_cache import ProductCacheService
 from source.services.profile import ProfileService
@@ -152,6 +154,10 @@ class AppProvider(Provider):
         PaymentRepository,
         scope=Scope.REQUEST,
     )
+    payment_webhook_log_repository = provide(
+        PaymentWebhookLogRepository,
+        scope=Scope.REQUEST,
+    )
     pickup_point_repository = provide(
         PickupPointRepository,
         scope=Scope.REQUEST,
@@ -218,6 +224,10 @@ class AppProvider(Provider):
     )
     payment_provider_service = provide(
         PaymentProviderService,
+        scope=Scope.REQUEST,
+    )
+    payment_webhook_service = provide(
+        PaymentWebhookService,
         scope=Scope.REQUEST,
     )
     delivery_service = provide(

@@ -277,6 +277,8 @@ class PaymentsSettings(BaseSettings):
     detail_cache_ttl_seconds: int = Field(default=30, alias="PAYMENT_DETAIL_CACHE_TTL_SECONDS")
     status_sync_enabled: bool = Field(default=False, alias="PAYMENT_STATUS_SYNC_ENABLED")
     capture_mode: str = Field(default="automatic", alias="PAYMENT_CAPTURE_MODE")
+    provider_webhook_secret: str = Field(default="", alias="PAYMENT_PROVIDER_WEBHOOK_SECRET")
+    webhook_verify_signature: bool = Field(default=True, alias="PAYMENT_WEBHOOK_VERIFY_SIGNATURE")
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

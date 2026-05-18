@@ -6,6 +6,7 @@ from source.db.models.category import Category
 from source.db.models.order import Order
 from source.db.models.order_item import OrderItem
 from source.db.models.payment import Payment
+from source.db.models.payment_webhook_log import PaymentWebhookLog
 from source.db.models.pickup_point import PickupPoint
 from source.db.models.product import Product
 from source.db.models.product_image import ProductImage
@@ -22,6 +23,7 @@ __all__ = (
     "Order",
     "OrderItem",
     "Payment",
+    "PaymentWebhookLog",
     "PickupPoint",
     "Product",
     "ProductImage",
