@@ -18,6 +18,11 @@ class FavoriteProductResponse(ProductShortResponse):
     pass
 
 
+class FavoriteActionResponse(BaseModel):
+    message: str
+    product_id: int
+
+
 class FavoritesResponse(BaseModel):
     items: list[FavoriteProductResponse]
     total: int
