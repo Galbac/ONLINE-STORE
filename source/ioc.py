@@ -39,6 +39,7 @@ from source.services.delivery import DeliveryService
 from source.services.one_c import OneCIntegrationService
 from source.services.order import OrderService
 from source.services.order_cache import OrderCacheService
+from source.services.payment_cache import PaymentCacheService
 from source.services.payment import PaymentProviderService, PaymentService
 from source.services.product import ProductService
 from source.services.product_cache import ProductCacheService
@@ -205,6 +206,10 @@ class AppProvider(Provider):
     )
     order_cache_service = provide(
         OrderCacheService,
+        scope=Scope.REQUEST,
+    )
+    payment_cache_service = provide(
+        PaymentCacheService,
         scope=Scope.REQUEST,
     )
     payment_service = provide(

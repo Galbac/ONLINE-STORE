@@ -2,8 +2,13 @@ from dataclasses import dataclass
 from decimal import Decimal
 
 from source.config.settings import settings
-from source.errors.auth import PaymentProviderCreateError
-from source.schemas.pydantic.payment import PaymentCreateResponse
+from source.errors.auth import (
+    InactiveUserError,
+    PaymentAccessDeniedError,
+    PaymentNotFoundError,
+    PaymentProviderCreateError,
+)
+from source.schemas.pydantic.payment import PaymentCreateResponse, PaymentDetailResponse
 
 
 @dataclass(slots=True)
@@ -11,6 +16,12 @@ class ProviderPayment:
     provider_payment_id: str
     payment_url: str
     status: str
+
+
+@dataclass(slots=True)
+class ProviderPaymentStatus:
+    status: str
+    paid_at: object | None = None
 
 
 class PaymentProviderService:
@@ -36,6 +47,9 @@ class PaymentProviderService:
             payment_url=f"https://payment.example.com/pay/{order_number}",
             status="pending",
         )
+
+    async def get_payment_status(self, *, provider_payment_id: str) -> ProviderPaymentStatus:
+        return ProviderPaymentStatus(status="pending")
 
 
 class PaymentService:
@@ -122,6 +136,77 @@ class PaymentService:
     async def create_refund_request(self, *, order) -> None:
         return None
 
+    async def get_payment_detail(
+        self,
+        *,
+        session,
+        commiter,
+        redis_service,
+        user,
+        payment_id: int,
+        payment_repository,
+        order_repository,
+        payment_provider_service: PaymentProviderService,
+        payment_cache_service,
+        order_cache_service,
+    ) -> PaymentDetailResponse:
+        if not user.is_active or user.is_deleted:
+            raise InactiveUserError
+
+        cached_payment = await payment_cache_service.get_detail(
+            redis_service=redis_service,
+            user_id=user.id,
+            payment_id=payment_id,
+        )
+        if cached_payment is not None:
+            return cached_payment
+
+        payment = await payment_repository.get_by_id(session=session, payment_id=payment_id)
+        if payment is None:
+            raise PaymentNotFoundError
+        order = await order_repository.get_by_id(session=session, order_id=payment.order_id)
+        if order is None:
+            raise PaymentNotFoundError
+        if order.user_id != user.id:
+            raise PaymentAccessDeniedError
+
+        if settings.payments.status_sync_enabled and payment.provider_payment_id:
+            provider_status = await payment_provider_service.get_payment_status(
+                provider_payment_id=payment.provider_payment_id,
+            )
+            if provider_status.status != payment.status:
+                try:
+                    payment = await payment_repository.update_status(
+                        session=session,
+                        payment=payment,
+                        status=provider_status.status,
+                        paid_at=provider_status.paid_at,
+                    )
+                    await order_repository.update_payment_status(
+                        session=session,
+                        order=order,
+                        payment_status=provider_status.status,
+                    )
+                    await commiter.commit()
+                except Exception:
+                    await commiter.rollback()
+                    raise
+                await order_cache_service.invalidate_order(
+                    redis_service=redis_service,
+                    user_id=user.id,
+                    order_id=order.id,
+                )
+
+        response = self._build_detail_response(order=order, payment=payment)
+        await payment_cache_service.set_detail(
+            redis_service=redis_service,
+            user_id=user.id,
+            payment_id=payment.id,
+            response=response,
+            ttl_seconds=settings.payments.detail_cache_ttl_seconds,
+        )
+        return response
+
     def _build_response(self, *, order, payment) -> PaymentCreateResponse:
         return PaymentCreateResponse(
             id=payment.id,
@@ -133,4 +218,19 @@ class PaymentService:
             provider=payment.provider or settings.payments.provider,
             payment_url=payment.payment_url,
             created_at=payment.created_date,
+        )
+
+    def _build_detail_response(self, *, order, payment) -> PaymentDetailResponse:
+        return PaymentDetailResponse(
+            id=payment.id,
+            order_id=order.id,
+            order_number=order.order_number,
+            amount=payment.amount,
+            currency=payment.currency,
+            status=payment.status,
+            provider=payment.provider or settings.payments.provider,
+            payment_url=payment.payment_url,
+            paid_at=payment.paid_at,
+            created_at=payment.created_date,
+            updated_at=payment.updated_date,
         )

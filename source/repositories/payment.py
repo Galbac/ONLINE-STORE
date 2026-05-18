@@ -35,6 +35,10 @@ class PaymentRepository:
         result = await session.execute(select(Payment).where(Payment.order_id == order_id))
         return result.scalar_one_or_none()
 
+    async def get_by_id(self, *, session: AsyncSession, payment_id: int) -> Payment | None:
+        result = await session.execute(select(Payment).where(Payment.id == payment_id))
+        return result.scalar_one_or_none()
+
     async def get_active_by_order_id(self, *, session: AsyncSession, order_id: int) -> Payment | None:
         result = await session.execute(
             select(Payment)
@@ -59,6 +63,21 @@ class PaymentRepository:
         payment.provider_payment_id = provider_payment_id
         payment.payment_url = payment_url
         payment.status = status
+        session.add(payment)
+        await session.flush()
+        await session.refresh(payment)
+        return payment
+
+    async def update_status(
+        self,
+        *,
+        session: AsyncSession,
+        payment: Payment,
+        status: str,
+        paid_at=None,
+    ) -> Payment:
+        payment.status = status
+        payment.paid_at = paid_at
         session.add(payment)
         await session.flush()
         await session.refresh(payment)

@@ -1,6 +1,8 @@
 from decimal import Decimal
 
-from sqlalchemy import ForeignKey, Numeric, String
+from datetime import datetime
+
+from sqlalchemy import DateTime, ForeignKey, Numeric, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from source.db.models.base import Base
@@ -16,3 +18,4 @@ class Payment(IdBigIntPkMixin, CreateUpdateMixin, Base):
     provider: Mapped[str | None] = mapped_column(String(50))
     provider_payment_id: Mapped[str | None] = mapped_column(String(255), index=True)
     payment_url: Mapped[str | None] = mapped_column(String(500))
+    paid_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

@@ -221,3 +221,11 @@ class OrderPaymentStatusNotAllowedError(Exception):
 
 class PaymentProviderCreateError(Exception):
     pass
+
+
+class PaymentNotFoundError(Exception):
+    pass
+
+
+class PaymentAccessDeniedError(Exception):
+    pass
