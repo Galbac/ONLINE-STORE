@@ -23,6 +23,7 @@ from source.repositories.order import OrderRepository
 from source.repositories.order_item import OrderItemRepository
 from source.repositories.payment import PaymentRepository
 from source.repositories.payment_webhook_log import PaymentWebhookLogRepository
+from source.repositories.refund import RefundRepository
 from source.repositories.pickup_point import PickupPointRepository
 from source.repositories.product import ProductRepository
 from source.repositories.product_image import ProductImageRepository
@@ -156,6 +157,10 @@ class AppProvider(Provider):
     )
     payment_webhook_log_repository = provide(
         PaymentWebhookLogRepository,
+        scope=Scope.REQUEST,
+    )
+    refund_repository = provide(
+        RefundRepository,
         scope=Scope.REQUEST,
     )
     pickup_point_repository = provide(

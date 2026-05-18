@@ -17,7 +17,11 @@ from source.errors.auth import (
     PaymentNotFoundError,
     PaymentProviderConfirmError,
     PaymentProviderCancelError,
+    PaymentProviderRefundError,
     PaymentProviderCreateError,
+    PaymentNotPaidError,
+    InvalidRefundAmountError,
+    RefundAmountExceedsAvailableError,
     InvalidPaymentWebhookPayloadError,
     InvalidPaymentWebhookSignatureError,
 )
@@ -27,6 +31,8 @@ from source.schemas.pydantic.payment import (
     PaymentConfirmResponse,
     PaymentCreateResponse,
     PaymentDetailResponse,
+    PaymentRefundResponse,
+    RefundResponse,
 )
 
 
@@ -51,6 +57,12 @@ class ProviderWebhookEvent:
     payment_id: int | None
     status: str | None
     payload: dict
+
+
+@dataclass(slots=True)
+class ProviderRefund:
+    provider_refund_id: str
+    status: str
 
 
 class PaymentProviderService:
@@ -101,6 +113,17 @@ class PaymentProviderService:
         if not provider_payment_id:
             raise PaymentProviderCancelError
         return ProviderPaymentStatus(status="cancelled")
+
+    async def refund_payment(
+        self,
+        *,
+        provider_payment_id: str,
+        amount: Decimal,
+        reason: str | None = None,
+    ) -> ProviderRefund:
+        if not provider_payment_id:
+            raise PaymentProviderRefundError
+        return ProviderRefund(provider_refund_id=f"refund-{provider_payment_id}", status="succeeded")
 
     def verify_webhook_signature(self, *, raw_body: bytes, signature: str | None) -> bool:
         if not settings.payments.webhook_verify_signature:
@@ -465,6 +488,110 @@ class PaymentService:
                 amount=payment.amount,
                 currency=payment.currency,
                 cancelled_at=payment.cancelled_at,
+            ),
+        )
+
+    async def refund_payment(
+        self,
+        *,
+        session,
+        commiter,
+        redis_service,
+        user,
+        payment_id: int,
+        amount: Decimal | None,
+        reason: str | None,
+        payment_repository,
+        refund_repository,
+        order_repository,
+        payment_provider_service: PaymentProviderService,
+        payment_cache_service,
+        order_cache_service,
+        notification_service,
+        email_service,
+        telegram_service,
+    ) -> PaymentRefundResponse:
+        payment = await payment_repository.get_by_id(session=session, payment_id=payment_id)
+        if payment is None:
+            raise PaymentNotFoundError
+        if payment.status != "paid":
+            raise PaymentNotPaidError
+        order = await order_repository.get_by_id(session=session, order_id=payment.order_id)
+        if order is None:
+            raise PaymentNotFoundError
+
+        already_refunded = await refund_repository.sum_refunded_by_payment_id(
+            session=session,
+            payment_id=payment.id,
+        )
+        available_amount = payment.amount - already_refunded
+        refund_amount = available_amount if amount is None else amount
+        if refund_amount <= 0:
+            raise InvalidRefundAmountError
+        if refund_amount > available_amount:
+            raise RefundAmountExceedsAvailableError
+
+        try:
+            provider_refund = await payment_provider_service.refund_payment(
+                provider_payment_id=payment.provider_payment_id,
+                amount=refund_amount,
+                reason=reason,
+            )
+            refund = await refund_repository.create(
+                session=session,
+                payment_id=payment.id,
+                amount=refund_amount,
+                currency=payment.currency,
+                status=provider_refund.status,
+                reason=reason,
+                provider_refund_id=provider_refund.provider_refund_id,
+            )
+            is_full_refund = refund_amount == available_amount
+            refund_status = "refunded" if is_full_refund else "partial_refunded"
+            await payment_repository.update_refund_status(
+                session=session,
+                payment=payment,
+                refund_status=refund_status,
+            )
+            await order_repository.update_payment_status(
+                session=session,
+                order=order,
+                payment_status=refund_status,
+            )
+            await commiter.commit()
+        except PaymentProviderRefundError:
+            await commiter.rollback()
+            raise
+        except Exception:
+            await commiter.rollback()
+            raise
+
+        await payment_cache_service.invalidate_detail(
+            redis_service=redis_service,
+            user_id=order.user_id,
+            payment_id=payment.id,
+        )
+        await order_cache_service.invalidate_order(
+            redis_service=redis_service,
+            user_id=order.user_id,
+            order_id=order.id,
+        )
+        await notification_service.notify_refund_created(
+            email_service=email_service,
+            telegram_service=telegram_service,
+            order=order,
+        )
+        return PaymentRefundResponse(
+            message="Возврат создан",
+            refund=RefundResponse(
+                id=refund.id,
+                payment_id=payment.id,
+                order_id=order.id,
+                amount=refund.amount,
+                currency=refund.currency,
+                status=refund.status,
+                reason=refund.reason,
+                created_at=refund.created_date,
             ),
         )
 

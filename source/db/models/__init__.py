@@ -12,6 +12,7 @@ from source.db.models.product import Product
 from source.db.models.product_image import ProductImage
 from source.db.models.promo_code import PromoCode, PromoCodeUsage
 from source.db.models.refresh_token import RefreshToken
+from source.db.models.refund import Refund
 from source.db.models.user import User
 
 __all__ = (
@@ -30,5 +31,6 @@ __all__ = (
     "PromoCode",
     "PromoCodeUsage",
     "RefreshToken",
+    "Refund",
     "User",
 )

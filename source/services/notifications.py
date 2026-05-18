@@ -65,6 +65,16 @@ class EmailService:
         message.set_content(f"Оплата заказа {order_number} успешно получена.")
         await asyncio.to_thread(self._send_message, message)
 
+    async def send_refund_created_email(self, *, email: str, order_number: str) -> None:
+        if not settings.smtp.host or not settings.smtp.from_email:
+            return
+        message = EmailMessage()
+        message["Subject"] = f"По заказу {order_number} создан возврат"
+        message["From"] = settings.smtp.from_email
+        message["To"] = email
+        message.set_content(f"По заказу {order_number} создан возврат.")
+        await asyncio.to_thread(self._send_message, message)
+
 #TODO доделать отправку сообщения по телеграм
 class TelegramNotificationService:
     async def notify_admin_password_reset_issue(
@@ -87,6 +97,9 @@ class TelegramNotificationService:
 
     async def notify_admin_payment_success(self, *, order_number: str, user_id: int) -> None:
         logger.info("Payment succeeded: order_number=%s user_id=%s", order_number, user_id)
+
+    async def notify_admin_refund_created(self, *, order_number: str, user_id: int) -> None:
+        logger.info("Refund created: order_number=%s user_id=%s", order_number, user_id)
 
 
 class NotificationService:
@@ -122,3 +135,14 @@ class NotificationService:
         if order.customer_email:
             await email_service.send_payment_success_email(email=order.customer_email, order_number=order.order_number)
         await telegram_service.notify_admin_payment_success(order_number=order.order_number, user_id=order.user_id)
+
+    async def notify_refund_created(
+        self,
+        *,
+        email_service: EmailService,
+        telegram_service: TelegramNotificationService,
+        order,
+    ) -> None:
+        if order.customer_email:
+            await email_service.send_refund_created_email(email=order.customer_email, order_number=order.order_number)
+        await telegram_service.notify_admin_refund_created(order_number=order.order_number, user_id=order.user_id)

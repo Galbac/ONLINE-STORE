@@ -1,13 +1,14 @@
 from typing import Any
 
 from dishka.integrations.fastapi import FromDishka, inject
-from fastapi import Header, HTTPException, status
+from fastapi import Depends, Header, HTTPException, status
 from jose import JWTError, jwt
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from source.config.settings import settings
 from source.db.models.user import User
+from source.db.models.choises.enum import UserRole
 from source.services.redis import RedisService
 
 
@@ -25,6 +26,12 @@ async def get_current_user(
         token_payload=payload,
         session=session,
     )
+
+
+async def require_admin_or_manager(current_user: User = Depends(get_current_user)) -> User:
+    if current_user.role not in {UserRole.ADMIN, UserRole.MANAGER}:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Недостаточно прав")
+    return current_user
 
 
 @inject

@@ -265,3 +265,23 @@ class PaymentAlreadyPaidError(Exception):
 
 class PaymentProviderCancelError(Exception):
     pass
+
+
+class RefundAccessDeniedError(Exception):
+    pass
+
+
+class PaymentNotPaidError(Exception):
+    pass
+
+
+class InvalidRefundAmountError(Exception):
+    pass
+
+
+class RefundAmountExceedsAvailableError(Exception):
+    pass
+
+
+class PaymentProviderRefundError(Exception):
+    pass

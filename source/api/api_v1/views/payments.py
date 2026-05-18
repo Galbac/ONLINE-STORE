@@ -2,7 +2,7 @@ from dishka.integrations.fastapi import FromDishka, inject
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from source.api.dependencies import get_current_user
+from source.api.dependencies import get_current_user, require_admin_or_manager
 from source.common.commiter import Commiter
 from source.db.models.user import User
 from source.errors.auth import (
@@ -20,13 +20,18 @@ from source.errors.auth import (
     PaymentNotFoundError,
     PaymentProviderConfirmError,
     PaymentProviderCancelError,
+    PaymentProviderRefundError,
     PaymentProviderCreateError,
     InvalidPaymentWebhookPayloadError,
     InvalidPaymentWebhookSignatureError,
+    PaymentNotPaidError,
+    InvalidRefundAmountError,
+    RefundAmountExceedsAvailableError,
 )
 from source.repositories.order import OrderRepository
 from source.repositories.payment import PaymentRepository
 from source.repositories.payment_webhook_log import PaymentWebhookLogRepository
+from source.repositories.refund import RefundRepository
 from source.schemas.pydantic.payment import (
     PaymentConfirmRequest,
     PaymentConfirmResponse,
@@ -35,6 +40,8 @@ from source.schemas.pydantic.payment import (
     PaymentCreateRequest,
     PaymentCreateResponse,
     PaymentDetailResponse,
+    PaymentRefundRequest,
+    PaymentRefundResponse,
     PaymentWebhookResponse,
 )
 from source.services.notifications import EmailService, NotificationService, TelegramNotificationService
@@ -226,6 +233,60 @@ async def cancel_payment(
     except PaymentCancellationStatusNotAllowedError as error:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Платёж нельзя отменить в текущем статусе") from error
     except PaymentProviderCancelError as error:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Ошибка провайдера") from error
+
+
+@router.post("/payments/{payment_id}/refund", response_model=PaymentRefundResponse, status_code=status.HTTP_200_OK)
+@inject
+async def refund_payment(
+    payment_id: int,
+    body: PaymentRefundRequest,
+    current_user: User = Depends(get_current_user),
+    _: User = Depends(require_admin_or_manager),
+    session: FromDishka[AsyncSession] = None,
+    commiter: FromDishka[Commiter] = None,
+    redis_service: FromDishka[RedisService] = None,
+    order_repository: FromDishka[OrderRepository] = None,
+    payment_repository: FromDishka[PaymentRepository] = None,
+    refund_repository: FromDishka[RefundRepository] = None,
+    payment_service: FromDishka[PaymentService] = None,
+    payment_provider_service: FromDishka[PaymentProviderService] = None,
+    payment_cache_service: FromDishka[PaymentCacheService] = None,
+    order_cache_service: FromDishka[OrderCacheService] = None,
+    notification_service: FromDishka[NotificationService] = None,
+    email_service: FromDishka[EmailService] = None,
+    telegram_service: FromDishka[TelegramNotificationService] = None,
+) -> PaymentRefundResponse:
+    if payment_id <= 0:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Неверный payment_id")
+    try:
+        return await payment_service.refund_payment(
+            session=session,
+            commiter=commiter,
+            redis_service=redis_service,
+            user=current_user,
+            payment_id=payment_id,
+            amount=body.amount,
+            reason=body.reason,
+            payment_repository=payment_repository,
+            refund_repository=refund_repository,
+            order_repository=order_repository,
+            payment_provider_service=payment_provider_service,
+            payment_cache_service=payment_cache_service,
+            order_cache_service=order_cache_service,
+            notification_service=notification_service,
+            email_service=email_service,
+            telegram_service=telegram_service,
+        )
+    except PaymentNotFoundError as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Платёж не найден") from error
+    except PaymentNotPaidError as error:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Платёж не оплачен") from error
+    except InvalidRefundAmountError as error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Неверная сумма возврата") from error
+    except RefundAmountExceedsAvailableError as error:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Сумма возврата превышает доступную") from error
+    except PaymentProviderRefundError as error:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Ошибка провайдера") from error
 
 

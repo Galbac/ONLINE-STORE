@@ -19,7 +19,11 @@ from source.errors.auth import (
     PaymentProviderCancelError,
     PaymentProviderCreateError,
     InvalidPaymentWebhookSignatureError,
+    PaymentNotPaidError,
+    RefundAmountExceedsAvailableError,
 )
+from source.api.dependencies import require_admin_or_manager
+from source.db.models.choises.enum import UserRole
 from source.services.order import OrderService
 from source.services.payment import PaymentProviderService, PaymentService, ProviderPayment, ProviderPaymentStatus
 from source.services.payment_webhook import PaymentWebhookService
@@ -64,6 +68,7 @@ class FakePaymentRepository:
         self.created_payment = None
         self.updated_provider_data = False
         self.updated_status = None
+        self.updated_refund_status = None
 
     async def get_active_by_order_id(self, *, session, order_id: int):
         return self.active_payment
@@ -102,6 +107,11 @@ class FakePaymentRepository:
         self.updated_status = status
         return payment
 
+    async def update_refund_status(self, *, session, payment, refund_status: str):
+        payment.refund_status = refund_status
+        self.updated_refund_status = refund_status
+        return payment
+
 
 class FakeProviderService(PaymentProviderService):
     def __init__(
@@ -111,11 +121,13 @@ class FakeProviderService(PaymentProviderService):
         status: str = "pending",
         confirm_supported: bool = True,
         cancel_fail: bool = False,
+        refund_fail: bool = False,
     ) -> None:
         self.fail = fail
         self.status = status
         self.confirm_supported = confirm_supported
         self.cancel_fail = cancel_fail
+        self.refund_fail = refund_fail
         self.calls = []
 
     async def create_payment(self, **kwargs):
@@ -149,6 +161,13 @@ class FakeProviderService(PaymentProviderService):
         if self.cancel_fail:
             raise PaymentProviderCancelError
         return ProviderPaymentStatus(status="cancelled")
+
+    async def refund_payment(self, *, provider_payment_id: str, amount, reason=None):
+        if self.refund_fail:
+            from source.errors.auth import PaymentProviderRefundError
+
+            raise PaymentProviderRefundError
+        return SimpleNamespace(provider_refund_id="refund-1", status="succeeded")
 
 
 class FakeOrderCacheService:
@@ -203,9 +222,13 @@ class FakeProfileCacheService:
 class FakeNotificationService:
     def __init__(self) -> None:
         self.payment_success = []
+        self.refunds = []
 
     async def notify_payment_success(self, **kwargs):
         self.payment_success.append(kwargs["order"].id)
+
+    async def notify_refund_created(self, **kwargs):
+        self.refunds.append(kwargs["order"].id)
 
 
 class FakeOneCIntegrationService:
@@ -258,6 +281,7 @@ def build_payment(*, status: str = "pending"):
         updated_date=datetime(2026, 5, 12, 9, 5, 0),
         provider_secret="secret",
         raw_webhook_payload={"secret": True},
+        refund_status=None,
     )
 
 
@@ -385,6 +409,61 @@ async def execute_cancel_payment(*, order=None, payment="default", cancel_fail=F
         payment_cache_service=payment_cache_service,
         order_cache_service=order_cache_service,
         commiter=commiter,
+    )
+
+
+class FakeRefundRepository:
+    def __init__(self, refunded=Decimal("0")) -> None:
+        self.refunded = refunded
+        self.created = None
+
+    async def sum_refunded_by_payment_id(self, *, session, payment_id: int):
+        return self.refunded
+
+    async def create(self, *, session, payment_id: int, amount, currency: str, status: str, reason: str | None, provider_refund_id: str | None):
+        self.created = SimpleNamespace(
+            id=301,
+            payment_id=payment_id,
+            amount=amount,
+            currency=currency,
+            status=status,
+            reason=reason,
+            provider_refund_id=provider_refund_id,
+            created_date=datetime(2026, 5, 12, 10, 30, 0),
+        )
+        return self.created
+
+
+async def execute_refund_payment(*, amount=None, refunded=Decimal("0"), payment=None, refund_fail=False):
+    payment = build_payment(status="paid") if payment is None else payment
+    refund_repository = FakeRefundRepository(refunded=refunded)
+    payment_repository = FakePaymentRepository(payment=payment)
+    order_repository = FakeOrderRepository(build_order(payment_status="paid"))
+    notification_service = FakeNotificationService()
+    response = await PaymentService().refund_payment(
+        session=None,
+        commiter=FakeCommiter(),
+        redis_service=None,
+        user=SimpleNamespace(id=7, role=UserRole.ADMIN),
+        payment_id=500,
+        amount=amount,
+        reason="Отмена заказа клиентом",
+        payment_repository=payment_repository,
+        refund_repository=refund_repository,
+        order_repository=order_repository,
+        payment_provider_service=FakeProviderService(refund_fail=refund_fail),
+        payment_cache_service=FakePaymentCacheService(),
+        order_cache_service=FakeOrderCacheService(),
+        notification_service=notification_service,
+        email_service=DummyEmailService(),
+        telegram_service=DummyTelegramService(),
+    )
+    return SimpleNamespace(
+        response=response,
+        refund_repository=refund_repository,
+        payment_repository=payment_repository,
+        order_repository=order_repository,
+        notification_service=notification_service,
     )
 
 
@@ -731,3 +810,55 @@ async def test_cancel_payment_reports_missing_payment():
 async def test_cancel_payment_reports_provider_error():
     with pytest.raises(PaymentProviderCancelError):
         await execute_cancel_payment(cancel_fail=True)
+
+
+@pytest.mark.asyncio
+async def test_refund_payment_full_success():
+    result = await execute_refund_payment()
+
+    assert result.response.message == "Возврат создан"
+    assert result.response.refund.amount == Decimal("2650.00")
+    assert result.payment_repository.updated_refund_status == "refunded"
+    assert result.order_repository.updated_payment_status == "refunded"
+    assert result.refund_repository.created is not None
+
+
+@pytest.mark.asyncio
+async def test_refund_payment_partial_success():
+    result = await execute_refund_payment(amount=Decimal("650.00"))
+
+    assert result.response.refund.amount == Decimal("650.00")
+    assert result.payment_repository.updated_refund_status == "partial_refunded"
+    assert result.order_repository.updated_payment_status == "partial_refunded"
+
+
+@pytest.mark.asyncio
+async def test_customer_cannot_refund():
+    with pytest.raises(Exception):
+        await require_admin_or_manager(SimpleNamespace(role=UserRole.CUSTOMER))
+
+
+@pytest.mark.asyncio
+async def test_refund_payment_rejects_unpaid_payment():
+    with pytest.raises(PaymentNotPaidError):
+        await execute_refund_payment(payment=build_payment(status="pending"))
+
+
+@pytest.mark.asyncio
+async def test_refund_payment_rejects_amount_above_available():
+    with pytest.raises(RefundAmountExceedsAvailableError):
+        await execute_refund_payment(amount=Decimal("3000.00"))
+
+
+@pytest.mark.asyncio
+async def test_refund_payment_updates_order_status():
+    result = await execute_refund_payment(amount=Decimal("100.00"))
+
+    assert result.order_repository.updated_payment_status == "partial_refunded"
+
+
+@pytest.mark.asyncio
+async def test_refund_payment_saves_refund():
+    result = await execute_refund_payment(amount=Decimal("100.00"))
+
+    assert result.refund_repository.created.payment_id == 500

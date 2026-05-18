@@ -95,3 +95,16 @@ class PaymentRepository:
         await session.flush()
         await session.refresh(payment)
         return payment
+
+    async def update_refund_status(
+        self,
+        *,
+        session: AsyncSession,
+        payment: Payment,
+        refund_status: str,
+    ) -> Payment:
+        payment.refund_status = refund_status
+        session.add(payment)
+        await session.flush()
+        await session.refresh(payment)
+        return payment

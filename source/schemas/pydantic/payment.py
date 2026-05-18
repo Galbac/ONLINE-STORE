@@ -67,3 +67,24 @@ class PaymentCancelPaymentResponse(BaseModel):
 class PaymentCancelResponse(BaseModel):
     message: str
     payment: PaymentCancelPaymentResponse
+
+
+class PaymentRefundRequest(BaseModel):
+    amount: Decimal | None = Field(default=None, gt=0)
+    reason: str | None = Field(default=None, max_length=500)
+
+
+class RefundResponse(BaseModel):
+    id: int
+    payment_id: int
+    order_id: int
+    amount: Decimal
+    currency: str
+    status: str
+    reason: str | None = None
+    created_at: datetime
+
+
+class PaymentRefundResponse(BaseModel):
+    message: str
+    refund: RefundResponse
