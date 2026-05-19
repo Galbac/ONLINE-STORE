@@ -18,6 +18,7 @@ from source.schemas.pydantic.admin_product import (
     AdminProductListQueryParams,
     AdminProductListResponse,
     AdminProductUpdateRequest,
+    ProductImagesSortRequest,
     ProductAvailabilityUpdateRequest,
     ProductStockUpdateRequest,
 )
@@ -54,9 +55,13 @@ class FakeRedisService:
 class FakeCommiter:
     def __init__(self) -> None:
         self.committed = False
+        self.rolled_back = False
 
     async def commit(self) -> None:
         self.committed = True
+
+    async def rollback(self) -> None:
+        self.rolled_back = True
 
 
 class FakeProductRepository:
@@ -324,10 +329,11 @@ class FakeUploadService:
 
 
 class FakeProductImageRepository:
-    def __init__(self, *, images: list[SimpleNamespace] | None = None) -> None:
+    def __init__(self, *, images: list[SimpleNamespace] | None = None, fail_bulk_update: bool = False) -> None:
         self.images = images or []
         self.unset_called = False
         self.called = False
+        self.fail_bulk_update = fail_bulk_update
 
     async def count_by_product_id(self, *, session, product_id: int):
         return len([image for image in self.images if image.product_id == product_id])
@@ -379,6 +385,20 @@ class FakeProductImageRepository:
     async def set_main(self, *, session, image):
         image.is_main = True
         return image
+
+    async def get_by_ids(self, *, session, image_ids: list[int]):
+        return [
+            image
+            for image in self.images
+            if image.id in image_ids and not getattr(image, "is_deleted", False)
+        ]
+
+    async def bulk_update_sort(self, *, session, images_by_id: dict[int, SimpleNamespace], sort_orders_by_id: dict[int, int]):
+        if self.fail_bulk_update:
+            raise RuntimeError("bulk update failed")
+        for image_id, sort_order in sort_orders_by_id.items():
+            images_by_id[image_id].sort_order = sort_order
+        return list(images_by_id.values())
 
 
 class FakeUploadFile:
@@ -691,6 +711,45 @@ async def delete_image(
                     is_main=False,
                     is_deleted=False,
                 ),
+            ],
+        ),
+        admin_audit_log_repository=audit_log_repository or FakeAuditLogRepository(),
+        product_cache_service=FakeProductCacheService(),
+        admin_product_cache_service=AdminProductCacheService(),
+    )
+
+
+async def sort_images(
+    *,
+    redis_service=None,
+    user=None,
+    product_repository=None,
+    product_image_repository=None,
+    audit_log_repository=None,
+    commiter=None,
+    data=None,
+    product_id: int = 1,
+):
+    return await AdminProductImageService().sort_images(
+        session=None,
+        redis_service=redis_service or FakeRedisService(),
+        user=user or build_user(),
+        product_id=product_id,
+        data=data
+        or ProductImagesSortRequest(
+            images=[
+                {"image_id": 10, "sort_order": 1, "is_main": True},
+                {"image_id": 11, "sort_order": 2, "is_main": False},
+            ],
+        ),
+        commiter=commiter or FakeCommiter(),
+        permission_service=PermissionService(),
+        product_repository=product_repository or build_repository(),
+        product_image_repository=product_image_repository
+        or FakeProductImageRepository(
+            images=[
+                SimpleNamespace(id=10, product_id=1, file_id=1001, url="/media/product/apple.png", sort_order=2, is_main=False, is_deleted=False, created_date=datetime(2026, 5, 12, 10)),
+                SimpleNamespace(id=11, product_id=1, file_id=1002, url="/media/product/apple-2.png", sort_order=1, is_main=True, is_deleted=False, created_date=datetime(2026, 5, 12, 10)),
             ],
         ),
         admin_audit_log_repository=audit_log_repository or FakeAuditLogRepository(),
@@ -1331,6 +1390,94 @@ async def test_admin_product_image_delete_cache_invalidated() -> None:
     redis_service = FakeRedisService()
 
     await delete_image(redis_service=redis_service)
+
+    assert "products:detail:1:*" in redis_service.deleted_patterns
+    assert "products:slug:product-1:*" in redis_service.deleted_patterns
+    assert "products:list:*" in redis_service.deleted_patterns
+    assert "admin:products:detail:1" in redis_service.deleted_patterns
+    assert "admin:products:list:*" in redis_service.deleted_patterns
+
+
+@pytest.mark.asyncio
+async def test_admin_product_images_sort_success() -> None:
+    response = await sort_images()
+
+    assert [item.id for item in response.items] == [10, 11]
+    assert response.items[0].sort_order == 1
+    assert response.items[1].sort_order == 2
+
+
+@pytest.mark.asyncio
+async def test_admin_product_images_sort_changes_main() -> None:
+    image_repository = FakeProductImageRepository(
+        images=[
+            SimpleNamespace(id=10, product_id=1, file_id=1001, url="/media/product/apple.png", sort_order=2, is_main=False, is_deleted=False, created_date=datetime(2026, 5, 12, 10)),
+            SimpleNamespace(id=11, product_id=1, file_id=1002, url="/media/product/apple-2.png", sort_order=1, is_main=True, is_deleted=False, created_date=datetime(2026, 5, 12, 10)),
+        ],
+    )
+
+    await sort_images(product_image_repository=image_repository)
+
+    assert image_repository.images[0].is_main is True
+    assert image_repository.images[1].is_main is False
+
+
+def test_admin_product_images_sort_two_main_error() -> None:
+    with pytest.raises(ValidationError):
+        ProductImagesSortRequest(
+            images=[
+                {"image_id": 10, "sort_order": 1, "is_main": True},
+                {"image_id": 11, "sort_order": 2, "is_main": True},
+            ],
+        )
+
+
+@pytest.mark.asyncio
+async def test_admin_product_images_sort_wrong_product_error() -> None:
+    image_repository = FakeProductImageRepository(
+        images=[
+            SimpleNamespace(id=10, product_id=2, file_id=1001, url="/media/product/apple.png", sort_order=1, is_main=False, is_deleted=False, created_date=datetime(2026, 5, 12, 10)),
+        ],
+    )
+
+    with pytest.raises(ProductImageOwnershipError):
+        await sort_images(
+            product_image_repository=image_repository,
+            data=ProductImagesSortRequest(images=[{"image_id": 10, "sort_order": 1, "is_main": False}]),
+        )
+
+
+@pytest.mark.asyncio
+async def test_admin_product_images_sort_image_not_found_error() -> None:
+    with pytest.raises(ProductImageNotFoundError):
+        await sort_images(data=ProductImagesSortRequest(images=[{"image_id": 999, "sort_order": 1, "is_main": False}]))
+
+
+@pytest.mark.asyncio
+async def test_admin_product_images_sort_rollback_on_error() -> None:
+    commiter = FakeCommiter()
+    image_repository = FakeProductImageRepository(
+        fail_bulk_update=True,
+        images=[
+            SimpleNamespace(id=10, product_id=1, file_id=1001, url="/media/product/apple.png", sort_order=1, is_main=False, is_deleted=False, created_date=datetime(2026, 5, 12, 10)),
+        ],
+    )
+
+    with pytest.raises(RuntimeError):
+        await sort_images(
+            commiter=commiter,
+            product_image_repository=image_repository,
+            data=ProductImagesSortRequest(images=[{"image_id": 10, "sort_order": 2, "is_main": False}]),
+        )
+
+    assert commiter.rolled_back is True
+
+
+@pytest.mark.asyncio
+async def test_admin_product_images_sort_cache_invalidated() -> None:
+    redis_service = FakeRedisService()
+
+    await sort_images(redis_service=redis_service)
 
     assert "products:detail:1:*" in redis_service.deleted_patterns
     assert "products:slug:product-1:*" in redis_service.deleted_patterns

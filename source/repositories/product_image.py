@@ -145,3 +145,35 @@ class ProductImageRepository:
         await session.flush()
         await session.refresh(image)
         return image
+
+    async def get_by_ids(
+        self,
+        *,
+        session: AsyncSession,
+        image_ids: list[int],
+    ) -> list[ProductImage]:
+        if not image_ids:
+            return []
+        result = await session.execute(
+            select(ProductImage).where(
+                ProductImage.id.in_(image_ids),
+                ProductImage.is_deleted.is_(False),
+            ),
+        )
+        return list(result.scalars().all())
+
+    async def bulk_update_sort(
+        self,
+        *,
+        session: AsyncSession,
+        images_by_id: dict[int, ProductImage],
+        sort_orders_by_id: dict[int, int],
+    ) -> list[ProductImage]:
+        updated_images: list[ProductImage] = []
+        for image_id, sort_order in sort_orders_by_id.items():
+            image = images_by_id[image_id]
+            image.sort_order = sort_order
+            session.add(image)
+            updated_images.append(image)
+        await session.flush()
+        return updated_images

@@ -163,6 +163,26 @@ class AdminProductImageResponse(BaseModel):
     created_at: datetime | None = None
 
 
+class ProductImageSortItemRequest(BaseModel):
+    image_id: int = Field(gt=0)
+    sort_order: int = Field(gt=0)
+    is_main: bool = False
+
+
+class ProductImagesSortRequest(BaseModel):
+    images: list[ProductImageSortItemRequest] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_single_main(self) -> "ProductImagesSortRequest":
+        if sum(1 for image in self.images if image.is_main) > 1:
+            raise ValueError("only one image can be main")
+        return self
+
+
+class AdminProductImagesSortResponse(BaseModel):
+    items: list[AdminProductImageResponse]
+
+
 class AdminProductSeoResponse(BaseModel):
     meta_title: str | None = None
     meta_description: str | None = None
