@@ -1,14 +1,18 @@
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from types import SimpleNamespace
 
 import pytest
+from pydantic import ValidationError
 
 from source.config.settings import settings
 from source.db.models.choises.enum import UserRole
 from source.errors.auth import AdminAuthAccessDeniedError, InactiveUserError
 from source.schemas.pydantic.admin_dashboard import (
     AdminDashboardResponse,
+    AdminSalesQueryParams,
+    AdminSalesResponse,
+    AdminSalesSeriesItem,
     AdminRecentOrderResponse,
     AdminPopularProductResponse,
 )
@@ -59,6 +63,28 @@ class FakeOrderRepository:
             ),
         ]
 
+    async def get_sales_stats(self, *, session, query: AdminSalesQueryParams):
+        if self.new_count == -1:
+            series = [
+                AdminSalesSeriesItem(date=date(2026, 5, 1), amount=Decimal("42000.00"), orders_count=10),
+                AdminSalesSeriesItem(date=date(2026, 5, 2), amount=Decimal("83000.00"), orders_count=20),
+            ]
+        else:
+            series = [
+                AdminSalesSeriesItem(date=date(2026, 5, 1), amount=Decimal("125000.00"), orders_count=32),
+            ]
+        total_amount = sum((item.amount for item in series), Decimal("0.00"))
+        orders_count = sum(item.orders_count for item in series)
+        return AdminSalesResponse(
+            date_from=query.date_from,
+            date_to=query.date_to,
+            group_by=query.group_by,
+            total_amount=total_amount,
+            orders_count=orders_count,
+            average_order_value=total_amount / orders_count if orders_count else Decimal("0.00"),
+            series=series,
+        )
+
 
 class FakeProductRepository:
     def __init__(self, *, low_stock_count: int = 12) -> None:
@@ -105,6 +131,24 @@ async def get_summary(
         order_repository=order_repository or FakeOrderRepository(),
         product_repository=product_repository or FakeProductRepository(),
         user_repository=FakeUserRepository(),
+        admin_dashboard_cache_service=AdminDashboardCacheService(),
+    )
+
+
+async def get_sales(
+    *,
+    redis_service=None,
+    user=None,
+    order_repository=None,
+    query=None,
+):
+    return await AdminDashboardService().get_sales(
+        session=None,
+        redis_service=redis_service or FakeRedisService(),
+        user=user or build_user(),
+        query=query or AdminSalesQueryParams(date_from=date(2026, 5, 1), date_to=date(2026, 5, 31)),
+        permission_service=PermissionService(),
+        order_repository=order_repository or FakeOrderRepository(),
         admin_dashboard_cache_service=AdminDashboardCacheService(),
     )
 
@@ -175,3 +219,71 @@ async def test_admin_dashboard_response_is_cached() -> None:
 
     assert "admin:dashboard:summary" in redis_service.values
     assert redis_service.ttls["admin:dashboard:summary"] == settings.admin_dashboard.cache_ttl_seconds
+
+
+@pytest.mark.asyncio
+async def test_admin_dashboard_sales_for_period() -> None:
+    response = await get_sales()
+
+    assert response.date_from == date(2026, 5, 1)
+    assert response.date_to == date(2026, 5, 31)
+    assert response.total_amount == Decimal("125000.00")
+    assert response.orders_count == 32
+
+
+@pytest.mark.asyncio
+async def test_admin_dashboard_sales_group_by_day() -> None:
+    response = await get_sales(query=AdminSalesQueryParams(date_from=date(2026, 5, 1), date_to=date(2026, 5, 31), group_by="day"))
+
+    assert response.group_by == "day"
+    assert response.series[0].date == date(2026, 5, 1)
+
+
+@pytest.mark.asyncio
+async def test_admin_dashboard_sales_group_by_month() -> None:
+    response = await get_sales(query=AdminSalesQueryParams(date_from=date(2026, 5, 1), date_to=date(2026, 5, 31), group_by="month"))
+
+    assert response.group_by == "month"
+
+
+@pytest.mark.asyncio
+async def test_admin_dashboard_sales_cancelled_orders_are_not_counted() -> None:
+    response = await get_sales(order_repository=FakeOrderRepository(new_count=-1))
+
+    assert response.total_amount == Decimal("125000.00")
+    assert response.orders_count == 30
+
+
+def test_admin_dashboard_sales_invalid_dates() -> None:
+    with pytest.raises(ValidationError):
+        AdminSalesQueryParams(date_from=date(2026, 6, 1), date_to=date(2026, 5, 1))
+
+
+@pytest.mark.asyncio
+async def test_admin_dashboard_sales_cache_works() -> None:
+    redis_service = FakeRedisService()
+    cached_response = AdminSalesResponse(
+        date_from=date(2026, 5, 1),
+        date_to=date(2026, 5, 31),
+        group_by="day",
+        total_amount=Decimal("100.00"),
+        orders_count=2,
+        average_order_value=Decimal("50.00"),
+        series=[],
+    )
+    query = AdminSalesQueryParams(date_from=date(2026, 5, 1), date_to=date(2026, 5, 31))
+    from source.utils.query_hash import build_query_hash
+
+    redis_service.values[f"admin:dashboard:sales:{build_query_hash(query.model_dump())}"] = cached_response.model_dump_json()
+    order_repository = FakeOrderRepository()
+
+    response = await get_sales(redis_service=redis_service, order_repository=order_repository, query=query)
+
+    assert response == cached_response
+    assert order_repository.called is False
+
+
+@pytest.mark.asyncio
+async def test_admin_dashboard_sales_no_permission_error() -> None:
+    with pytest.raises(AdminAuthAccessDeniedError):
+        await get_sales(user=build_user(role=UserRole.CONTENT_MANAGER))

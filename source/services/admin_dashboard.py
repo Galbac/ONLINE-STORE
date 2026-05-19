@@ -6,9 +6,12 @@ from source.schemas.pydantic.admin_dashboard import (
     AdminDashboardResponse,
     AdminDashboardSalesStats,
     AdminDashboardUsersStats,
+    AdminSalesQueryParams,
+    AdminSalesResponse,
 )
 from source.services.admin_auth import STAFF_ROLES
 from source.services.redis import RedisService
+from source.utils.query_hash import build_query_hash
 
 
 class AdminDashboardService:
@@ -64,5 +67,40 @@ class AdminDashboardService:
             redis_service=redis_service,
             response=response,
             ttl_seconds=settings.admin_dashboard.cache_ttl_seconds,
+        )
+        return response
+
+    async def get_sales(
+        self,
+        *,
+        session,
+        redis_service: RedisService,
+        user,
+        query: AdminSalesQueryParams,
+        permission_service,
+        order_repository,
+        admin_dashboard_cache_service,
+    ) -> AdminSalesResponse:
+        if not user.is_active or user.is_deleted:
+            raise InactiveUserError
+        if user.role not in STAFF_ROLES:
+            raise AdminAuthAccessDeniedError
+        if "admin:dashboard:sales:read" not in permission_service.get_user_permissions(role=user.role):
+            raise AdminAuthAccessDeniedError
+
+        query_hash = build_query_hash(query.model_dump())
+        cached_sales = await admin_dashboard_cache_service.get_sales(
+            redis_service=redis_service,
+            query_hash=query_hash,
+        )
+        if cached_sales is not None:
+            return cached_sales
+
+        response = await order_repository.get_sales_stats(session=session, query=query)
+        await admin_dashboard_cache_service.set_sales(
+            redis_service=redis_service,
+            query_hash=query_hash,
+            response=response,
+            ttl_seconds=settings.admin_dashboard.sales_cache_ttl_seconds,
         )
         return response

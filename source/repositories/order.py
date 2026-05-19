@@ -2,13 +2,13 @@ from datetime import date, datetime, time
 from decimal import Decimal
 from types import SimpleNamespace
 
-from sqlalchemy import desc, func, select
+from sqlalchemy import cast, Date, desc, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from source.config.settings import settings
 from source.db.models.order import Order
 from source.schemas.pydantic.order import OrderMyListQueryParams, OrderShortResponse
-from source.schemas.pydantic.admin_dashboard import AdminRecentOrderResponse
+from source.schemas.pydantic.admin_dashboard import AdminRecentOrderResponse, AdminSalesQueryParams, AdminSalesResponse, AdminSalesSeriesItem
 from source.schemas.pydantic.profile import ProfileOrderListQueryParams, ProfileOrderShortResponse
 
 
@@ -82,6 +82,53 @@ class OrderRepository:
             )
             for order in result.scalars().all()
         ]
+
+    async def get_sales_stats(
+        self,
+        *,
+        session: AsyncSession,
+        query: AdminSalesQueryParams,
+    ) -> AdminSalesResponse:
+        period_expression = cast(func.date_trunc(query.group_by, Order.created_date), Date)
+        statement = (
+            select(
+                period_expression.label("period"),
+                func.coalesce(func.sum(Order.final_price), 0),
+                func.count(Order.id),
+            )
+            .where(
+                Order.created_date >= datetime.combine(query.date_from, time.min),
+                Order.created_date <= datetime.combine(query.date_to, time.max),
+                Order.status != "cancelled",
+                or_(
+                    Order.payment_status == "paid",
+                    Order.status == "completed",
+                ),
+            )
+            .group_by(period_expression)
+            .order_by(period_expression.asc())
+        )
+        result = await session.execute(statement)
+        series = [
+            AdminSalesSeriesItem(
+                date=period,
+                amount=Decimal(str(amount)),
+                orders_count=int(orders_count),
+            )
+            for period, amount, orders_count in result.all()
+        ]
+        total_amount = sum((item.amount for item in series), Decimal("0.00"))
+        orders_count = sum(item.orders_count for item in series)
+        average_order_value = total_amount / orders_count if orders_count else Decimal("0.00")
+        return AdminSalesResponse(
+            date_from=query.date_from,
+            date_to=query.date_to,
+            group_by=query.group_by,
+            total_amount=total_amount,
+            orders_count=orders_count,
+            average_order_value=average_order_value,
+            series=series,
+        )
 
     async def get_status_by_id(self, *, session: AsyncSession, order_id: int) -> Order | None:
         result = await session.execute(select(Order).where(Order.id == order_id))

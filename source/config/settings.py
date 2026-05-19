@@ -210,6 +210,7 @@ class AdminAuthSettings(BaseSettings):
 
 class AdminDashboardSettings(BaseSettings):
     cache_ttl_seconds: int = Field(default=60, alias="ADMIN_DASHBOARD_CACHE_TTL_SECONDS")
+    sales_cache_ttl_seconds: int = Field(default=300, alias="ADMIN_DASHBOARD_SALES_CACHE_TTL_SECONDS")
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

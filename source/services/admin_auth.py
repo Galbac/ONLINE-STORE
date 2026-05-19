@@ -36,8 +36,18 @@ STAFF_ROLES = {
 }
 
 ADMIN_PERMISSIONS_BY_ROLE = {
-    UserRole.ADMIN: ["admin:dashboard:read", "admin:products:manage", "admin:orders:manage"],
-    UserRole.MANAGER: ["admin:dashboard:read", "admin:products:manage", "admin:orders:manage"],
+    UserRole.ADMIN: [
+        "admin:dashboard:read",
+        "admin:dashboard:sales:read",
+        "admin:products:manage",
+        "admin:orders:manage",
+    ],
+    UserRole.MANAGER: [
+        "admin:dashboard:read",
+        "admin:dashboard:sales:read",
+        "admin:products:manage",
+        "admin:orders:manage",
+    ],
     UserRole.CONTENT_MANAGER: ["admin:dashboard:read", "admin:products:manage"],
     UserRole.PICKER: ["admin:dashboard:read", "admin:orders:pick"],
     UserRole.COURIER: ["admin:dashboard:read", "admin:orders:deliver"],

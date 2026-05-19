@@ -1,9 +1,12 @@
-from source.schemas.pydantic.admin_dashboard import AdminDashboardResponse
+from source.schemas.pydantic.admin_dashboard import AdminDashboardResponse, AdminSalesResponse
 from source.services.redis import RedisService
 
 
 class AdminDashboardCacheService:
     _summary_key = "admin:dashboard:summary"
+
+    def _sales_key(self, *, query_hash: str) -> str:
+        return f"admin:dashboard:sales:{query_hash}"
 
     async def get_summary(self, *, redis_service: RedisService) -> AdminDashboardResponse | None:
         cached_summary = await redis_service.get(self._summary_key)
@@ -28,3 +31,28 @@ class AdminDashboardCacheService:
 
     async def invalidate_summary(self, *, redis_service: RedisService) -> None:
         await redis_service.delete(self._summary_key)
+
+    async def get_sales(self, *, redis_service: RedisService, query_hash: str) -> AdminSalesResponse | None:
+        cached_sales = await redis_service.get(self._sales_key(query_hash=query_hash))
+        if cached_sales is None:
+            return None
+        if isinstance(cached_sales, bytes):
+            cached_sales = cached_sales.decode("utf-8")
+        return AdminSalesResponse.model_validate_json(cached_sales)
+
+    async def set_sales(
+        self,
+        *,
+        redis_service: RedisService,
+        query_hash: str,
+        response: AdminSalesResponse,
+        ttl_seconds: int,
+    ) -> None:
+        await redis_service.set(
+            self._sales_key(query_hash=query_hash),
+            response.model_dump_json(),
+            ttl_seconds=ttl_seconds,
+        )
+
+    async def invalidate_sales(self, *, redis_service: RedisService) -> None:
+        await redis_service.delete_by_pattern("admin:dashboard:sales:*")

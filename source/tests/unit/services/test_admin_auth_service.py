@@ -192,7 +192,12 @@ async def test_admin_login_success_admin() -> None:
     response = await login(refresh_token_repository=refresh_repository, audit_log_repository=audit_repository)
 
     assert response.user.role == UserRole.ADMIN
-    assert response.user.permissions == ["admin:dashboard:read", "admin:products:manage", "admin:orders:manage"]
+    assert response.user.permissions == [
+        "admin:dashboard:read",
+        "admin:dashboard:sales:read",
+        "admin:products:manage",
+        "admin:orders:manage",
+    ]
     assert response.token_type == "bearer"
     assert response.access_token
     assert response.refresh_token

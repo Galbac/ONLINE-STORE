@@ -1,7 +1,11 @@
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
+from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, model_validator
+
+from source.config.settings import settings
+from source.utils.date_range import validate_date_range
 
 
 class AdminDashboardOrdersStats(BaseModel):
@@ -46,3 +50,35 @@ class AdminDashboardResponse(BaseModel):
     users: AdminDashboardUsersStats
     recent_orders: list[AdminRecentOrderResponse]
     popular_products: list[AdminPopularProductResponse]
+
+
+class AdminSalesQueryParams(BaseModel):
+    date_from: date | None = None
+    date_to: date | None = None
+    group_by: Literal["day", "week", "month"] = "day"
+
+    @model_validator(mode="after")
+    def set_defaults_and_validate_dates(self) -> "AdminSalesQueryParams":
+        today = datetime.now(settings.tz).date()
+        if self.date_to is None:
+            self.date_to = today
+        if self.date_from is None:
+            self.date_from = self.date_to - timedelta(days=29)
+        validate_date_range(date_from=self.date_from, date_to=self.date_to)
+        return self
+
+
+class AdminSalesSeriesItem(BaseModel):
+    date: date
+    amount: Decimal
+    orders_count: int
+
+
+class AdminSalesResponse(BaseModel):
+    date_from: date
+    date_to: date
+    group_by: Literal["day", "week", "month"]
+    total_amount: Decimal = Field(default=Decimal("0.00"))
+    orders_count: int
+    average_order_value: Decimal = Field(default=Decimal("0.00"))
+    series: list[AdminSalesSeriesItem]
