@@ -6,6 +6,8 @@ from source.schemas.pydantic.admin_dashboard import (
     AdminDashboardResponse,
     AdminDashboardSalesStats,
     AdminDashboardUsersStats,
+    AdminLowStockQueryParams,
+    AdminLowStockResponse,
     AdminSalesQueryParams,
     AdminSalesResponse,
 )
@@ -102,5 +104,47 @@ class AdminDashboardService:
             query_hash=query_hash,
             response=response,
             ttl_seconds=settings.admin_dashboard.sales_cache_ttl_seconds,
+        )
+        return response
+
+    async def get_low_stock_products(
+        self,
+        *,
+        session,
+        redis_service: RedisService,
+        user,
+        query: AdminLowStockQueryParams,
+        permission_service,
+        product_repository,
+        admin_dashboard_cache_service,
+    ) -> AdminLowStockResponse:
+        if not user.is_active or user.is_deleted:
+            raise InactiveUserError
+        if user.role not in STAFF_ROLES:
+            raise AdminAuthAccessDeniedError
+        if "admin:products:read" not in permission_service.get_user_permissions(role=user.role):
+            raise AdminAuthAccessDeniedError
+
+        query_hash = build_query_hash(query.model_dump())
+        cached_low_stock = await admin_dashboard_cache_service.get_low_stock(
+            redis_service=redis_service,
+            query_hash=query_hash,
+        )
+        if cached_low_stock is not None:
+            return cached_low_stock
+
+        items = await product_repository.get_low_stock(session=session, query=query)
+        total = await product_repository.count_low_stock(session=session, category_id=query.category_id)
+        response = AdminLowStockResponse(
+            items=items,
+            total=total,
+            limit=query.limit,
+            offset=query.offset,
+        )
+        await admin_dashboard_cache_service.set_low_stock(
+            redis_service=redis_service,
+            query_hash=query_hash,
+            response=response,
+            ttl_seconds=settings.admin_dashboard.low_stock_cache_ttl_seconds,
         )
         return response

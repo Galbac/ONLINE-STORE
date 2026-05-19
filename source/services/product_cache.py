@@ -308,3 +308,5 @@ class ProductCacheService:
                 product_id=product.id,
                 slug=getattr(product, "slug", None),
             )
+        await redis_service.delete("admin:dashboard:summary")
+        await redis_service.delete_by_pattern("admin:dashboard:low_stock:*")

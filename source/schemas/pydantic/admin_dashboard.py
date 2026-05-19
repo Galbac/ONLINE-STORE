@@ -82,3 +82,27 @@ class AdminSalesResponse(BaseModel):
     orders_count: int
     average_order_value: Decimal = Field(default=Decimal("0.00"))
     series: list[AdminSalesSeriesItem]
+
+
+class AdminLowStockQueryParams(BaseModel):
+    limit: int = Field(default=50, ge=1, le=100)
+    offset: int = Field(default=0, ge=0)
+    category_id: int | None = Field(default=None, ge=1)
+
+
+class AdminLowStockProductResponse(BaseModel):
+    id: int
+    name: str
+    sku: str | None = None
+    unit: str
+    product_type: str
+    stock_quantity: Decimal
+    low_stock_threshold: Decimal
+    is_available: bool
+
+
+class AdminLowStockResponse(BaseModel):
+    items: list[AdminLowStockProductResponse]
+    total: int
+    limit: int
+    offset: int

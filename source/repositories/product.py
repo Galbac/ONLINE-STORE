@@ -19,21 +19,56 @@ from source.schemas.pydantic.product import (
     ProductSeoResponse,
     ProductShortResponse,
 )
-from source.schemas.pydantic.admin_dashboard import AdminPopularProductResponse
+from source.schemas.pydantic.admin_dashboard import (
+    AdminLowStockProductResponse,
+    AdminLowStockQueryParams,
+    AdminPopularProductResponse,
+)
 from source.schemas.pydantic.discount import DiscountProductsQueryParams
 from source.utils.product import build_detailed_stock_display, build_stock_display, calculate_discount_percent
 
 
 class ProductRepository:
-    async def count_low_stock(self, *, session: AsyncSession) -> int:
-        result = await session.execute(
-            select(func.count(Product.id)).where(
-                Product.is_active.is_(True),
-                Product.is_deleted.is_(False),
-                Product.stock_quantity <= Product.min_quantity,
-            ),
+    def _low_stock_statement(self, *, category_id: int | None = None):
+        statement = select(Product).where(
+            Product.is_active.is_(True),
+            Product.is_deleted.is_(False),
+            Product.stock_quantity <= Product.min_quantity,
         )
+        if category_id is not None:
+            statement = statement.where(Product.category_id == category_id)
+        return statement
+
+    async def count_low_stock(self, *, session: AsyncSession, category_id: int | None = None) -> int:
+        products_subquery = self._low_stock_statement(category_id=category_id).subquery()
+        result = await session.execute(select(func.count()).select_from(products_subquery))
         return int(result.scalar_one())
+
+    async def get_low_stock(
+        self,
+        *,
+        session: AsyncSession,
+        query: AdminLowStockQueryParams,
+    ) -> list[AdminLowStockProductResponse]:
+        result = await session.execute(
+            self._low_stock_statement(category_id=query.category_id)
+            .order_by(Product.stock_quantity.asc(), Product.name.asc())
+            .limit(query.limit)
+            .offset(query.offset),
+        )
+        return [
+            AdminLowStockProductResponse(
+                id=product.id,
+                name=product.name,
+                sku=product.article,
+                unit=product.unit,
+                product_type=product.product_type,
+                stock_quantity=product.stock_quantity,
+                low_stock_threshold=product.min_quantity,
+                is_available=product.is_available,
+            )
+            for product in result.scalars().all()
+        ]
 
     async def count_total_active(self, *, session: AsyncSession) -> int:
         result = await session.execute(

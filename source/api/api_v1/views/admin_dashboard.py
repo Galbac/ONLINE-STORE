@@ -11,7 +11,13 @@ from source.errors.auth import AdminAuthAccessDeniedError, InactiveUserError, In
 from source.repositories.order import OrderRepository
 from source.repositories.product import ProductRepository
 from source.repositories.user import UserRepository
-from source.schemas.pydantic.admin_dashboard import AdminDashboardResponse, AdminSalesQueryParams, AdminSalesResponse
+from source.schemas.pydantic.admin_dashboard import (
+    AdminDashboardResponse,
+    AdminLowStockQueryParams,
+    AdminLowStockResponse,
+    AdminSalesQueryParams,
+    AdminSalesResponse,
+)
 from source.services.admin_auth import PermissionService
 from source.services.admin_dashboard import AdminDashboardService
 from source.services.admin_dashboard_cache import AdminDashboardCacheService
@@ -47,6 +53,48 @@ async def get_admin_dashboard(
             user_repository=user_repository,
             admin_dashboard_cache_service=admin_dashboard_cache_service,
         )
+    except InvalidCredentialsError as error:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь не авторизован") from error
+    except AdminAuthAccessDeniedError as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Недостаточно прав") from error
+    except InactiveUserError as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Пользователь заблокирован") from error
+
+
+@router.get("/dashboard/low-stock", response_model=AdminLowStockResponse, status_code=status.HTTP_200_OK)
+@inject
+async def get_admin_dashboard_low_stock(
+    token_payload: dict = Depends(verify_access_token),
+    current_user: User = Depends(get_current_user),
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    category_id: int | None = Query(default=None, ge=1),
+    session: FromDishka[AsyncSession] = None,
+    redis_service: FromDishka[RedisService] = None,
+    admin_dashboard_service: FromDishka[AdminDashboardService] = None,
+    admin_dashboard_cache_service: FromDishka[AdminDashboardCacheService] = None,
+    permission_service: FromDishka[PermissionService] = None,
+    product_repository: FromDishka[ProductRepository] = None,
+) -> AdminLowStockResponse:
+    if token_payload.get("token_type") != "access":
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь не авторизован")
+    try:
+        query = AdminLowStockQueryParams(
+            limit=limit,
+            offset=offset,
+            category_id=category_id,
+        )
+        return await admin_dashboard_service.get_low_stock_products(
+            session=session,
+            redis_service=redis_service,
+            user=current_user,
+            query=query,
+            permission_service=permission_service,
+            product_repository=product_repository,
+            admin_dashboard_cache_service=admin_dashboard_cache_service,
+        )
+    except ValidationError as error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Неверные параметры запроса") from error
     except InvalidCredentialsError as error:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь не авторизован") from error
     except AdminAuthAccessDeniedError as error:

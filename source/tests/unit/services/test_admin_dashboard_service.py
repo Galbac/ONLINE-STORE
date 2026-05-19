@@ -10,6 +10,9 @@ from source.db.models.choises.enum import UserRole
 from source.errors.auth import AdminAuthAccessDeniedError, InactiveUserError
 from source.schemas.pydantic.admin_dashboard import (
     AdminDashboardResponse,
+    AdminLowStockProductResponse,
+    AdminLowStockQueryParams,
+    AdminLowStockResponse,
     AdminSalesQueryParams,
     AdminSalesResponse,
     AdminSalesSeriesItem,
@@ -19,6 +22,7 @@ from source.schemas.pydantic.admin_dashboard import (
 from source.services.admin_auth import PermissionService
 from source.services.admin_dashboard import AdminDashboardService
 from source.services.admin_dashboard_cache import AdminDashboardCacheService
+from source.utils.query_hash import build_query_hash
 
 
 class FakeRedisService:
@@ -36,6 +40,12 @@ class FakeRedisService:
 
     async def delete(self, key: str) -> None:
         self.values.pop(key, None)
+
+    async def delete_by_pattern(self, pattern: str) -> None:
+        prefix = pattern.removesuffix("*")
+        for key in list(self.values):
+            if key.startswith(prefix):
+                self.values.pop(key, None)
 
 
 class FakeOrderRepository:
@@ -87,11 +97,15 @@ class FakeOrderRepository:
 
 
 class FakeProductRepository:
-    def __init__(self, *, low_stock_count: int = 12) -> None:
+    def __init__(self, *, low_stock_count: int = 12, products: list | None = None) -> None:
         self.low_stock_count = low_stock_count
+        self.products = products or []
+        self.low_stock_called = False
 
-    async def count_low_stock(self, *, session):
-        return self.low_stock_count
+    async def count_low_stock(self, *, session, category_id: int | None = None):
+        if not self.products:
+            return self.low_stock_count
+        return len(self._filter_low_stock(category_id=category_id))
 
     async def count_total_active(self, *, session):
         return 1050
@@ -106,6 +120,38 @@ class FakeProductRepository:
             ),
         ]
 
+    async def get_low_stock(self, *, session, query: AdminLowStockQueryParams):
+        self.low_stock_called = True
+        products = sorted(
+            self._filter_low_stock(category_id=query.category_id),
+            key=lambda product: (product.stock_quantity, product.name),
+        )
+        return [
+            AdminLowStockProductResponse(
+                id=product.id,
+                name=product.name,
+                sku=product.article,
+                unit=product.unit,
+                product_type=product.product_type,
+                stock_quantity=product.stock_quantity,
+                low_stock_threshold=product.min_quantity,
+                is_available=product.is_available,
+            )
+            for product in products[query.offset : query.offset + query.limit]
+        ]
+
+    def _filter_low_stock(self, *, category_id: int | None = None):
+        products = [
+            product
+            for product in self.products
+            if product.is_active
+            and not product.is_deleted
+            and product.stock_quantity <= product.min_quantity
+        ]
+        if category_id is not None:
+            products = [product for product in products if product.category_id == category_id]
+        return products
+
 
 class FakeUserRepository:
     async def count_customers(self, *, session):
@@ -114,6 +160,31 @@ class FakeUserRepository:
 
 def build_user(*, role=UserRole.ADMIN, is_active: bool = True, is_deleted: bool = False):
     return SimpleNamespace(id=1, role=role, is_active=is_active, is_deleted=is_deleted)
+
+
+def build_product(
+    *,
+    product_id: int,
+    name: str,
+    category_id: int = 10,
+    stock_quantity: Decimal = Decimal("2"),
+    min_quantity: Decimal = Decimal("5"),
+    is_active: bool = True,
+    is_deleted: bool = False,
+):
+    return SimpleNamespace(
+        id=product_id,
+        name=name,
+        article=f"SKU-{product_id}",
+        unit="kg",
+        product_type="weight",
+        stock_quantity=stock_quantity,
+        min_quantity=min_quantity,
+        is_available=True,
+        is_active=is_active,
+        is_deleted=is_deleted,
+        category_id=category_id,
+    )
 
 
 async def get_summary(
@@ -149,6 +220,24 @@ async def get_sales(
         query=query or AdminSalesQueryParams(date_from=date(2026, 5, 1), date_to=date(2026, 5, 31)),
         permission_service=PermissionService(),
         order_repository=order_repository or FakeOrderRepository(),
+        admin_dashboard_cache_service=AdminDashboardCacheService(),
+    )
+
+
+async def get_low_stock(
+    *,
+    redis_service=None,
+    user=None,
+    product_repository=None,
+    query=None,
+):
+    return await AdminDashboardService().get_low_stock_products(
+        session=None,
+        redis_service=redis_service or FakeRedisService(),
+        user=user or build_user(),
+        query=query or AdminLowStockQueryParams(),
+        permission_service=PermissionService(),
+        product_repository=product_repository or FakeProductRepository(),
         admin_dashboard_cache_service=AdminDashboardCacheService(),
     )
 
@@ -257,6 +346,109 @@ async def test_admin_dashboard_sales_cancelled_orders_are_not_counted() -> None:
 def test_admin_dashboard_sales_invalid_dates() -> None:
     with pytest.raises(ValidationError):
         AdminSalesQueryParams(date_from=date(2026, 6, 1), date_to=date(2026, 5, 1))
+
+
+@pytest.mark.asyncio
+async def test_admin_dashboard_low_stock_success() -> None:
+    product_repository = FakeProductRepository(
+        products=[
+            build_product(product_id=55, name="Яблоки", stock_quantity=Decimal("2.5")),
+            build_product(product_id=56, name="Молоко", stock_quantity=Decimal("10"), min_quantity=Decimal("5")),
+        ],
+    )
+
+    response = await get_low_stock(product_repository=product_repository)
+
+    assert response.total == 1
+    assert response.limit == 50
+    assert response.offset == 0
+    assert response.items[0].id == 55
+    assert response.items[0].sku == "SKU-55"
+    assert response.items[0].low_stock_threshold == Decimal("5")
+
+
+@pytest.mark.asyncio
+async def test_admin_dashboard_low_stock_category_filter() -> None:
+    response = await get_low_stock(
+        query=AdminLowStockQueryParams(category_id=20),
+        product_repository=FakeProductRepository(
+            products=[
+                build_product(product_id=55, name="Яблоки", category_id=10),
+                build_product(product_id=56, name="Груши", category_id=20),
+            ],
+        ),
+    )
+
+    assert response.total == 1
+    assert response.items[0].id == 56
+
+
+@pytest.mark.asyncio
+async def test_admin_dashboard_low_stock_sorted_by_stock_quantity() -> None:
+    response = await get_low_stock(
+        product_repository=FakeProductRepository(
+            products=[
+                build_product(product_id=55, name="Яблоки", stock_quantity=Decimal("3")),
+                build_product(product_id=56, name="Груши", stock_quantity=Decimal("1")),
+                build_product(product_id=57, name="Бананы", stock_quantity=Decimal("2")),
+            ],
+        ),
+    )
+
+    assert [item.id for item in response.items] == [56, 57, 55]
+
+
+@pytest.mark.asyncio
+async def test_admin_dashboard_low_stock_from_redis_cache() -> None:
+    redis_service = FakeRedisService()
+    query = AdminLowStockQueryParams(limit=10, offset=0, category_id=10)
+    cached_response = AdminLowStockResponse(
+        items=[
+            AdminLowStockProductResponse(
+                id=55,
+                name="Яблоки",
+                sku="APL-001",
+                unit="kg",
+                product_type="weight",
+                stock_quantity=Decimal("2.5"),
+                low_stock_threshold=Decimal("5"),
+                is_available=True,
+            ),
+        ],
+        total=1,
+        limit=10,
+        offset=0,
+    )
+    query_hash = build_query_hash(query.model_dump())
+    redis_service.values[f"admin:dashboard:low_stock:{query_hash}"] = cached_response.model_dump_json()
+    product_repository = FakeProductRepository(products=[])
+
+    response = await get_low_stock(redis_service=redis_service, product_repository=product_repository, query=query)
+
+    assert response == cached_response
+    assert product_repository.low_stock_called is False
+
+
+@pytest.mark.asyncio
+async def test_admin_dashboard_low_stock_response_is_cached() -> None:
+    redis_service = FakeRedisService()
+    query = AdminLowStockQueryParams(limit=10, offset=0)
+
+    await get_low_stock(
+        redis_service=redis_service,
+        query=query,
+        product_repository=FakeProductRepository(products=[build_product(product_id=55, name="Яблоки")]),
+    )
+
+    cache_key = f"admin:dashboard:low_stock:{build_query_hash(query.model_dump())}"
+    assert cache_key in redis_service.values
+    assert redis_service.ttls[cache_key] == settings.admin_dashboard.low_stock_cache_ttl_seconds
+
+
+@pytest.mark.asyncio
+async def test_admin_dashboard_low_stock_no_permission_error() -> None:
+    with pytest.raises(AdminAuthAccessDeniedError):
+        await get_low_stock(user=build_user(role=UserRole.PICKER))
 
 
 @pytest.mark.asyncio
