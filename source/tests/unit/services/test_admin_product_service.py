@@ -18,10 +18,12 @@ from source.schemas.pydantic.admin_product import (
     AdminProductListResponse,
     AdminProductUpdateRequest,
     ProductAvailabilityUpdateRequest,
+    ProductStockUpdateRequest,
 )
 from source.services.admin_auth import PermissionService
 from source.services.admin_product import AdminProductService
 from source.services.admin_product_cache import AdminProductCacheService
+from source.services.stock import StockMovementService, StockService
 from source.utils.query_hash import build_query_hash
 from source.utils.search import normalize_search_query
 
@@ -109,6 +111,13 @@ class FakeProductRepository:
         return product
 
     async def update_availability(self, *, session, product, is_available: bool):
+        product.is_available = is_available
+        product.updated_date = datetime(2026, 5, 12, 11)
+        return product
+
+    async def update_stock(self, *, session, product, stock_quantity, low_stock_threshold, is_available: bool):
+        product.stock_quantity = stock_quantity
+        product.low_stock_threshold = low_stock_threshold
         product.is_available = is_available
         product.updated_date = datetime(2026, 5, 12, 11)
         return product
@@ -294,6 +303,15 @@ class FakeProductAvailabilityLogRepository:
         return SimpleNamespace(id=1, **data)
 
 
+class FakeStockMovementRepository:
+    def __init__(self) -> None:
+        self.logs = []
+
+    async def create(self, *, session, **data):
+        self.logs.append(data)
+        return SimpleNamespace(id=1, **data)
+
+
 class FakeProductCacheService:
     async def invalidate_all(self, *, redis_service: FakeRedisService) -> None:
         await redis_service.delete_by_pattern("products:list:*")
@@ -305,6 +323,7 @@ class FakeProductCacheService:
             await redis_service.delete_by_pattern(f"products:slug:{slug}:*")
         await redis_service.delete_by_pattern("products:list:*")
         await redis_service.delete_by_pattern("products:search:*")
+        await redis_service.delete_by_pattern("products:popular:*")
         await redis_service.delete_by_pattern("products:discounted:*")
         await redis_service.delete_by_pattern("products:new:*")
 
@@ -505,6 +524,35 @@ async def update_availability(
         permission_service=PermissionService(),
         product_repository=product_repository or build_repository(),
         product_availability_log_repository=availability_log_repository or FakeProductAvailabilityLogRepository(),
+        admin_audit_log_repository=audit_log_repository or FakeAuditLogRepository(),
+        product_cache_service=FakeProductCacheService(),
+        admin_product_cache_service=AdminProductCacheService(),
+    )
+
+
+async def update_stock(
+    *,
+    redis_service=None,
+    user=None,
+    product_repository=None,
+    stock_movement_repository=None,
+    audit_log_repository=None,
+    commiter=None,
+    data=None,
+    product_id: int = 1,
+):
+    return await AdminProductService().update_stock(
+        session=None,
+        redis_service=redis_service or FakeRedisService(),
+        user=user or build_user(),
+        product_id=product_id,
+        data=data or ProductStockUpdateRequest(stock_quantity=Decimal("25"), low_stock_threshold=Decimal("5"), operation="set", reason="Ручная корректировка"),
+        commiter=commiter or FakeCommiter(),
+        permission_service=PermissionService(),
+        product_repository=product_repository or build_repository(),
+        stock_service=StockService(),
+        stock_movement_service=StockMovementService(),
+        stock_movement_repository=stock_movement_repository or FakeStockMovementRepository(),
         admin_audit_log_repository=audit_log_repository or FakeAuditLogRepository(),
         product_cache_service=FakeProductCacheService(),
         admin_product_cache_service=AdminProductCacheService(),
@@ -935,3 +983,85 @@ async def test_admin_product_availability_log_created() -> None:
     assert availability_log_repository.logs[0]["is_available"] is False
     assert availability_log_repository.logs[0]["reason"] == "Товар временно отсутствует"
     assert audit_log_repository.logs[0]["event"] == "admin_product_availability_update"
+
+
+@pytest.mark.asyncio
+async def test_admin_product_stock_set() -> None:
+    product_repository = build_repository()
+
+    response = await update_stock(
+        product_repository=product_repository,
+        data=ProductStockUpdateRequest(stock_quantity=Decimal("25"), low_stock_threshold=Decimal("5"), operation="set"),
+    )
+
+    assert response.stock_quantity == Decimal("25")
+    assert response.low_stock_threshold == Decimal("5")
+    assert response.is_available is True
+    assert response.stock_display == "В наличии"
+    assert product_repository.products[0].stock_quantity == Decimal("25")
+
+
+@pytest.mark.asyncio
+async def test_admin_product_stock_increase() -> None:
+    response = await update_stock(
+        data=ProductStockUpdateRequest(stock_quantity=Decimal("5"), operation="increase"),
+    )
+
+    assert response.stock_quantity == Decimal("15")
+
+
+@pytest.mark.asyncio
+async def test_admin_product_stock_decrease() -> None:
+    response = await update_stock(
+        data=ProductStockUpdateRequest(stock_quantity=Decimal("4"), operation="decrease"),
+    )
+
+    assert response.stock_quantity == Decimal("6")
+
+
+@pytest.mark.asyncio
+async def test_admin_product_stock_negative_error() -> None:
+    with pytest.raises(ValueError):
+        await update_stock(data=ProductStockUpdateRequest(stock_quantity=Decimal("11"), operation="decrease"))
+
+
+@pytest.mark.asyncio
+async def test_admin_product_stock_piece_fractional_error() -> None:
+    with pytest.raises(ValueError):
+        await update_stock(product_id=2, data=ProductStockUpdateRequest(stock_quantity=Decimal("25.5"), operation="set"))
+
+
+@pytest.mark.asyncio
+async def test_admin_product_stock_log_created() -> None:
+    stock_movement_repository = FakeStockMovementRepository()
+
+    await update_stock(
+        stock_movement_repository=stock_movement_repository,
+        data=ProductStockUpdateRequest(stock_quantity=Decimal("5"), operation="increase", reason="Ручная корректировка"),
+    )
+
+    assert len(stock_movement_repository.logs) == 1
+    assert stock_movement_repository.logs[0]["product_id"] == 1
+    assert stock_movement_repository.logs[0]["operation"] == "increase"
+    assert stock_movement_repository.logs[0]["quantity"] == Decimal("5")
+    assert stock_movement_repository.logs[0]["previous_stock_quantity"] == Decimal("10")
+    assert stock_movement_repository.logs[0]["new_stock_quantity"] == Decimal("15")
+    assert stock_movement_repository.logs[0]["reason"] == "Ручная корректировка"
+
+
+@pytest.mark.asyncio
+async def test_admin_product_stock_cache_invalidated() -> None:
+    redis_service = FakeRedisService()
+
+    await update_stock(redis_service=redis_service)
+
+    assert "products:detail:1:*" in redis_service.deleted_patterns
+    assert "products:slug:product-1:*" in redis_service.deleted_patterns
+    assert "products:list:*" in redis_service.deleted_patterns
+    assert "products:search:*" in redis_service.deleted_patterns
+    assert "products:popular:*" in redis_service.deleted_patterns
+    assert "products:discounted:*" in redis_service.deleted_patterns
+    assert "admin:products:detail:1" in redis_service.deleted_patterns
+    assert "admin:products:list:*" in redis_service.deleted_patterns
+    assert "admin:dashboard:low_stock:*" in redis_service.deleted_patterns
+    assert "cart:*" in redis_service.deleted_patterns

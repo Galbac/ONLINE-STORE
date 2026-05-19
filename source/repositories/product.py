@@ -670,6 +670,23 @@ class ProductRepository:
         await session.refresh(product)
         return product
 
+    async def update_stock(
+        self,
+        *,
+        session: AsyncSession,
+        product: Product,
+        stock_quantity,
+        low_stock_threshold,
+        is_available: bool,
+    ) -> Product:
+        product.stock_quantity = stock_quantity
+        product.low_stock_threshold = low_stock_threshold
+        product.is_available = is_available
+        session.add(product)
+        await session.flush()
+        await session.refresh(product)
+        return product
+
     async def get_by_ids(
         self,
         *,

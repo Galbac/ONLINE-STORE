@@ -25,6 +25,7 @@ from source.repositories.order_item import OrderItemRepository
 from source.repositories.product import ProductRepository
 from source.repositories.product_availability_log import ProductAvailabilityLogRepository
 from source.repositories.product_image import ProductImageRepository
+from source.repositories.stock_movement import StockMovementRepository
 from source.repositories.user import UserRepository
 from source.schemas.pydantic.admin_dashboard import (
     AdminDashboardResponse,
@@ -43,6 +44,8 @@ from source.schemas.pydantic.admin_product import (
     MessageResponse,
     ProductAvailabilityResponse,
     ProductAvailabilityUpdateRequest,
+    ProductStockResponse,
+    ProductStockUpdateRequest,
 )
 from source.services.category_cache import CategoryCacheService
 from source.services.admin_auth import PermissionService
@@ -52,6 +55,7 @@ from source.services.admin_product import AdminProductService
 from source.services.admin_product_cache import AdminProductCacheService
 from source.services.product_cache import ProductCacheService
 from source.services.redis import RedisService
+from source.services.stock import StockMovementService, StockService
 
 router = APIRouter(prefix="/admin", tags=["admin-dashboard"])
 
@@ -143,6 +147,60 @@ async def get_admin_product_detail(
             discount_repository=discount_repository,
             admin_product_cache_service=admin_product_cache_service,
         )
+    except InvalidCredentialsError as error:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь не авторизован") from error
+    except AdminAuthAccessDeniedError as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Недостаточно прав") from error
+    except InactiveUserError as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Пользователь заблокирован") from error
+    except ProductNotFoundError as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Товар не найден") from error
+
+
+@router.patch("/products/{product_id}/stock", response_model=ProductStockResponse, status_code=status.HTTP_200_OK)
+@inject
+async def update_admin_product_stock(
+    payload: dict = Body(...),
+    token_payload: dict = Depends(verify_access_token),
+    current_user: User = Depends(get_current_user),
+    product_id: int = Path(ge=1),
+    session: FromDishka[AsyncSession] = None,
+    redis_service: FromDishka[RedisService] = None,
+    commiter: FromDishka[Commiter] = None,
+    admin_product_service: FromDishka[AdminProductService] = None,
+    product_cache_service: FromDishka[ProductCacheService] = None,
+    admin_product_cache_service: FromDishka[AdminProductCacheService] = None,
+    permission_service: FromDishka[PermissionService] = None,
+    product_repository: FromDishka[ProductRepository] = None,
+    stock_service: FromDishka[StockService] = None,
+    stock_movement_service: FromDishka[StockMovementService] = None,
+    stock_movement_repository: FromDishka[StockMovementRepository] = None,
+    admin_audit_log_repository: FromDishka[AdminAuditLogRepository] = None,
+) -> ProductStockResponse:
+    if token_payload.get("token_type") != "access":
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь не авторизован")
+    try:
+        return await admin_product_service.update_stock(
+            session=session,
+            redis_service=redis_service,
+            user=current_user,
+            product_id=product_id,
+            data=ProductStockUpdateRequest.model_validate(payload),
+            commiter=commiter,
+            permission_service=permission_service,
+            product_repository=product_repository,
+            stock_service=stock_service,
+            stock_movement_service=stock_movement_service,
+            stock_movement_repository=stock_movement_repository,
+            admin_audit_log_repository=admin_audit_log_repository,
+            product_cache_service=product_cache_service,
+            admin_product_cache_service=admin_product_cache_service,
+        )
+    except ValidationError as error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Неверные данные") from error
+    except ValueError as error:
+        detail = "Остаток не может быть отрицательным" if "negative" in str(error) else "Неверная операция"
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=detail) from error
     except InvalidCredentialsError as error:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь не авторизован") from error
     except AdminAuthAccessDeniedError as error:

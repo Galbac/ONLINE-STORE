@@ -42,9 +42,32 @@ def upgrade() -> None:
     )
     op.create_index(op.f("ix_product_availability_logs_product_id"), "product_availability_logs", ["product_id"], unique=False)
     op.create_index(op.f("ix_product_availability_logs_user_id"), "product_availability_logs", ["user_id"], unique=False)
+    op.create_table(
+        "stock_movements",
+        sa.Column("product_id", sa.BigInteger(), nullable=False),
+        sa.Column("user_id", sa.BigInteger(), nullable=True),
+        sa.Column("operation", sa.String(length=20), nullable=False),
+        sa.Column("quantity", sa.Numeric(12, 3), nullable=False),
+        sa.Column("previous_stock_quantity", sa.Numeric(12, 3), nullable=False),
+        sa.Column("new_stock_quantity", sa.Numeric(12, 3), nullable=False),
+        sa.Column("low_stock_threshold", sa.Numeric(12, 3), nullable=False),
+        sa.Column("reason", sa.Text(), nullable=True),
+        sa.Column("id", sa.BigInteger(), sa.Identity(), nullable=False),
+        sa.Column("created_date", sa.DateTime(timezone=True), server_default=sa.text("timezone('Europe/Moscow', now())"), nullable=False),
+        sa.Column("updated_date", sa.DateTime(timezone=True), server_default=sa.text("timezone('Europe/Moscow', now())"), nullable=False),
+        sa.ForeignKeyConstraint(["product_id"], ["products.id"], name=op.f("fk_stock_movements_product_id_products"), ondelete="CASCADE"),
+        sa.PrimaryKeyConstraint("id", name=op.f("pk_stock_movements")),
+    )
+    op.create_index(op.f("ix_stock_movements_product_id"), "stock_movements", ["product_id"], unique=False)
+    op.create_index(op.f("ix_stock_movements_user_id"), "stock_movements", ["user_id"], unique=False)
+    op.create_index(op.f("ix_stock_movements_operation"), "stock_movements", ["operation"], unique=False)
 
 
 def downgrade() -> None:
+    op.drop_index(op.f("ix_stock_movements_operation"), table_name="stock_movements")
+    op.drop_index(op.f("ix_stock_movements_user_id"), table_name="stock_movements")
+    op.drop_index(op.f("ix_stock_movements_product_id"), table_name="stock_movements")
+    op.drop_table("stock_movements")
     op.drop_index(op.f("ix_product_availability_logs_user_id"), table_name="product_availability_logs")
     op.drop_index(op.f("ix_product_availability_logs_product_id"), table_name="product_availability_logs")
     op.drop_table("product_availability_logs")

@@ -38,6 +38,7 @@ from source.repositories.product import ProductRepository
 from source.repositories.product_availability_log import ProductAvailabilityLogRepository
 from source.repositories.product_image import ProductImageRepository
 from source.repositories.promo_code import PromoCodeRepository, PromoCodeUsageRepository
+from source.repositories.stock_movement import StockMovementRepository
 from source.repositories.user import UserRepository
 from source.repositories.upload import UploadRepository
 from source.services.auth_cache import AuthCacheService
@@ -72,7 +73,7 @@ from source.services.product_cache import ProductCacheService
 from source.services.profile import ProfileService
 from source.services.profile_cache import ProfileCacheService
 from source.services.redis import RedisService
-from source.services.stock import StockService
+from source.services.stock import StockMovementService, StockService
 from source.services.promo_code import PromoCodeService
 from source.services.user import UserService
 from source.services.user_cache import UserCacheService
@@ -225,6 +226,10 @@ class AppProvider(Provider):
         ProductImageRepository,
         scope=Scope.REQUEST,
     )
+    stock_movement_repository = provide(
+        StockMovementRepository,
+        scope=Scope.REQUEST,
+    )
     cart_repository = provide(
         CartRepository,
         scope=Scope.REQUEST,
@@ -279,6 +284,10 @@ class AppProvider(Provider):
     )
     stock_service = provide(
         StockService,
+        scope=Scope.REQUEST,
+    )
+    stock_movement_service = provide(
+        StockMovementService,
         scope=Scope.REQUEST,
     )
     promo_code_service = provide(

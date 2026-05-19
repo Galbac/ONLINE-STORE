@@ -352,6 +352,7 @@ class ProductsSettings(BaseSettings):
     similar_default_limit: int = Field(default=8, alias="PRODUCT_SIMILAR_DEFAULT_LIMIT")
     list_default_limit: int = Field(default=24, alias="PRODUCTS_LIST_DEFAULT_LIMIT")
     list_max_limit: int = Field(default=100, alias="PRODUCTS_LIST_MAX_LIMIT")
+    piece_stock_integer_required: bool = Field(default=True, alias="PRODUCT_PIECE_STOCK_INTEGER_REQUIRED")
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

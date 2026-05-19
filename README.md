@@ -28,3 +28,7 @@ curl http://localhost:8000/health
 docker compose -f docker-compose.dev.yml down
 docker compose -f docker-compose.prod.yml down
 ```
+
+## Admin Products
+
+Ручные изменения остатков через `PATCH /api/admin/products/{product_id}/stock` могут быть перезаписаны следующей синхронизацией с 1С.

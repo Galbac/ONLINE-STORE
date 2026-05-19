@@ -1,5 +1,6 @@
 from decimal import Decimal
 
+from source.config.settings import settings
 from source.db.models.product import Product
 from source.errors.auth import (
     CartInsufficientStockError,
@@ -11,6 +12,36 @@ from source.utils.cart import is_quantity_valid_for_step
 
 
 class StockService:
+    def calculate_new_stock(
+        self,
+        *,
+        current_stock: Decimal,
+        quantity: Decimal,
+        operation: str,
+    ) -> Decimal:
+        match operation:
+            case "set":
+                new_stock = quantity
+            case "increase":
+                new_stock = current_stock + quantity
+            case "decrease":
+                new_stock = current_stock - quantity
+            case _:
+                raise ValueError("Invalid stock operation")
+        if new_stock < 0:
+            raise ValueError("Stock quantity cannot be negative")
+        return new_stock
+
+    def validate_stock_quantity(self, *, product: Product, stock_quantity: Decimal) -> None:
+        if stock_quantity < 0:
+            raise ValueError("Stock quantity cannot be negative")
+        if (
+            settings.products.piece_stock_integer_required
+            and product.product_type == "piece"
+            and stock_quantity != stock_quantity.to_integral_value()
+        ):
+            raise ValueError("Stock quantity must be integer for piece products")
+
     def validate_quantity(self, *, product: Product, quantity: Decimal) -> None:
         if product.product_type == "piece" and quantity != quantity.to_integral_value():
             raise CartPieceQuantityMustBeIntegerError
@@ -60,4 +91,32 @@ class StockService:
             session=session,
             products_by_id=products_by_id,
             order_items=order_items,
+        )
+
+
+class StockMovementService:
+    async def create_log(
+        self,
+        *,
+        session,
+        stock_movement_repository,
+        product_id: int,
+        user_id: int,
+        operation: str,
+        quantity: Decimal,
+        previous_stock_quantity: Decimal,
+        new_stock_quantity: Decimal,
+        low_stock_threshold: Decimal,
+        reason: str | None,
+    ):
+        return await stock_movement_repository.create(
+            session=session,
+            product_id=product_id,
+            user_id=user_id,
+            operation=operation,
+            quantity=quantity,
+            previous_stock_quantity=previous_stock_quantity,
+            new_stock_quantity=new_stock_quantity,
+            low_stock_threshold=low_stock_threshold,
+            reason=reason,
         )

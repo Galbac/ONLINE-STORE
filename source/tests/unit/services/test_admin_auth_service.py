@@ -199,6 +199,7 @@ async def test_admin_login_success_admin() -> None:
         "admin:products:create",
         "admin:products:update",
         "admin:products:delete",
+        "admin:products:stock:update",
         "admin:products:manage",
         "admin:orders:manage",
     ]
@@ -217,6 +218,7 @@ async def test_admin_login_success_manager() -> None:
     assert "admin:products:create" in response.user.permissions
     assert "admin:products:update" in response.user.permissions
     assert "admin:products:delete" in response.user.permissions
+    assert "admin:products:stock:update" in response.user.permissions
     assert "admin:orders:manage" in response.user.permissions
 
 

@@ -23,9 +23,12 @@ from source.schemas.pydantic.admin_product import (
     MessageResponse,
     ProductAvailabilityResponse,
     ProductAvailabilityUpdateRequest,
+    ProductStockResponse,
+    ProductStockUpdateRequest,
 )
 from source.services.admin_auth import STAFF_ROLES
 from source.services.redis import RedisService
+from source.utils.product import build_stock_display
 from source.utils.query_hash import build_query_hash
 from source.utils.search import normalize_search_query
 
@@ -61,6 +64,14 @@ class AdminProductService:
         if user.role not in STAFF_ROLES:
             raise AdminAuthAccessDeniedError
         if "admin:products:delete" not in permission_service.get_user_permissions(role=user.role):
+            raise AdminAuthAccessDeniedError
+
+    def _check_stock_update_permission(self, *, user, permission_service) -> None:
+        if not user.is_active or user.is_deleted:
+            raise InactiveUserError
+        if user.role not in STAFF_ROLES:
+            raise AdminAuthAccessDeniedError
+        if "admin:products:stock:update" not in permission_service.get_user_permissions(role=user.role):
             raise AdminAuthAccessDeniedError
 
     def _validate_quantities(
@@ -528,5 +539,102 @@ class AdminProductService:
             id=updated_product.id,
             is_available=updated_product.is_available,
             reason=data.reason,
+            updated_at=updated_product.updated_date,
+        )
+
+    async def update_stock(
+        self,
+        *,
+        session,
+        redis_service: RedisService,
+        user,
+        product_id: int,
+        data: ProductStockUpdateRequest,
+        commiter,
+        permission_service,
+        product_repository,
+        stock_service,
+        stock_movement_service,
+        stock_movement_repository,
+        admin_audit_log_repository,
+        product_cache_service,
+        admin_product_cache_service,
+    ) -> ProductStockResponse:
+        self._check_stock_update_permission(user=user, permission_service=permission_service)
+
+        row = await product_repository.admin_get_by_id(session=session, product_id=product_id)
+        if row is None:
+            raise ProductNotFoundError
+        product, _category = row
+
+        previous_stock_quantity = product.stock_quantity
+        stock_service.validate_stock_quantity(product=product, stock_quantity=data.stock_quantity)
+        new_stock_quantity = stock_service.calculate_new_stock(
+            current_stock=product.stock_quantity,
+            quantity=data.stock_quantity,
+            operation=data.operation,
+        )
+        stock_service.validate_stock_quantity(product=product, stock_quantity=new_stock_quantity)
+        low_stock_threshold = data.low_stock_threshold if data.low_stock_threshold is not None else product.low_stock_threshold
+        is_available = False if new_stock_quantity <= 0 else product.is_available
+
+        updated_product = await product_repository.update_stock(
+            session=session,
+            product=product,
+            stock_quantity=new_stock_quantity,
+            low_stock_threshold=low_stock_threshold,
+            is_available=is_available,
+        )
+        await stock_movement_service.create_log(
+            session=session,
+            stock_movement_repository=stock_movement_repository,
+            product_id=updated_product.id,
+            user_id=user.id,
+            operation=data.operation,
+            quantity=data.stock_quantity,
+            previous_stock_quantity=previous_stock_quantity,
+            new_stock_quantity=updated_product.stock_quantity,
+            low_stock_threshold=updated_product.low_stock_threshold,
+            reason=data.reason,
+        )
+        await admin_audit_log_repository.create(
+            session=session,
+            user_id=user.id,
+            login=getattr(user, "email", None) or getattr(user, "phone", None) or str(user.id),
+            event="admin_product_stock_update",
+            status="success",
+            details={
+                "product_id": updated_product.id,
+                "operation": data.operation,
+                "quantity": str(data.stock_quantity),
+                "previous_stock_quantity": str(previous_stock_quantity),
+                "new_stock_quantity": str(updated_product.stock_quantity),
+                "low_stock_threshold": str(updated_product.low_stock_threshold),
+                "reason": data.reason,
+            },
+        )
+        await commiter.commit()
+
+        await product_cache_service.invalidate_product(
+            redis_service=redis_service,
+            product_id=updated_product.id,
+            slug=updated_product.slug,
+        )
+        await admin_product_cache_service.invalidate_product(
+            redis_service=redis_service,
+            product_id=updated_product.id,
+        )
+        await redis_service.delete_by_pattern("admin:dashboard:low_stock:*")
+        await redis_service.delete_by_pattern("cart:*")
+
+        return ProductStockResponse(
+            id=updated_product.id,
+            stock_quantity=updated_product.stock_quantity,
+            low_stock_threshold=updated_product.low_stock_threshold,
+            is_available=updated_product.is_available,
+            stock_display=build_stock_display(
+                is_available=updated_product.is_available,
+                stock_quantity=updated_product.stock_quantity,
+            ),
             updated_at=updated_product.updated_date,
         )

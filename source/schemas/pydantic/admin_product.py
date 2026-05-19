@@ -10,6 +10,7 @@ from source.schemas.pydantic.product import ProductType
 
 
 AdminProductSort = Literal["newest", "name_asc", "price_asc", "stock_asc"]
+ProductStockOperation = Literal["set", "increase", "decrease"]
 
 
 class AdminProductListQueryParams(BaseModel):
@@ -132,6 +133,21 @@ class ProductAvailabilityUpdateRequest(BaseModel):
         return self
 
 
+class ProductStockUpdateRequest(BaseModel):
+    stock_quantity: Decimal = Field(ge=0)
+    low_stock_threshold: Decimal | None = Field(default=None, ge=0)
+    operation: ProductStockOperation = "set"
+    reason: str | None = Field(default=None, max_length=500)
+
+    @model_validator(mode="after")
+    def normalize_reason(self) -> "ProductStockUpdateRequest":
+        if self.reason is not None:
+            self.reason = self.reason.strip()
+            if not self.reason:
+                self.reason = None
+        return self
+
+
 class AdminProductCategoryResponse(BaseModel):
     id: int
     name: str
@@ -204,6 +220,15 @@ class ProductAvailabilityResponse(BaseModel):
     id: int
     is_available: bool
     reason: str | None = None
+    updated_at: datetime
+
+
+class ProductStockResponse(BaseModel):
+    id: int
+    stock_quantity: Decimal
+    low_stock_threshold: Decimal
+    is_available: bool
+    stock_display: str
     updated_at: datetime
 
 
