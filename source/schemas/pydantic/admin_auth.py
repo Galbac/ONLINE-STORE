@@ -32,6 +32,10 @@ class AdminUserResponse(BaseModel):
     permissions: list[str]
 
 
+class AdminMeResponse(AdminUserResponse):
+    is_active: bool
+
+
 class AdminAuthResponse(BaseModel):
     user: AdminUserResponse
     access_token: str

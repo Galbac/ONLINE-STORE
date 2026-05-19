@@ -9,12 +9,20 @@ from source.db.models.choises.enum import UserRole
 from source.errors.auth import (
     AdminAuthAccessDeniedError,
     AdminAuthRateLimitExceededError,
+    AdminCurrentUserNotFoundError,
     InactiveUserError,
     InvalidCredentialsError,
     RefreshTokenAlreadyRevokedError,
     RefreshTokenNotFoundError,
 )
-from source.schemas.pydantic.admin_auth import AdminAuthResponse, AdminLoginRequest, AdminLogoutRequest, AdminUserResponse, MessageResponse
+from source.schemas.pydantic.admin_auth import (
+    AdminAuthResponse,
+    AdminLoginRequest,
+    AdminLogoutRequest,
+    AdminMeResponse,
+    AdminUserResponse,
+    MessageResponse,
+)
 from source.services.auth import AuthService
 from source.services.redis import RedisService
 
@@ -161,6 +169,11 @@ class AuditLogService:
             user_agent=user_agent,
             details=details or {},
         )
+
+
+class PermissionService:
+    def get_user_permissions(self, *, role: UserRole) -> list[str]:
+        return ADMIN_PERMISSIONS_BY_ROLE.get(role, [])
 
 
 class AdminAuthService:
@@ -342,6 +355,52 @@ class AdminAuthService:
             user_agent=user_agent,
         )
         return MessageResponse(message="Вы успешно вышли из админ-панели")
+
+    async def get_me(
+        self,
+        *,
+        session,
+        redis_service: RedisService,
+        user_id: int,
+        token_payload: dict,
+        user_repository,
+        admin_auth_cache_service,
+        permission_service: PermissionService,
+    ) -> AdminMeResponse:
+        if token_payload.get("token_type") != "access":
+            raise InvalidCredentialsError
+
+        cached_user = await admin_auth_cache_service.get_me(
+            redis_service=redis_service,
+            user_id=user_id,
+        )
+        if cached_user is not None:
+            return cached_user
+
+        user = await user_repository.get_by_id(session=session, user_id=user_id)
+        if user is None:
+            raise AdminCurrentUserNotFoundError
+        if not user.is_active or user.is_deleted:
+            raise InactiveUserError
+        if user.role not in STAFF_ROLES:
+            raise AdminAuthAccessDeniedError
+
+        response = AdminMeResponse(
+            id=user.id,
+            name=user.name,
+            email=user.email,
+            phone=user.phone,
+            role=user.role,
+            permissions=permission_service.get_user_permissions(role=user.role),
+            is_active=user.is_active,
+        )
+        await admin_auth_cache_service.set_me(
+            redis_service=redis_service,
+            user_id=user.id,
+            response=response,
+            ttl_seconds=settings.admin_auth.me_cache_ttl_seconds,
+        )
+        return response
 
     def get_permissions_for_role(self, role: UserRole) -> list[str]:
         return ADMIN_PERMISSIONS_BY_ROLE.get(role, [])

@@ -39,7 +39,8 @@ from source.repositories.promo_code import PromoCodeRepository, PromoCodeUsageRe
 from source.repositories.user import UserRepository
 from source.repositories.upload import UploadRepository
 from source.services.auth_cache import AuthCacheService
-from source.services.admin_auth import AdminAuthService, AuditLogService, JwtBlacklistService, JwtService, RateLimitService
+from source.services.admin_auth import AdminAuthService, AuditLogService, JwtBlacklistService, JwtService, PermissionService, RateLimitService
+from source.services.admin_auth_cache import AdminAuthCacheService
 from source.services.auth import AuthService
 from source.services.cart import CartCalculatorService, CartService
 from source.services.cart_cache import CartCacheService
@@ -362,6 +363,10 @@ class AppProvider(Provider):
         AdminAuthService,
         scope=Scope.REQUEST,
     )
+    admin_auth_cache_service = provide(
+        AdminAuthCacheService,
+        scope=Scope.REQUEST,
+    )
     jwt_service = provide(
         JwtService,
         scope=Scope.REQUEST,
@@ -376,6 +381,10 @@ class AppProvider(Provider):
     )
     audit_log_service = provide(
         AuditLogService,
+        scope=Scope.REQUEST,
+    )
+    permission_service = provide(
+        PermissionService,
         scope=Scope.REQUEST,
     )
 

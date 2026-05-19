@@ -8,6 +8,7 @@ from source.db.models.user import User
 from source.errors.auth import (
     AdminAuthAccessDeniedError,
     AdminAuthRateLimitExceededError,
+    AdminCurrentUserNotFoundError,
     InactiveUserError,
     InvalidCredentialsError,
     RefreshTokenAlreadyRevokedError,
@@ -16,11 +17,43 @@ from source.errors.auth import (
 from source.repositories.admin_audit_log import AdminAuditLogRepository
 from source.repositories.refresh_token import RefreshTokenRepository
 from source.repositories.user import UserRepository
-from source.schemas.pydantic.admin_auth import AdminAuthResponse, AdminLoginRequest, AdminLogoutRequest, MessageResponse
-from source.services.admin_auth import AdminAuthService, AuditLogService, JwtBlacklistService, JwtService, RateLimitService
+from source.schemas.pydantic.admin_auth import AdminAuthResponse, AdminLoginRequest, AdminLogoutRequest, AdminMeResponse, MessageResponse
+from source.services.admin_auth import AdminAuthService, AuditLogService, JwtBlacklistService, JwtService, PermissionService, RateLimitService
+from source.services.admin_auth_cache import AdminAuthCacheService
 from source.services.redis import RedisService
 
 router = APIRouter(prefix="/admin/auth", tags=["admin-auth"])
+
+
+@router.get("/me", response_model=AdminMeResponse, status_code=status.HTTP_200_OK)
+@inject
+async def admin_me(
+    token_payload: dict = Depends(verify_access_token),
+    session: FromDishka[AsyncSession] = None,
+    redis_service: FromDishka[RedisService] = None,
+    admin_auth_service: FromDishka[AdminAuthService] = None,
+    user_repository: FromDishka[UserRepository] = None,
+    admin_auth_cache_service: FromDishka[AdminAuthCacheService] = None,
+    permission_service: FromDishka[PermissionService] = None,
+) -> AdminMeResponse:
+    try:
+        return await admin_auth_service.get_me(
+            session=session,
+            redis_service=redis_service,
+            user_id=int(token_payload["user_id"]),
+            token_payload=token_payload,
+            user_repository=user_repository,
+            admin_auth_cache_service=admin_auth_cache_service,
+            permission_service=permission_service,
+        )
+    except InvalidCredentialsError as error:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь не авторизован") from error
+    except AdminAuthAccessDeniedError as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Доступ в админку запрещён") from error
+    except InactiveUserError as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Пользователь заблокирован") from error
+    except AdminCurrentUserNotFoundError as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Пользователь не найден") from error
 
 
 @router.post("/login", response_model=AdminAuthResponse, status_code=status.HTTP_200_OK)

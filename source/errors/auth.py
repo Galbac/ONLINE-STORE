@@ -58,6 +58,10 @@ class CurrentUserNotFoundError(Exception):
     pass
 
 
+class AdminCurrentUserNotFoundError(Exception):
+    pass
+
+
 class EmptyUserProfileUpdateError(Exception):
     pass
 

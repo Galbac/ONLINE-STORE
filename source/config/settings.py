@@ -203,6 +203,7 @@ class AdminAuthSettings(BaseSettings):
     login_failed_window_seconds: int = Field(default=900, alias="ADMIN_LOGIN_FAILED_WINDOW_SECONDS")
     access_expire_minutes: int = Field(default=30, alias="JWT_ACCESS_EXPIRE_MINUTES")
     refresh_expire_days: int = Field(default=30, alias="JWT_REFRESH_EXPIRE_DAYS")
+    me_cache_ttl_seconds: int = Field(default=120, alias="ADMIN_AUTH_ME_CACHE_TTL_SECONDS")
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

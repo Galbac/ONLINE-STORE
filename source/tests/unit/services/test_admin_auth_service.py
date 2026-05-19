@@ -9,12 +9,14 @@ from source.db.models.choises.enum import UserRole
 from source.errors.auth import (
     AdminAuthAccessDeniedError,
     AdminAuthRateLimitExceededError,
+    AdminCurrentUserNotFoundError,
     InactiveUserError,
     InvalidCredentialsError,
     RefreshTokenAlreadyRevokedError,
 )
-from source.schemas.pydantic.admin_auth import AdminLoginRequest, AdminLogoutRequest
-from source.services.admin_auth import AdminAuthService, AuditLogService, JwtBlacklistService, JwtService, RateLimitService
+from source.schemas.pydantic.admin_auth import AdminLoginRequest, AdminLogoutRequest, AdminMeResponse
+from source.services.admin_auth import AdminAuthService, AuditLogService, JwtBlacklistService, JwtService, PermissionService, RateLimitService
+from source.services.admin_auth_cache import AdminAuthCacheService
 from source.services.auth import AuthService
 
 
@@ -55,6 +57,9 @@ class FakeUserRepository:
     async def get_by_phone(self, *, session, phone: str):
         self.requested_phone = phone
         return self.user if self.user and self.user.phone == phone else None
+
+    async def get_by_id(self, *, session, user_id: int):
+        return self.user if self.user and self.user.id == user_id else None
 
 
 class FakeRefreshTokenRepository:
@@ -153,6 +158,19 @@ async def logout(
         audit_log_repository=audit_log_repository or FakeAuditLogRepository(),
         ip_address="127.0.0.1",
         user_agent="pytest",
+    )
+
+
+async def get_me(*, user=DEFAULT_USER, redis_service=None, token_payload=None):
+    repository_user = build_user() if user is DEFAULT_USER else user
+    return await AdminAuthService().get_me(
+        session=None,
+        redis_service=redis_service or FakeRedisService(),
+        user_id=1,
+        token_payload=token_payload or build_access_payload(),
+        user_repository=FakeUserRepository(repository_user),
+        admin_auth_cache_service=AdminAuthCacheService(),
+        permission_service=PermissionService(),
     )
 
 
@@ -311,3 +329,61 @@ async def test_admin_logout_refresh_token_not_found_error() -> None:
 
     with pytest.raises(RefreshTokenNotFoundError):
         await logout(refresh_token_repository=FakeRefreshTokenRepository(token=None))
+
+
+@pytest.mark.asyncio
+async def test_admin_get_me_success() -> None:
+    response = await get_me()
+
+    assert response.id == 1
+    assert response.role == UserRole.ADMIN
+    assert response.is_active is True
+    assert "admin:dashboard:read" in response.permissions
+
+
+@pytest.mark.asyncio
+async def test_admin_get_me_from_redis_cache() -> None:
+    redis_service = FakeRedisService()
+    cached_response = AdminMeResponse(
+        id=1,
+        name="Администратор",
+        email="admin@example.com",
+        phone="+79990000000",
+        role=UserRole.ADMIN,
+        permissions=["admin:dashboard:read"],
+        is_active=True,
+    )
+    redis_service.values["admin:auth:me:1"] = cached_response.model_dump_json()
+
+    response = await get_me(user=None, redis_service=redis_service)
+
+    assert response == cached_response
+
+
+@pytest.mark.asyncio
+async def test_admin_get_me_customer_role_error() -> None:
+    with pytest.raises(AdminAuthAccessDeniedError):
+        await get_me(user=build_user(role=UserRole.CUSTOMER))
+
+
+@pytest.mark.asyncio
+async def test_admin_get_me_blocked_user_error() -> None:
+    with pytest.raises(InactiveUserError):
+        await get_me(user=build_user(is_active=False))
+
+
+@pytest.mark.asyncio
+async def test_admin_get_me_password_hash_not_returned() -> None:
+    response = await get_me()
+
+    assert "password_hash" not in response.model_dump()
+
+
+@pytest.mark.asyncio
+async def test_admin_get_me_response_is_cached() -> None:
+    redis_service = FakeRedisService()
+
+    await get_me(redis_service=redis_service)
+
+    assert "admin:auth:me:1" in redis_service.values
+    assert redis_service.ttls["admin:auth:me:1"] == settings.admin_auth.me_cache_ttl_seconds
