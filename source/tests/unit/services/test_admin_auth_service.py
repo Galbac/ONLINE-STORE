@@ -1,13 +1,20 @@
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
+from hashlib import sha256
 from types import SimpleNamespace
 
 import pytest
 
 from source.config.settings import settings
 from source.db.models.choises.enum import UserRole
-from source.errors.auth import AdminAuthAccessDeniedError, AdminAuthRateLimitExceededError, InactiveUserError, InvalidCredentialsError
-from source.schemas.pydantic.admin_auth import AdminLoginRequest
-from source.services.admin_auth import AdminAuthService, AuditLogService, JwtService, RateLimitService
+from source.errors.auth import (
+    AdminAuthAccessDeniedError,
+    AdminAuthRateLimitExceededError,
+    InactiveUserError,
+    InvalidCredentialsError,
+    RefreshTokenAlreadyRevokedError,
+)
+from source.schemas.pydantic.admin_auth import AdminLoginRequest, AdminLogoutRequest
+from source.services.admin_auth import AdminAuthService, AuditLogService, JwtBlacklistService, JwtService, RateLimitService
 from source.services.auth import AuthService
 
 
@@ -29,6 +36,11 @@ class FakeRedisService:
     async def expire(self, key: str, ttl_seconds: int) -> None:
         self.ttls[key] = ttl_seconds
 
+    async def set(self, key: str, value: str, *, ttl_seconds: int | None = None) -> None:
+        self.values[key] = value
+        if ttl_seconds is not None:
+            self.ttls[key] = ttl_seconds
+
 
 class FakeUserRepository:
     def __init__(self, user=None) -> None:
@@ -46,12 +58,22 @@ class FakeUserRepository:
 
 
 class FakeRefreshTokenRepository:
-    def __init__(self) -> None:
+    def __init__(self, token=None) -> None:
+        self.token = token
         self.created = []
+        self.revoked = []
 
     async def create(self, *, session, user_id: int, token_hash: str, expires_at: datetime):
         self.created.append({"user_id": user_id, "token_hash": token_hash, "expires_at": expires_at})
         return SimpleNamespace(id=len(self.created), user_id=user_id, token_hash=token_hash, expires_at=expires_at)
+
+    async def get_by_hash(self, *, session, token_hash: str):
+        return self.token if self.token and self.token.token_hash == token_hash else None
+
+    async def revoke(self, *, session, refresh_token, revoked_at: datetime):
+        refresh_token.revoked_at = revoked_at
+        self.revoked.append(refresh_token)
+        return refresh_token
 
 
 class FakeAuditLogRepository:
@@ -98,6 +120,50 @@ async def login(
         ip_address="127.0.0.1",
         user_agent="pytest",
     )
+
+
+async def logout(
+    *,
+    user=None,
+    refresh_token: str = "refresh-token",
+    refresh_token_user_id: int = 1,
+    revoked_at=None,
+    redis_service=None,
+    token_payload=None,
+    refresh_token_repository=None,
+    audit_log_repository=None,
+):
+    user = user or build_user()
+    token = SimpleNamespace(
+        id=1,
+        user_id=refresh_token_user_id,
+        token_hash=sha256(refresh_token.encode("utf-8")).hexdigest(),
+        revoked_at=revoked_at,
+    )
+    repository = refresh_token_repository or FakeRefreshTokenRepository(token=token)
+    return await AdminAuthService().logout(
+        session=None,
+        redis_service=redis_service or FakeRedisService(),
+        user=user,
+        data=AdminLogoutRequest(refresh_token=refresh_token),
+        token_payload=token_payload or build_access_payload(user_id=user.id, role=user.role),
+        refresh_token_repository=repository,
+        jwt_blacklist_service=JwtBlacklistService(),
+        audit_log_service=AuditLogService(),
+        audit_log_repository=audit_log_repository or FakeAuditLogRepository(),
+        ip_address="127.0.0.1",
+        user_agent="pytest",
+    )
+
+
+def build_access_payload(*, user_id: int = 1, role=UserRole.ADMIN, jti: str = "access-jti") -> dict:
+    return {
+        "user_id": user_id,
+        "role": role.value,
+        "token_type": "access",
+        "jti": jti,
+        "exp": int((datetime.now(UTC) + timedelta(minutes=10)).timestamp()),
+    }
 
 
 @pytest.mark.asyncio
@@ -186,3 +252,62 @@ async def test_admin_login_password_hash_not_returned() -> None:
     response = await login()
 
     assert "password_hash" not in response.model_dump()["user"]
+
+
+@pytest.mark.asyncio
+async def test_admin_logout_success() -> None:
+    audit_repository = FakeAuditLogRepository()
+    refresh_repository = FakeRefreshTokenRepository(
+        token=SimpleNamespace(
+            id=1,
+            user_id=1,
+            token_hash=sha256("refresh-token".encode("utf-8")).hexdigest(),
+            revoked_at=None,
+        ),
+    )
+
+    response = await logout(refresh_token_repository=refresh_repository, audit_log_repository=audit_repository)
+
+    assert response.message == "Вы успешно вышли из админ-панели"
+    assert refresh_repository.revoked[0].revoked_at is not None
+    assert audit_repository.logs[0]["event"] == "admin_logout"
+    assert audit_repository.logs[0]["status"] == "success"
+
+
+@pytest.mark.asyncio
+async def test_admin_logout_foreign_refresh_token_error() -> None:
+    audit_repository = FakeAuditLogRepository()
+
+    with pytest.raises(AdminAuthAccessDeniedError):
+        await logout(refresh_token_user_id=2, audit_log_repository=audit_repository)
+
+    assert audit_repository.logs[0]["status"] == "forbidden"
+
+
+@pytest.mark.asyncio
+async def test_admin_logout_already_revoked_token_error() -> None:
+    audit_repository = FakeAuditLogRepository()
+
+    with pytest.raises(RefreshTokenAlreadyRevokedError):
+        await logout(revoked_at=datetime.now(UTC), audit_log_repository=audit_repository)
+
+    assert audit_repository.logs[0]["status"] == "failed"
+
+
+@pytest.mark.asyncio
+async def test_admin_logout_adds_access_token_to_blacklist(monkeypatch) -> None:
+    monkeypatch.setattr(settings.change_password, "jwt_access_blacklist_enabled", True)
+    redis_service = FakeRedisService()
+
+    await logout(redis_service=redis_service, token_payload=build_access_payload(jti="logout-jti"))
+
+    assert redis_service.values["auth:blacklist:access:logout-jti"] == "revoked"
+    assert redis_service.ttls["auth:blacklist:access:logout-jti"] > 0
+
+
+@pytest.mark.asyncio
+async def test_admin_logout_refresh_token_not_found_error() -> None:
+    from source.errors.auth import RefreshTokenNotFoundError
+
+    with pytest.raises(RefreshTokenNotFoundError):
+        await logout(refresh_token_repository=FakeRefreshTokenRepository(token=None))

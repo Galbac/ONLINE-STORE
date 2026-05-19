@@ -37,3 +37,11 @@ class AdminAuthResponse(BaseModel):
     access_token: str
     refresh_token: str
     token_type: str = "bearer"
+
+
+class AdminLogoutRequest(BaseModel):
+    refresh_token: str = Field(min_length=1)
+
+
+class MessageResponse(BaseModel):
+    message: str

@@ -39,7 +39,7 @@ from source.repositories.promo_code import PromoCodeRepository, PromoCodeUsageRe
 from source.repositories.user import UserRepository
 from source.repositories.upload import UploadRepository
 from source.services.auth_cache import AuthCacheService
-from source.services.admin_auth import AdminAuthService, AuditLogService, JwtService, RateLimitService
+from source.services.admin_auth import AdminAuthService, AuditLogService, JwtBlacklistService, JwtService, RateLimitService
 from source.services.auth import AuthService
 from source.services.cart import CartCalculatorService, CartService
 from source.services.cart_cache import CartCacheService
@@ -364,6 +364,10 @@ class AppProvider(Provider):
     )
     jwt_service = provide(
         JwtService,
+        scope=Scope.REQUEST,
+    )
+    jwt_blacklist_service = provide(
+        JwtBlacklistService,
         scope=Scope.REQUEST,
     )
     rate_limit_service = provide(

@@ -6,8 +6,15 @@ from jose import jwt
 
 from source.config.settings import settings
 from source.db.models.choises.enum import UserRole
-from source.errors.auth import AdminAuthAccessDeniedError, AdminAuthRateLimitExceededError, InactiveUserError, InvalidCredentialsError
-from source.schemas.pydantic.admin_auth import AdminAuthResponse, AdminLoginRequest, AdminUserResponse
+from source.errors.auth import (
+    AdminAuthAccessDeniedError,
+    AdminAuthRateLimitExceededError,
+    InactiveUserError,
+    InvalidCredentialsError,
+    RefreshTokenAlreadyRevokedError,
+    RefreshTokenNotFoundError,
+)
+from source.schemas.pydantic.admin_auth import AdminAuthResponse, AdminLoginRequest, AdminLogoutRequest, AdminUserResponse, MessageResponse
 from source.services.auth import AuthService
 from source.services.redis import RedisService
 
@@ -93,6 +100,21 @@ class RateLimitService:
         return f"admin:auth:failed:{login}"
 
 
+class JwtBlacklistService:
+    async def blacklist_access_token(self, *, redis_service: RedisService, token_payload: dict) -> None:
+        if not settings.change_password.jwt_access_blacklist_enabled:
+            return
+
+        jti = token_payload.get("jti")
+        exp = token_payload.get("exp")
+        if not jti or not isinstance(exp, int):
+            return
+
+        ttl_seconds = exp - int(datetime.now(UTC).timestamp())
+        if ttl_seconds > 0:
+            await redis_service.set(f"auth:blacklist:access:{jti}", "revoked", ttl_seconds=ttl_seconds)
+
+
 class AuditLogService:
     async def log_admin_login(
         self,
@@ -111,6 +133,29 @@ class AuditLogService:
             user_id=user_id,
             login=login,
             event="admin_login",
+            status=status,
+            ip_address=ip_address,
+            user_agent=user_agent,
+            details=details or {},
+        )
+
+    async def log_admin_logout(
+        self,
+        *,
+        session,
+        audit_log_repository,
+        user_id: int,
+        login: str,
+        status: str,
+        ip_address: str | None = None,
+        user_agent: str | None = None,
+        details: dict | None = None,
+    ) -> None:
+        await audit_log_repository.create(
+            session=session,
+            user_id=user_id,
+            login=login,
+            event="admin_logout",
             status=status,
             ip_address=ip_address,
             user_agent=user_agent,
@@ -217,6 +262,86 @@ class AdminAuthService:
             access_token=access_token,
             refresh_token=refresh_token,
         )
+
+    async def logout(
+        self,
+        *,
+        session,
+        redis_service: RedisService,
+        user,
+        data: AdminLogoutRequest,
+        token_payload: dict,
+        refresh_token_repository,
+        jwt_blacklist_service: JwtBlacklistService,
+        audit_log_service: AuditLogService,
+        audit_log_repository,
+        ip_address: str | None = None,
+        user_agent: str | None = None,
+    ) -> MessageResponse:
+        if token_payload.get("token_type") != "access":
+            raise InvalidCredentialsError
+        if user.role not in STAFF_ROLES:
+            raise AdminAuthAccessDeniedError
+
+        login = user.email or user.phone
+        token_hash = sha256(data.refresh_token.encode("utf-8")).hexdigest()
+        refresh_token = await refresh_token_repository.get_by_hash(session=session, token_hash=token_hash)
+        if refresh_token is None:
+            await audit_log_service.log_admin_logout(
+                session=session,
+                audit_log_repository=audit_log_repository,
+                user_id=user.id,
+                login=login,
+                status="failed",
+                ip_address=ip_address,
+                user_agent=user_agent,
+                details={"reason": "refresh_token_not_found"},
+            )
+            raise RefreshTokenNotFoundError
+        if refresh_token.user_id != user.id:
+            await audit_log_service.log_admin_logout(
+                session=session,
+                audit_log_repository=audit_log_repository,
+                user_id=user.id,
+                login=login,
+                status="forbidden",
+                ip_address=ip_address,
+                user_agent=user_agent,
+                details={"reason": "refresh_token_owner_mismatch"},
+            )
+            raise AdminAuthAccessDeniedError
+        if refresh_token.revoked_at is not None:
+            await audit_log_service.log_admin_logout(
+                session=session,
+                audit_log_repository=audit_log_repository,
+                user_id=user.id,
+                login=login,
+                status="failed",
+                ip_address=ip_address,
+                user_agent=user_agent,
+                details={"reason": "refresh_token_revoked"},
+            )
+            raise RefreshTokenAlreadyRevokedError
+
+        await refresh_token_repository.revoke(
+            session=session,
+            refresh_token=refresh_token,
+            revoked_at=datetime.now(UTC),
+        )
+        await jwt_blacklist_service.blacklist_access_token(
+            redis_service=redis_service,
+            token_payload=token_payload,
+        )
+        await audit_log_service.log_admin_logout(
+            session=session,
+            audit_log_repository=audit_log_repository,
+            user_id=user.id,
+            login=login,
+            status="success",
+            ip_address=ip_address,
+            user_agent=user_agent,
+        )
+        return MessageResponse(message="Вы успешно вышли из админ-панели")
 
     def get_permissions_for_role(self, role: UserRole) -> list[str]:
         return ADMIN_PERMISSIONS_BY_ROLE.get(role, [])
