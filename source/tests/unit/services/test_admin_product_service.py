@@ -99,6 +99,14 @@ class FakeProductRepository:
         product.updated_date = datetime(2026, 5, 12, 11)
         return product
 
+    async def soft_delete(self, *, session, product, deleted_at: datetime, deleted_by: int):
+        product.is_deleted = True
+        product.is_active = False
+        product.is_available = False
+        product.deleted_at = deleted_at
+        product.deleted_by = deleted_by
+        return product
+
     def _filter(self, *, query: AdminProductListQueryParams):
         products = [product for product in self.products if not product.is_deleted]
         if query.q is not None:
@@ -211,6 +219,8 @@ def build_product(
         is_active=is_active,
         is_available=is_available,
         is_deleted=is_deleted,
+        deleted_at=None,
+        deleted_by=None,
         sync_status=sync_status,
         external_1c_id=external_1c_id,
         meta_title="SEO title",
@@ -308,6 +318,14 @@ class FakeDiscountRepository:
     async def get_by_product_id(self, *, session, product_id: int):
         self.called = True
         return []
+
+
+class FakeOrderItemRepository:
+    def __init__(self, *, has_active_order: bool = False) -> None:
+        self.has_active_order = has_active_order
+
+    async def exists_active_order_by_product_id(self, *, session, product_id: int):
+        return self.has_active_order
 
 
 async def get_products(
@@ -420,6 +438,31 @@ async def update_product(
         permission_service=PermissionService(),
         product_repository=product_repository or build_repository(),
         category_repository=category_repository or FakeCategoryRepository(),
+        admin_audit_log_repository=audit_log_repository or FakeAuditLogRepository(),
+        product_cache_service=FakeProductCacheService(),
+        admin_product_cache_service=AdminProductCacheService(),
+    )
+
+
+async def delete_product(
+    *,
+    redis_service=None,
+    user=None,
+    product_repository=None,
+    order_item_repository=None,
+    audit_log_repository=None,
+    commiter=None,
+    product_id: int = 1,
+):
+    return await AdminProductService().delete_product(
+        session=None,
+        redis_service=redis_service or FakeRedisService(),
+        user=user or build_user(),
+        product_id=product_id,
+        commiter=commiter or FakeCommiter(),
+        permission_service=PermissionService(),
+        product_repository=product_repository or build_repository(),
+        order_item_repository=order_item_repository or FakeOrderItemRepository(),
         admin_audit_log_repository=audit_log_repository or FakeAuditLogRepository(),
         product_cache_service=FakeProductCacheService(),
         admin_product_cache_service=AdminProductCacheService(),
@@ -721,3 +764,59 @@ async def test_admin_product_update_audit_log_created() -> None:
     assert audit_log_repository.logs[0]["details"]["product_id"] == 1
     assert audit_log_repository.logs[0]["details"]["changes"]["name"]["old"] == "Яблоки красные"
     assert audit_log_repository.logs[0]["details"]["changes"]["name"]["new"] == "Яблоки красные отборные"
+
+
+@pytest.mark.asyncio
+async def test_admin_product_delete_success() -> None:
+    product_repository = build_repository()
+    commiter = FakeCommiter()
+
+    response = await delete_product(product_repository=product_repository, commiter=commiter)
+
+    assert response.message == "Товар удалён"
+    assert product_repository.products[0].is_deleted is True
+    assert product_repository.products[0].is_active is False
+    assert product_repository.products[0].is_available is False
+    assert product_repository.products[0].deleted_by == 1
+    assert product_repository.products[0].deleted_at is not None
+    assert commiter.committed is True
+
+
+@pytest.mark.asyncio
+async def test_admin_product_delete_not_found_error() -> None:
+    with pytest.raises(ProductNotFoundError):
+        await delete_product(product_id=999)
+
+
+@pytest.mark.asyncio
+async def test_admin_product_delete_no_permission_error() -> None:
+    with pytest.raises(AdminAuthAccessDeniedError):
+        await delete_product(user=build_user(role=UserRole.PICKER))
+
+
+@pytest.mark.asyncio
+async def test_admin_product_delete_public_cache_invalidated() -> None:
+    redis_service = FakeRedisService()
+
+    await delete_product(redis_service=redis_service)
+
+    assert "products:detail:1:*" in redis_service.deleted_patterns
+    assert "products:slug:product-1:*" in redis_service.deleted_patterns
+    assert "products:list:*" in redis_service.deleted_patterns
+    assert "products:search:*" in redis_service.deleted_patterns
+    assert "products:discounted:*" in redis_service.deleted_patterns
+    assert "products:new:*" in redis_service.deleted_patterns
+    assert "admin:products:list:*" in redis_service.deleted_patterns
+    assert "admin:products:detail:*" in redis_service.deleted_patterns
+
+
+@pytest.mark.asyncio
+async def test_admin_product_delete_audit_log_created() -> None:
+    audit_log_repository = FakeAuditLogRepository()
+
+    await delete_product(audit_log_repository=audit_log_repository)
+
+    assert len(audit_log_repository.logs) == 1
+    assert audit_log_repository.logs[0]["event"] == "admin_product_delete"
+    assert audit_log_repository.logs[0]["status"] == "success"
+    assert audit_log_repository.logs[0]["details"]["product_id"] == 1

@@ -12,3 +12,7 @@ class ProductSkuAlreadyExistsError(Exception):
 
 class ProductBarcodeAlreadyExistsError(Exception):
     pass
+
+
+class ProductActiveOrderExistsError(Exception):
+    pass

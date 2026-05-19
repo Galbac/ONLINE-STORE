@@ -187,6 +187,10 @@ class AdminProductUpdateResponse(BaseModel):
     updated_at: datetime
 
 
+class MessageResponse(BaseModel):
+    message: str
+
+
 class AdminProductListResponse(BaseModel):
     items: list[AdminProductListItemResponse]
     total: int

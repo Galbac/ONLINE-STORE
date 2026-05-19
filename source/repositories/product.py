@@ -639,6 +639,24 @@ class ProductRepository:
         await session.refresh(product)
         return product
 
+    async def soft_delete(
+        self,
+        *,
+        session: AsyncSession,
+        product: Product,
+        deleted_at: datetime,
+        deleted_by: int,
+    ) -> Product:
+        product.is_deleted = True
+        product.is_active = False
+        product.is_available = False
+        product.deleted_at = deleted_at
+        product.deleted_by = deleted_by
+        session.add(product)
+        await session.flush()
+        await session.refresh(product)
+        return product
+
     async def get_by_ids(
         self,
         *,

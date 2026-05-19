@@ -1,9 +1,11 @@
 from decimal import Decimal
+from datetime import datetime
 
 from source.config.settings import settings
 from source.errors.category import CategoryNotFoundError
 from source.errors.auth import AdminAuthAccessDeniedError, InactiveUserError
 from source.errors.product import (
+    ProductActiveOrderExistsError,
     ProductBarcodeAlreadyExistsError,
     ProductNotFoundError,
     ProductSkuAlreadyExistsError,
@@ -18,6 +20,7 @@ from source.schemas.pydantic.admin_product import (
     AdminProductSeoResponse,
     AdminProductUpdateRequest,
     AdminProductUpdateResponse,
+    MessageResponse,
 )
 from source.services.admin_auth import STAFF_ROLES
 from source.services.redis import RedisService
@@ -48,6 +51,14 @@ class AdminProductService:
         if user.role not in STAFF_ROLES:
             raise AdminAuthAccessDeniedError
         if "admin:products:update" not in permission_service.get_user_permissions(role=user.role):
+            raise AdminAuthAccessDeniedError
+
+    def _check_delete_permission(self, *, user, permission_service) -> None:
+        if not user.is_active or user.is_deleted:
+            raise InactiveUserError
+        if user.role not in STAFF_ROLES:
+            raise AdminAuthAccessDeniedError
+        if "admin:products:delete" not in permission_service.get_user_permissions(role=user.role):
             raise AdminAuthAccessDeniedError
 
     def _validate_quantities(
@@ -389,3 +400,61 @@ class AdminProductService:
             is_available=updated_product.is_available,
             updated_at=updated_product.updated_date,
         )
+
+    async def delete_product(
+        self,
+        *,
+        session,
+        redis_service: RedisService,
+        user,
+        product_id: int,
+        commiter,
+        permission_service,
+        product_repository,
+        order_item_repository,
+        admin_audit_log_repository,
+        product_cache_service,
+        admin_product_cache_service,
+    ) -> MessageResponse:
+        self._check_delete_permission(user=user, permission_service=permission_service)
+
+        row = await product_repository.admin_get_by_id(session=session, product_id=product_id)
+        if row is None:
+            raise ProductNotFoundError
+        product, _category = row
+
+        has_active_order = await order_item_repository.exists_active_order_by_product_id(
+            session=session,
+            product_id=product.id,
+        )
+        if has_active_order:
+            raise ProductActiveOrderExistsError
+
+        deleted_product = await product_repository.soft_delete(
+            session=session,
+            product=product,
+            deleted_at=datetime.now(settings.tz),
+            deleted_by=user.id,
+        )
+        await admin_audit_log_repository.create(
+            session=session,
+            user_id=user.id,
+            login=getattr(user, "email", None) or getattr(user, "phone", None) or str(user.id),
+            event="admin_product_delete",
+            status="success",
+            details={
+                "product_id": deleted_product.id,
+                "name": deleted_product.name,
+                "slug": deleted_product.slug,
+            },
+        )
+        await commiter.commit()
+
+        await product_cache_service.invalidate_product(
+            redis_service=redis_service,
+            product_id=deleted_product.id,
+            slug=deleted_product.slug,
+        )
+        await admin_product_cache_service.invalidate_all(redis_service=redis_service)
+
+        return MessageResponse(message="Товар удалён")
