@@ -139,6 +139,25 @@ class SmtpSettings(BaseModel):
     from_email: str = ""
 
 
+class EmailNotificationSettings(BaseSettings):
+    enabled: bool = Field(default=False, alias="EMAIL_ENABLED")
+    host: str = Field(default="", alias="EMAIL_HOST")
+    port: int = Field(default=587, alias="EMAIL_PORT")
+    username: str = Field(default="", alias="EMAIL_USERNAME")
+    password: str = Field(default="", alias="EMAIL_PASSWORD")
+    from_email: str = Field(default="", alias="EMAIL_FROM")
+
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+
+class TelegramSettings(BaseSettings):
+    enabled: bool = Field(default=False, alias="TELEGRAM_ENABLED")
+    bot_token: str = Field(default="", alias="TELEGRAM_BOT_TOKEN")
+    admin_chat_id: str = Field(default="", alias="TELEGRAM_ADMIN_CHAT_ID")
+
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+
 class WebSettings(BaseModel):
     jwt_secret: str = ""
     jwt_expiry_hours: int = 72
@@ -352,6 +371,14 @@ class FavoritesSettings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 
+class NotificationsSettings(BaseSettings):
+    cache_ttl_seconds: int = Field(default=60, alias="NOTIFICATIONS_CACHE_TTL_SECONDS")
+    default_limit: int = Field(default=20, alias="NOTIFICATIONS_DEFAULT_LIMIT")
+    max_limit: int = Field(default=100, alias="NOTIFICATIONS_MAX_LIMIT")
+
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+
 class MediaSettings(BaseSettings):
     storage: str = Field(default="local", alias="MEDIA_STORAGE")
     root: Path = Field(default=Path("/app/media"), alias="MEDIA_ROOT")
@@ -389,6 +416,8 @@ class Settings(BaseSettings):
     auth: AuthSettings = AuthSettings()
     middleware: MiddlewareSettings = MiddlewareSettings()
     smtp: SmtpSettings = SmtpSettings()
+    email_notifications: EmailNotificationSettings = EmailNotificationSettings()
+    telegram: TelegramSettings = TelegramSettings()
     web: WebSettings = WebSettings()
     redis: RedisSettings = RedisSettings()
     password_reset: PasswordResetSettings = PasswordResetSettings()
@@ -414,6 +443,7 @@ class Settings(BaseSettings):
     delivery_time_slots: DeliveryTimeSlotsSettings = DeliveryTimeSlotsSettings()
     discounts: DiscountsSettings = DiscountsSettings()
     favorites: FavoritesSettings = FavoritesSettings()
+    notifications: NotificationsSettings = NotificationsSettings()
     media: MediaSettings = MediaSettings()
 
     @property

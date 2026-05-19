@@ -26,6 +26,7 @@ from source.repositories.discount import DiscountRepository
 from source.repositories.favorite import FavoriteRepository
 from source.repositories.order import OrderRepository
 from source.repositories.order_item import OrderItemRepository
+from source.repositories.notification import NotificationLogRepository, NotificationRepository
 from source.repositories.payment import PaymentRepository
 from source.repositories.payment_webhook_log import PaymentWebhookLogRepository
 from source.repositories.refund import RefundRepository
@@ -44,6 +45,7 @@ from source.services.category_cache import CategoryCacheService
 from source.services.notifications import EmailService, TelegramNotificationService
 from source.services.delivery_cache import DeliveryCacheService
 from source.services.notifications import NotificationService
+from source.services.notification_cache import NotificationCacheService
 from source.services.delivery import DeliveryService, DeliveryTimeSlotService, DeliveryZoneService
 from source.services.discount import DiscountService
 from source.services.discount_cache import DiscountCacheService
@@ -171,6 +173,14 @@ class AppProvider(Provider):
     )
     payment_webhook_log_repository = provide(
         PaymentWebhookLogRepository,
+        scope=Scope.REQUEST,
+    )
+    notification_repository = provide(
+        NotificationRepository,
+        scope=Scope.REQUEST,
+    )
+    notification_log_repository = provide(
+        NotificationLogRepository,
         scope=Scope.REQUEST,
     )
     refund_repository = provide(
@@ -331,6 +341,10 @@ class AppProvider(Provider):
     )
     notification_service = provide(
         NotificationService,
+        scope=Scope.REQUEST,
+    )
+    notification_cache_service = provide(
+        NotificationCacheService,
         scope=Scope.REQUEST,
     )
 

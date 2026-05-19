@@ -1,12 +1,52 @@
 import asyncio
 import smtplib
 from email.message import EmailMessage
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
 
 from source.config.logging import logger
 from source.config.settings import settings
+from source.errors.auth import InactiveUserError
+from source.errors.notification import (
+    NotificationAccessDeniedError,
+    NotificationEmailDisabledError,
+    NotificationNotFoundError,
+    NotificationSendError,
+    NotificationTelegramChatIdMissingError,
+    NotificationTelegramDisabledError,
+)
+from source.schemas.pydantic.notifications import (
+    MessageResponse,
+    NotificationListResponse,
+    NotificationQueryParams,
+    NotificationResponse,
+    TestEmailRequest,
+    TestTelegramRequest,
+)
+from source.utils.query_hash import build_query_hash
 
 
 class EmailService:
+    async def send_email(self, *, email: str, subject: str, message: str) -> None:
+        if not settings.email_notifications.enabled:
+            raise NotificationEmailDisabledError
+        if not settings.email_notifications.host or not settings.email_notifications.from_email:
+            raise NotificationSendError("Email settings are incomplete")
+
+        email_message = EmailMessage()
+        email_message["Subject"] = subject
+        email_message["From"] = settings.email_notifications.from_email
+        email_message["To"] = email
+        email_message.set_content(message)
+        await asyncio.to_thread(self._send_email_notification, email_message)
+
+    def _send_email_notification(self, message: EmailMessage) -> None:
+        with smtplib.SMTP(settings.email_notifications.host, settings.email_notifications.port) as smtp:
+            smtp.starttls()
+            if settings.email_notifications.username:
+                smtp.login(settings.email_notifications.username, settings.email_notifications.password)
+            smtp.send_message(message)
+
     async def send_password_reset_email(
         self,
         *,
@@ -77,6 +117,25 @@ class EmailService:
 
 #TODO доделать отправку сообщения по телеграм
 class TelegramNotificationService:
+    async def send_message(self, *, chat_id: str, message: str) -> None:
+        if not settings.telegram.enabled:
+            raise NotificationTelegramDisabledError
+        if not settings.telegram.bot_token:
+            raise NotificationSendError("Telegram bot token is not configured")
+
+        await asyncio.to_thread(self._send_telegram_message, chat_id, message)
+
+    def _send_telegram_message(self, chat_id: str, message: str) -> None:
+        payload = urlencode({"chat_id": chat_id, "text": message}).encode("utf-8")
+        request = Request(
+            f"https://api.telegram.org/bot{settings.telegram.bot_token}/sendMessage",
+            data=payload,
+            method="POST",
+        )
+        with urlopen(request, timeout=10) as response:
+            if response.status >= 400:
+                raise NotificationSendError("Telegram send failed")
+
     async def notify_admin_password_reset_issue(
         self,
         *,
@@ -103,6 +162,170 @@ class TelegramNotificationService:
 
 
 class NotificationService:
+    async def get_user_notifications(
+        self,
+        *,
+        session,
+        redis_service,
+        user,
+        query: NotificationQueryParams,
+        notification_repository,
+        notification_cache_service,
+    ) -> NotificationListResponse:
+        if not user.is_active or user.is_deleted:
+            raise InactiveUserError
+
+        query_hash = build_query_hash(query.model_dump())
+        cached_notifications = await notification_cache_service.get(
+            redis_service=redis_service,
+            user_id=user.id,
+            query_hash=query_hash,
+        )
+        if cached_notifications is not None:
+            return cached_notifications
+
+        items = await notification_repository.get_by_user_id(
+            session=session,
+            user_id=user.id,
+            query=query,
+        )
+        total = await notification_repository.count_by_user_id(
+            session=session,
+            user_id=user.id,
+            query=query,
+        )
+        unread_count = await notification_repository.count_unread_by_user_id(
+            session=session,
+            user_id=user.id,
+        )
+        pages = (total + query.limit - 1) // query.limit if total else 0
+        response = NotificationListResponse(
+            items=items,
+            total=total,
+            unread_count=unread_count,
+            page=query.page,
+            limit=query.limit,
+            pages=pages,
+        )
+        await notification_cache_service.set(
+            redis_service=redis_service,
+            user_id=user.id,
+            query_hash=query_hash,
+            response=response,
+            ttl_seconds=settings.notifications.cache_ttl_seconds,
+        )
+        return response
+
+    async def mark_as_read(
+        self,
+        *,
+        session,
+        redis_service,
+        user,
+        notification_id: int,
+        notification_repository,
+        notification_cache_service,
+    ) -> NotificationResponse:
+        if not user.is_active or user.is_deleted:
+            raise InactiveUserError
+
+        notification = await notification_repository.get_by_id(session=session, notification_id=notification_id)
+        if notification is None:
+            raise NotificationNotFoundError
+        if notification.user_id != user.id:
+            raise NotificationAccessDeniedError
+
+        notification = await notification_repository.mark_as_read(session=session, notification=notification)
+        await notification_cache_service.invalidate_user(redis_service=redis_service, user_id=user.id)
+        return NotificationResponse(
+            id=notification.id,
+            type=notification.type,
+            title=notification.title,
+            message=notification.message,
+            is_read=notification.is_read,
+            read_at=notification.read_at,
+            created_at=notification.created_date,
+        )
+
+    async def send_test_email(
+        self,
+        *,
+        session,
+        user,
+        data: TestEmailRequest,
+        email_service: EmailService,
+        notification_log_repository,
+    ) -> MessageResponse:
+        subject = data.subject or "Тестовое письмо"
+        message = data.message or "Проверка отправки email"
+        try:
+            await email_service.send_email(email=str(data.email), subject=subject, message=message)
+        except Exception as error:
+            await notification_log_repository.create(
+                session=session,
+                channel="email",
+                recipient=str(data.email),
+                subject=subject,
+                message=message,
+                status="failed",
+                error_message=str(error),
+                created_by=user.id,
+            )
+            raise
+
+        await notification_log_repository.create(
+            session=session,
+            channel="email",
+            recipient=str(data.email),
+            subject=subject,
+            message=message,
+            status="sent",
+            error_message=None,
+            created_by=user.id,
+        )
+        return MessageResponse(message="Тестовое email-уведомление отправлено", email=data.email)
+
+    async def send_test_telegram(
+        self,
+        *,
+        session,
+        user,
+        data: TestTelegramRequest,
+        telegram_service: TelegramNotificationService,
+        notification_log_repository,
+    ) -> MessageResponse:
+        chat_id = data.chat_id or settings.telegram.admin_chat_id
+        if not chat_id:
+            raise NotificationTelegramChatIdMissingError
+
+        message = data.message or "Тестовое уведомление из интернет-магазина"
+        try:
+            await telegram_service.send_message(chat_id=chat_id, message=message)
+        except Exception as error:
+            await notification_log_repository.create(
+                session=session,
+                channel="telegram",
+                recipient=chat_id,
+                subject=None,
+                message=message,
+                status="failed",
+                error_message=str(error),
+                created_by=user.id,
+            )
+            raise
+
+        await notification_log_repository.create(
+            session=session,
+            channel="telegram",
+            recipient=chat_id,
+            subject=None,
+            message=message,
+            status="sent",
+            error_message=None,
+            created_by=user.id,
+        )
+        return MessageResponse(message="Тестовое Telegram-уведомление отправлено", chat_id=chat_id)
+
     async def notify_order_created(
         self,
         *,

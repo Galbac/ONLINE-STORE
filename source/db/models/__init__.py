@@ -10,6 +10,7 @@ from source.db.models.discount import Discount
 from source.db.models.favorite import Favorite
 from source.db.models.order import Order
 from source.db.models.order_item import OrderItem
+from source.db.models.notification import Notification, NotificationLog
 from source.db.models.payment import Payment
 from source.db.models.payment_webhook_log import PaymentWebhookLog
 from source.db.models.pickup_point import PickupPoint
@@ -34,6 +35,8 @@ __all__ = (
     "Favorite",
     "Order",
     "OrderItem",
+    "Notification",
+    "NotificationLog",
     "Payment",
     "PaymentWebhookLog",
     "PickupPoint",
