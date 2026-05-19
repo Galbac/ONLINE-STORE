@@ -44,6 +44,8 @@ from source.services.admin_auth import AdminAuthService, AuditLogService, JwtBla
 from source.services.admin_auth_cache import AdminAuthCacheService
 from source.services.admin_dashboard import AdminDashboardService
 from source.services.admin_dashboard_cache import AdminDashboardCacheService
+from source.services.admin_product import AdminProductService
+from source.services.admin_product_cache import AdminProductCacheService
 from source.services.auth import AuthService
 from source.services.cart import CartCalculatorService, CartService
 from source.services.cart_cache import CartCacheService
@@ -380,6 +382,14 @@ class AppProvider(Provider):
     )
     admin_dashboard_cache_service = provide(
         AdminDashboardCacheService,
+        scope=Scope.REQUEST,
+    )
+    admin_product_service = provide(
+        AdminProductService,
+        scope=Scope.REQUEST,
+    )
+    admin_product_cache_service = provide(
+        AdminProductCacheService,
         scope=Scope.REQUEST,
     )
     jwt_service = provide(

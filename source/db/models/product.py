@@ -16,6 +16,8 @@ class Product(IdBigIntPkMixin, CreateUpdateMixin, Base):
     slug: Mapped[str] = mapped_column(String(255), unique=True, index=True, nullable=False)
     article: Mapped[str | None] = mapped_column(String(100), index=True)
     barcode: Mapped[str | None] = mapped_column(String(100), index=True)
+    external_1c_id: Mapped[str | None] = mapped_column(String(100), index=True)
+    sync_status: Mapped[str | None] = mapped_column(String(50), index=True)
     description: Mapped[str | None] = mapped_column(Text)
     search_keywords: Mapped[str | None] = mapped_column(Text)
     preview_image_url: Mapped[str | None] = mapped_column(String(500))

@@ -7,6 +7,11 @@ from source.config.settings import settings
 from source.db.models.category import Category
 from source.db.models.discount import Discount
 from source.db.models.product import Product
+from source.schemas.pydantic.admin_product import (
+    AdminProductCategoryResponse,
+    AdminProductListItemResponse,
+    AdminProductListQueryParams,
+)
 from source.schemas.pydantic.product import (
     ProductCategoryShortResponse,
     ProductDetailResponse,
@@ -29,6 +34,79 @@ from source.utils.product import build_detailed_stock_display, build_stock_displ
 
 
 class ProductRepository:
+    def _admin_statement(self, *, query: AdminProductListQueryParams):
+        statement = (
+            select(Product, Category)
+            .outerjoin(Category, Product.category_id == Category.id)
+            .where(Product.is_deleted.is_(False))
+        )
+        if query.category_id is not None:
+            statement = statement.where(Product.category_id == query.category_id)
+        if query.is_active is not None:
+            statement = statement.where(Product.is_active.is_(query.is_active))
+        if query.is_available is not None:
+            statement = statement.where(Product.is_available.is_(query.is_available))
+        if query.in_stock is True:
+            statement = statement.where(Product.stock_quantity > 0)
+        elif query.in_stock is False:
+            statement = statement.where(Product.stock_quantity <= 0)
+        if query.low_stock is True:
+            statement = statement.where(Product.stock_quantity <= Product.min_quantity)
+        elif query.low_stock is False:
+            statement = statement.where(Product.stock_quantity > Product.min_quantity)
+        if query.product_type is not None:
+            statement = statement.where(Product.product_type == query.product_type)
+        if query.sync_status is not None:
+            statement = statement.where(Product.sync_status == query.sync_status)
+        if query.q is not None:
+            search_pattern = f"%{query.q}%"
+            statement = statement.where(
+                or_(
+                    Product.name.ilike(search_pattern),
+                    Product.article.ilike(search_pattern),
+                    Product.barcode.ilike(search_pattern),
+                    Product.external_1c_id.ilike(search_pattern),
+                ),
+            )
+        return statement
+
+    def _apply_admin_sort(self, statement, *, sort: str):
+        match sort:
+            case "name_asc":
+                return statement.order_by(Product.name.asc(), Product.id.asc())
+            case "price_asc":
+                return statement.order_by(Product.price.asc(), Product.name.asc())
+            case "stock_asc":
+                return statement.order_by(Product.stock_quantity.asc(), Product.name.asc())
+            case "newest" | _:
+                return statement.order_by(desc(Product.created_date), Product.id.desc())
+
+    async def admin_get_list(
+        self,
+        *,
+        session: AsyncSession,
+        query: AdminProductListQueryParams,
+    ) -> list[AdminProductListItemResponse]:
+        result = await session.execute(
+            self._apply_admin_sort(self._admin_statement(query=query), sort=query.sort)
+            .limit(query.limit)
+            .offset(query.offset),
+        )
+        return [
+            self._build_admin_product_response(product=product, category=category)
+            for product, category in result.all()
+        ]
+
+    async def admin_count(
+        self,
+        *,
+        session: AsyncSession,
+        query: AdminProductListQueryParams,
+    ) -> int:
+        products_subquery = self._admin_statement(query=query).subquery()
+        result = await session.execute(select(func.count()).select_from(products_subquery))
+        return int(result.scalar_one())
+
     def _low_stock_statement(self, *, category_id: int | None = None):
         statement = select(Product).where(
             Product.is_active.is_(True),
@@ -671,6 +749,36 @@ class ProductRepository:
             ),
             category=product_category,
             created_at=product.created_date,
+        )
+
+    def _build_admin_product_response(
+        self,
+        *,
+        product: Product,
+        category: Category | None,
+    ) -> AdminProductListItemResponse:
+        product_category = None
+        if category is not None:
+            product_category = AdminProductCategoryResponse(
+                id=category.id,
+                name=category.name,
+            )
+        return AdminProductListItemResponse(
+            id=product.id,
+            name=product.name,
+            slug=product.slug,
+            sku=product.article,
+            barcode=product.barcode,
+            category=product_category,
+            price=product.price,
+            unit=product.unit,
+            product_type=product.product_type,
+            stock_quantity=product.stock_quantity,
+            low_stock_threshold=product.min_quantity,
+            is_active=product.is_active,
+            is_available=product.is_available,
+            sync_status=product.sync_status,
+            external_1c_id=product.external_1c_id,
         )
 
     def _build_product_detail_response(self, *, product: Product, category: Category | None) -> ProductDetailResponse:
