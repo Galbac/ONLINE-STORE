@@ -657,6 +657,19 @@ class ProductRepository:
         await session.refresh(product)
         return product
 
+    async def update_availability(
+        self,
+        *,
+        session: AsyncSession,
+        product: Product,
+        is_available: bool,
+    ) -> Product:
+        product.is_available = is_available
+        session.add(product)
+        await session.flush()
+        await session.refresh(product)
+        return product
+
     async def get_by_ids(
         self,
         *,

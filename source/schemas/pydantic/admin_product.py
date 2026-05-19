@@ -119,6 +119,19 @@ class AdminProductUpdateRequest(BaseModel):
         return self
 
 
+class ProductAvailabilityUpdateRequest(BaseModel):
+    is_available: bool
+    reason: str | None = Field(default=None, max_length=500)
+
+    @model_validator(mode="after")
+    def normalize_reason(self) -> "ProductAvailabilityUpdateRequest":
+        if self.reason is not None:
+            self.reason = self.reason.strip()
+            if not self.reason:
+                self.reason = None
+        return self
+
+
 class AdminProductCategoryResponse(BaseModel):
     id: int
     name: str
@@ -184,6 +197,13 @@ class AdminProductUpdateResponse(BaseModel):
     price: Decimal
     is_active: bool
     is_available: bool
+    updated_at: datetime
+
+
+class ProductAvailabilityResponse(BaseModel):
+    id: int
+    is_available: bool
+    reason: str | None = None
     updated_at: datetime
 
 

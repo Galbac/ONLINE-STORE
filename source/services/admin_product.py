@@ -21,6 +21,8 @@ from source.schemas.pydantic.admin_product import (
     AdminProductUpdateRequest,
     AdminProductUpdateResponse,
     MessageResponse,
+    ProductAvailabilityResponse,
+    ProductAvailabilityUpdateRequest,
 )
 from source.services.admin_auth import STAFF_ROLES
 from source.services.redis import RedisService
@@ -458,3 +460,73 @@ class AdminProductService:
         await admin_product_cache_service.invalidate_all(redis_service=redis_service)
 
         return MessageResponse(message="Товар удалён")
+
+    async def update_availability(
+        self,
+        *,
+        session,
+        redis_service: RedisService,
+        user,
+        product_id: int,
+        data: ProductAvailabilityUpdateRequest,
+        commiter,
+        permission_service,
+        product_repository,
+        product_availability_log_repository,
+        admin_audit_log_repository,
+        product_cache_service,
+        admin_product_cache_service,
+    ) -> ProductAvailabilityResponse:
+        self._check_update_permission(user=user, permission_service=permission_service)
+
+        row = await product_repository.admin_get_by_id(session=session, product_id=product_id)
+        if row is None:
+            raise ProductNotFoundError
+        product, _category = row
+
+        old_is_available = product.is_available
+        updated_product = await product_repository.update_availability(
+            session=session,
+            product=product,
+            is_available=data.is_available,
+        )
+        await product_availability_log_repository.create(
+            session=session,
+            product_id=updated_product.id,
+            user_id=user.id,
+            is_available=updated_product.is_available,
+            reason=data.reason,
+            status="success",
+        )
+        await admin_audit_log_repository.create(
+            session=session,
+            user_id=user.id,
+            login=getattr(user, "email", None) or getattr(user, "phone", None) or str(user.id),
+            event="admin_product_availability_update",
+            status="success",
+            details={
+                "product_id": updated_product.id,
+                "old_is_available": old_is_available,
+                "new_is_available": updated_product.is_available,
+                "reason": data.reason,
+            },
+        )
+        await commiter.commit()
+
+        await product_cache_service.invalidate_product(
+            redis_service=redis_service,
+            product_id=updated_product.id,
+            slug=updated_product.slug,
+        )
+        await admin_product_cache_service.invalidate_product(
+            redis_service=redis_service,
+            product_id=updated_product.id,
+        )
+        await redis_service.delete_by_pattern("cart:*")
+
+        return ProductAvailabilityResponse(
+            id=updated_product.id,
+            is_available=updated_product.is_available,
+            reason=data.reason,
+            updated_at=updated_product.updated_date,
+        )

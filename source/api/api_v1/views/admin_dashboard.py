@@ -23,6 +23,7 @@ from source.repositories.discount import DiscountRepository
 from source.repositories.order import OrderRepository
 from source.repositories.order_item import OrderItemRepository
 from source.repositories.product import ProductRepository
+from source.repositories.product_availability_log import ProductAvailabilityLogRepository
 from source.repositories.product_image import ProductImageRepository
 from source.repositories.user import UserRepository
 from source.schemas.pydantic.admin_dashboard import (
@@ -40,6 +41,8 @@ from source.schemas.pydantic.admin_product import (
     AdminProductUpdateRequest,
     AdminProductUpdateResponse,
     MessageResponse,
+    ProductAvailabilityResponse,
+    ProductAvailabilityUpdateRequest,
 )
 from source.services.category_cache import CategoryCacheService
 from source.services.admin_auth import PermissionService
@@ -246,6 +249,53 @@ async def delete_admin_product(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Товар не найден") from error
     except ProductActiveOrderExistsError as error:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Товар используется в активных заказах") from error
+
+
+@router.patch("/products/{product_id}/availability", response_model=ProductAvailabilityResponse, status_code=status.HTTP_200_OK)
+@inject
+async def update_admin_product_availability(
+    payload: dict = Body(...),
+    token_payload: dict = Depends(verify_access_token),
+    current_user: User = Depends(get_current_user),
+    product_id: int = Path(ge=1),
+    session: FromDishka[AsyncSession] = None,
+    redis_service: FromDishka[RedisService] = None,
+    commiter: FromDishka[Commiter] = None,
+    admin_product_service: FromDishka[AdminProductService] = None,
+    product_cache_service: FromDishka[ProductCacheService] = None,
+    admin_product_cache_service: FromDishka[AdminProductCacheService] = None,
+    permission_service: FromDishka[PermissionService] = None,
+    product_repository: FromDishka[ProductRepository] = None,
+    product_availability_log_repository: FromDishka[ProductAvailabilityLogRepository] = None,
+    admin_audit_log_repository: FromDishka[AdminAuditLogRepository] = None,
+) -> ProductAvailabilityResponse:
+    if token_payload.get("token_type") != "access":
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь не авторизован")
+    try:
+        return await admin_product_service.update_availability(
+            session=session,
+            redis_service=redis_service,
+            user=current_user,
+            product_id=product_id,
+            data=ProductAvailabilityUpdateRequest.model_validate(payload),
+            commiter=commiter,
+            permission_service=permission_service,
+            product_repository=product_repository,
+            product_availability_log_repository=product_availability_log_repository,
+            admin_audit_log_repository=admin_audit_log_repository,
+            product_cache_service=product_cache_service,
+            admin_product_cache_service=admin_product_cache_service,
+        )
+    except ValidationError as error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Неверные данные") from error
+    except InvalidCredentialsError as error:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь не авторизован") from error
+    except AdminAuthAccessDeniedError as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Недостаточно прав") from error
+    except InactiveUserError as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Пользователь заблокирован") from error
+    except ProductNotFoundError as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Товар не найден") from error
 
 
 @router.patch("/products/{product_id}", response_model=AdminProductUpdateResponse, status_code=status.HTTP_200_OK)

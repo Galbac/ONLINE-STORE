@@ -35,6 +35,7 @@ from source.repositories.refund import RefundRepository
 from source.repositories.refresh_token import RefreshTokenRepository
 from source.repositories.pickup_point import PickupPointRepository
 from source.repositories.product import ProductRepository
+from source.repositories.product_availability_log import ProductAvailabilityLogRepository
 from source.repositories.product_image import ProductImageRepository
 from source.repositories.promo_code import PromoCodeRepository, PromoCodeUsageRepository
 from source.repositories.user import UserRepository
@@ -214,6 +215,10 @@ class AppProvider(Provider):
     )
     product_repository = provide(
         ProductRepository,
+        scope=Scope.REQUEST,
+    )
+    product_availability_log_repository = provide(
+        ProductAvailabilityLogRepository,
         scope=Scope.REQUEST,
     )
     product_image_repository = provide(

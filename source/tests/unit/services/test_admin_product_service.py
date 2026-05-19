@@ -17,6 +17,7 @@ from source.schemas.pydantic.admin_product import (
     AdminProductListQueryParams,
     AdminProductListResponse,
     AdminProductUpdateRequest,
+    ProductAvailabilityUpdateRequest,
 )
 from source.services.admin_auth import PermissionService
 from source.services.admin_product import AdminProductService
@@ -105,6 +106,11 @@ class FakeProductRepository:
         product.is_available = False
         product.deleted_at = deleted_at
         product.deleted_by = deleted_by
+        return product
+
+    async def update_availability(self, *, session, product, is_available: bool):
+        product.is_available = is_available
+        product.updated_date = datetime(2026, 5, 12, 11)
         return product
 
     def _filter(self, *, query: AdminProductListQueryParams):
@@ -271,6 +277,15 @@ class FakeCategoryRepository:
 
 
 class FakeAuditLogRepository:
+    def __init__(self) -> None:
+        self.logs = []
+
+    async def create(self, *, session, **data):
+        self.logs.append(data)
+        return SimpleNamespace(id=1, **data)
+
+
+class FakeProductAvailabilityLogRepository:
     def __init__(self) -> None:
         self.logs = []
 
@@ -463,6 +478,33 @@ async def delete_product(
         permission_service=PermissionService(),
         product_repository=product_repository or build_repository(),
         order_item_repository=order_item_repository or FakeOrderItemRepository(),
+        admin_audit_log_repository=audit_log_repository or FakeAuditLogRepository(),
+        product_cache_service=FakeProductCacheService(),
+        admin_product_cache_service=AdminProductCacheService(),
+    )
+
+
+async def update_availability(
+    *,
+    redis_service=None,
+    user=None,
+    product_repository=None,
+    availability_log_repository=None,
+    audit_log_repository=None,
+    commiter=None,
+    data=None,
+    product_id: int = 1,
+):
+    return await AdminProductService().update_availability(
+        session=None,
+        redis_service=redis_service or FakeRedisService(),
+        user=user or build_user(),
+        product_id=product_id,
+        data=data or ProductAvailabilityUpdateRequest(is_available=False, reason="Товар временно отсутствует"),
+        commiter=commiter or FakeCommiter(),
+        permission_service=PermissionService(),
+        product_repository=product_repository or build_repository(),
+        product_availability_log_repository=availability_log_repository or FakeProductAvailabilityLogRepository(),
         admin_audit_log_repository=audit_log_repository or FakeAuditLogRepository(),
         product_cache_service=FakeProductCacheService(),
         admin_product_cache_service=AdminProductCacheService(),
@@ -820,3 +862,76 @@ async def test_admin_product_delete_audit_log_created() -> None:
     assert audit_log_repository.logs[0]["event"] == "admin_product_delete"
     assert audit_log_repository.logs[0]["status"] == "success"
     assert audit_log_repository.logs[0]["details"]["product_id"] == 1
+
+
+@pytest.mark.asyncio
+async def test_admin_product_availability_disabled() -> None:
+    product_repository = build_repository()
+    old_stock_quantity = product_repository.products[0].stock_quantity
+
+    response = await update_availability(product_repository=product_repository)
+
+    assert response.id == 1
+    assert response.is_available is False
+    assert response.reason == "Товар временно отсутствует"
+    assert product_repository.products[0].is_available is False
+    assert product_repository.products[0].stock_quantity == old_stock_quantity
+
+
+@pytest.mark.asyncio
+async def test_admin_product_availability_enabled() -> None:
+    product_repository = build_repository()
+    product_repository.products[0].is_available = False
+
+    response = await update_availability(
+        product_repository=product_repository,
+        data=ProductAvailabilityUpdateRequest(is_available=True, reason="Поступил на склад"),
+    )
+
+    assert response.is_available is True
+    assert response.reason == "Поступил на склад"
+    assert product_repository.products[0].is_available is True
+
+
+@pytest.mark.asyncio
+async def test_admin_product_availability_not_found_error() -> None:
+    with pytest.raises(ProductNotFoundError):
+        await update_availability(product_id=999)
+
+
+@pytest.mark.asyncio
+async def test_admin_product_availability_no_permission_error() -> None:
+    with pytest.raises(AdminAuthAccessDeniedError):
+        await update_availability(user=build_user(role=UserRole.PICKER))
+
+
+@pytest.mark.asyncio
+async def test_admin_product_availability_cache_invalidated() -> None:
+    redis_service = FakeRedisService()
+
+    await update_availability(redis_service=redis_service)
+
+    assert "products:detail:1:*" in redis_service.deleted_patterns
+    assert "products:slug:product-1:*" in redis_service.deleted_patterns
+    assert "products:list:*" in redis_service.deleted_patterns
+    assert "products:search:*" in redis_service.deleted_patterns
+    assert "admin:products:detail:1" in redis_service.deleted_patterns
+    assert "admin:products:list:*" in redis_service.deleted_patterns
+    assert "cart:*" in redis_service.deleted_patterns
+
+
+@pytest.mark.asyncio
+async def test_admin_product_availability_log_created() -> None:
+    availability_log_repository = FakeProductAvailabilityLogRepository()
+    audit_log_repository = FakeAuditLogRepository()
+
+    await update_availability(
+        availability_log_repository=availability_log_repository,
+        audit_log_repository=audit_log_repository,
+    )
+
+    assert len(availability_log_repository.logs) == 1
+    assert availability_log_repository.logs[0]["product_id"] == 1
+    assert availability_log_repository.logs[0]["is_available"] is False
+    assert availability_log_repository.logs[0]["reason"] == "Товар временно отсутствует"
+    assert audit_log_repository.logs[0]["event"] == "admin_product_availability_update"

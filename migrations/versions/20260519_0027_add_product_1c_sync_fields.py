@@ -27,9 +27,27 @@ def upgrade() -> None:
     op.add_column("products", sa.Column("deleted_by", sa.BigInteger(), nullable=True))
     op.create_index(op.f("ix_products_external_1c_id"), "products", ["external_1c_id"], unique=False)
     op.create_index(op.f("ix_products_sync_status"), "products", ["sync_status"], unique=False)
+    op.create_table(
+        "product_availability_logs",
+        sa.Column("product_id", sa.BigInteger(), nullable=False),
+        sa.Column("user_id", sa.BigInteger(), nullable=True),
+        sa.Column("is_available", sa.Boolean(), nullable=False),
+        sa.Column("reason", sa.Text(), nullable=True),
+        sa.Column("status", sa.String(length=30), server_default="success", nullable=False),
+        sa.Column("id", sa.BigInteger(), sa.Identity(), nullable=False),
+        sa.Column("created_date", sa.DateTime(timezone=True), server_default=sa.text("timezone('Europe/Moscow', now())"), nullable=False),
+        sa.Column("updated_date", sa.DateTime(timezone=True), server_default=sa.text("timezone('Europe/Moscow', now())"), nullable=False),
+        sa.ForeignKeyConstraint(["product_id"], ["products.id"], name=op.f("fk_product_availability_logs_product_id_products"), ondelete="CASCADE"),
+        sa.PrimaryKeyConstraint("id", name=op.f("pk_product_availability_logs")),
+    )
+    op.create_index(op.f("ix_product_availability_logs_product_id"), "product_availability_logs", ["product_id"], unique=False)
+    op.create_index(op.f("ix_product_availability_logs_user_id"), "product_availability_logs", ["user_id"], unique=False)
 
 
 def downgrade() -> None:
+    op.drop_index(op.f("ix_product_availability_logs_user_id"), table_name="product_availability_logs")
+    op.drop_index(op.f("ix_product_availability_logs_product_id"), table_name="product_availability_logs")
+    op.drop_table("product_availability_logs")
     op.drop_index(op.f("ix_products_sync_status"), table_name="products")
     op.drop_index(op.f("ix_products_external_1c_id"), table_name="products")
     op.drop_column("products", "deleted_by")
