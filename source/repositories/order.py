@@ -1,10 +1,14 @@
 from datetime import date, datetime, time
+from decimal import Decimal
+from types import SimpleNamespace
 
 from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from source.config.settings import settings
 from source.db.models.order import Order
 from source.schemas.pydantic.order import OrderMyListQueryParams, OrderShortResponse
+from source.schemas.pydantic.admin_dashboard import AdminRecentOrderResponse
 from source.schemas.pydantic.profile import ProfileOrderListQueryParams, ProfileOrderShortResponse
 
 
@@ -27,6 +31,57 @@ class OrderRepository:
     ) -> Order | None:
         result = await session.execute(select(Order).where(Order.id == order_id))
         return result.scalar_one_or_none()
+
+    async def get_dashboard_stats(self, *, session: AsyncSession):
+        today = datetime.now(settings.tz).date()
+        today_from = datetime.combine(today, time.min)
+        today_to = datetime.combine(today, time.max)
+        result = await session.execute(
+            select(
+                func.count(Order.id).filter(Order.created_date.between(today_from, today_to)),
+                func.count(Order.id).filter(Order.status == "new"),
+                func.count(Order.id).filter(
+                    Order.created_date.between(today_from, today_to),
+                    Order.payment_status == "paid",
+                ),
+                func.coalesce(
+                    func.sum(Order.final_price).filter(
+                        Order.created_date.between(today_from, today_to),
+                        Order.payment_status == "paid",
+                    ),
+                    0,
+                ),
+            ),
+        )
+        today_count, new_count, paid_today_count, sales_today_amount = result.one()
+        return SimpleNamespace(
+            today_count=int(today_count),
+            new_count=int(new_count),
+            paid_today_count=int(paid_today_count),
+            sales_today_amount=Decimal(str(sales_today_amount)),
+        )
+
+    async def get_dashboard_recent_orders(
+        self,
+        *,
+        session: AsyncSession,
+        limit: int = 5,
+    ) -> list[AdminRecentOrderResponse]:
+        result = await session.execute(
+            select(Order)
+            .order_by(desc(Order.created_date))
+            .limit(limit),
+        )
+        return [
+            AdminRecentOrderResponse(
+                id=order.id,
+                order_number=order.order_number,
+                status=order.status,
+                final_price=order.final_price,
+                created_at=order.created_date,
+            )
+            for order in result.scalars().all()
+        ]
 
     async def get_status_by_id(self, *, session: AsyncSession, order_id: int) -> Order | None:
         result = await session.execute(select(Order).where(Order.id == order_id))

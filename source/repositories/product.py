@@ -19,11 +19,56 @@ from source.schemas.pydantic.product import (
     ProductSeoResponse,
     ProductShortResponse,
 )
+from source.schemas.pydantic.admin_dashboard import AdminPopularProductResponse
 from source.schemas.pydantic.discount import DiscountProductsQueryParams
 from source.utils.product import build_detailed_stock_display, build_stock_display, calculate_discount_percent
 
 
 class ProductRepository:
+    async def count_low_stock(self, *, session: AsyncSession) -> int:
+        result = await session.execute(
+            select(func.count(Product.id)).where(
+                Product.is_active.is_(True),
+                Product.is_deleted.is_(False),
+                Product.stock_quantity <= Product.min_quantity,
+            ),
+        )
+        return int(result.scalar_one())
+
+    async def count_total_active(self, *, session: AsyncSession) -> int:
+        result = await session.execute(
+            select(func.count(Product.id)).where(
+                Product.is_active.is_(True),
+                Product.is_deleted.is_(False),
+            ),
+        )
+        return int(result.scalar_one())
+
+    async def get_dashboard_popular_products(
+        self,
+        *,
+        session: AsyncSession,
+        limit: int = 5,
+    ) -> list[AdminPopularProductResponse]:
+        result = await session.execute(
+            select(Product)
+            .where(
+                Product.is_active.is_(True),
+                Product.is_deleted.is_(False),
+            )
+            .order_by(Product.popularity.desc(), Product.name.asc())
+            .limit(limit),
+        )
+        return [
+            AdminPopularProductResponse(
+                id=product.id,
+                name=product.name,
+                price=product.price,
+                popularity=product.popularity,
+            )
+            for product in result.scalars().all()
+        ]
+
     def _base_statement(self, *, query: ProductListQueryParams, category_ids: set[int] | None):
         statement = (
             select(Product, Category)

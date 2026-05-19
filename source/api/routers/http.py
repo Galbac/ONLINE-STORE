@@ -1,5 +1,6 @@
 from fastapi import APIRouter
 from source.api.api_v1.views.admin_auth import router as admin_auth_router
+from source.api.api_v1.views.admin_dashboard import router as admin_dashboard_router
 from source.api.api_v1.views.auth import router as auth_router
 from source.api.api_v1.views.cart import router as cart_router
 from source.api.api_v1.views.categories import router as categories_router
@@ -22,6 +23,7 @@ router = APIRouter(
 
 router.include_router(auth_router)
 router.include_router(admin_auth_router)
+router.include_router(admin_dashboard_router)
 router.include_router(cart_router)
 router.include_router(categories_router)
 router.include_router(delivery_router)

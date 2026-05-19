@@ -41,6 +41,8 @@ from source.repositories.upload import UploadRepository
 from source.services.auth_cache import AuthCacheService
 from source.services.admin_auth import AdminAuthService, AuditLogService, JwtBlacklistService, JwtService, PermissionService, RateLimitService
 from source.services.admin_auth_cache import AdminAuthCacheService
+from source.services.admin_dashboard import AdminDashboardService
+from source.services.admin_dashboard_cache import AdminDashboardCacheService
 from source.services.auth import AuthService
 from source.services.cart import CartCalculatorService, CartService
 from source.services.cart_cache import CartCacheService
@@ -365,6 +367,14 @@ class AppProvider(Provider):
     )
     admin_auth_cache_service = provide(
         AdminAuthCacheService,
+        scope=Scope.REQUEST,
+    )
+    admin_dashboard_service = provide(
+        AdminDashboardService,
+        scope=Scope.REQUEST,
+    )
+    admin_dashboard_cache_service = provide(
+        AdminDashboardCacheService,
         scope=Scope.REQUEST,
     )
     jwt_service = provide(
