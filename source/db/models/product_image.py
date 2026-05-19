@@ -1,4 +1,4 @@
-from sqlalchemy import ForeignKey, Integer, String
+from sqlalchemy import Boolean, ForeignKey, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from source.db.models.base import Base
@@ -11,3 +11,4 @@ class ProductImage(IdBigIntPkMixin, CreateUpdateMixin, Base):
     file_id: Mapped[int | None] = mapped_column(ForeignKey("uploads.id", ondelete="SET NULL"), index=True)
     url: Mapped[str] = mapped_column(String(500), nullable=False)
     sort_order: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    is_main: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false", nullable=False)

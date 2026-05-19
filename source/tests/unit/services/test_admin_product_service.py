@@ -10,6 +10,7 @@ from source.db.models.choises.enum import UserRole
 from source.errors.auth import AdminAuthAccessDeniedError
 from source.errors.category import CategoryNotFoundError
 from source.errors.product import ProductNotFoundError, ProductSlugAlreadyExistsError
+from source.errors.upload import UploadFileTooLargeError, UploadUnsupportedFormatError
 from source.schemas.pydantic.admin_product import (
     AdminProductCreateRequest,
     AdminProductCategoryResponse,
@@ -23,6 +24,7 @@ from source.schemas.pydantic.admin_product import (
 from source.services.admin_auth import PermissionService
 from source.services.admin_product import AdminProductService
 from source.services.admin_product_cache import AdminProductCacheService
+from source.services.admin_product_image import AdminProductImageService
 from source.services.stock import StockMovementService, StockService
 from source.utils.query_hash import build_query_hash
 from source.utils.search import normalize_search_query
@@ -312,6 +314,59 @@ class FakeStockMovementRepository:
         return SimpleNamespace(id=1, **data)
 
 
+class FakeUploadService:
+    async def upload_image(self, *, session, media_settings, storage_service, upload_repository, user, file, entity_type):
+        if file.content_type not in media_settings.allowed_image_type_set:
+            raise UploadUnsupportedFormatError
+        if len(file.content) > media_settings.max_image_size_mb * 1024 * 1024:
+            raise UploadFileTooLargeError
+        return SimpleNamespace(id=1001, url="/media/product/apple.png")
+
+
+class FakeProductImageRepository:
+    def __init__(self, *, images: list[SimpleNamespace] | None = None) -> None:
+        self.images = images or []
+        self.unset_called = False
+        self.called = False
+
+    async def count_by_product_id(self, *, session, product_id: int):
+        return len([image for image in self.images if image.product_id == product_id])
+
+    async def unset_main_by_product_id(self, *, session, product_id: int):
+        self.unset_called = True
+        for image in self.images:
+            if image.product_id == product_id:
+                image.is_main = False
+
+    async def create(self, *, session, product_id: int, file_id: int | None, url: str, sort_order: int, is_main: bool):
+        image = SimpleNamespace(
+            id=len(self.images) + 10,
+            product_id=product_id,
+            file_id=file_id,
+            url=url,
+            sort_order=sort_order,
+            is_main=is_main,
+            created_date=datetime(2026, 5, 12, 10),
+        )
+        self.images.append(image)
+        return image
+
+    async def get_by_product_id(self, *, session, product_id: int):
+        self.called = True
+        if self.images:
+            return self.images
+        return [
+            SimpleNamespace(id=1, url="/media/apple.jpg", sort_order=0),
+        ]
+
+
+class FakeUploadFile:
+    def __init__(self, *, content_type: str = "image/png", size: int = 10) -> None:
+        self.filename = "apple.png"
+        self.content_type = content_type
+        self.content = b"x" * size
+
+
 class FakeProductCacheService:
     async def invalidate_all(self, *, redis_service: FakeRedisService) -> None:
         await redis_service.delete_by_pattern("products:list:*")
@@ -332,17 +387,6 @@ class FakeCategoryCacheService:
     async def invalidate_all(self, *, redis_service: FakeRedisService) -> None:
         await redis_service.delete_by_pattern("categories:list:*")
         await redis_service.delete_by_pattern("categories:tree:*")
-
-
-class FakeProductImageRepository:
-    def __init__(self) -> None:
-        self.called = False
-
-    async def get_by_product_id(self, *, session, product_id: int):
-        self.called = True
-        return [
-            SimpleNamespace(id=1, url="/media/apple.jpg", sort_order=0),
-        ]
 
 
 class FakeDiscountRepository:
@@ -553,6 +597,41 @@ async def update_stock(
         stock_service=StockService(),
         stock_movement_service=StockMovementService(),
         stock_movement_repository=stock_movement_repository or FakeStockMovementRepository(),
+        admin_audit_log_repository=audit_log_repository or FakeAuditLogRepository(),
+        product_cache_service=FakeProductCacheService(),
+        admin_product_cache_service=AdminProductCacheService(),
+    )
+
+
+async def add_image(
+    *,
+    redis_service=None,
+    user=None,
+    product_repository=None,
+    product_image_repository=None,
+    audit_log_repository=None,
+    commiter=None,
+    file=None,
+    sort_order: int = 1,
+    is_main: bool = False,
+    product_id: int = 1,
+):
+    return await AdminProductImageService().add_image(
+        session=None,
+        redis_service=redis_service or FakeRedisService(),
+        user=user or build_user(),
+        product_id=product_id,
+        file=file or FakeUploadFile(),
+        sort_order=sort_order,
+        is_main=is_main,
+        commiter=commiter or FakeCommiter(),
+        media_settings=settings.media,
+        permission_service=PermissionService(),
+        product_repository=product_repository or build_repository(),
+        upload_service=FakeUploadService(),
+        storage_service=None,
+        upload_repository=None,
+        product_image_repository=product_image_repository or FakeProductImageRepository(),
         admin_audit_log_repository=audit_log_repository or FakeAuditLogRepository(),
         product_cache_service=FakeProductCacheService(),
         admin_product_cache_service=AdminProductCacheService(),
@@ -1065,3 +1144,69 @@ async def test_admin_product_stock_cache_invalidated() -> None:
     assert "admin:products:list:*" in redis_service.deleted_patterns
     assert "admin:dashboard:low_stock:*" in redis_service.deleted_patterns
     assert "cart:*" in redis_service.deleted_patterns
+
+
+@pytest.mark.asyncio
+async def test_admin_product_image_upload_success() -> None:
+    response = await add_image()
+
+    assert response.product_id == 1
+    assert response.file_id == 1001
+    assert response.url == "/media/product/apple.png"
+    assert response.sort_order == 1
+
+
+@pytest.mark.asyncio
+async def test_admin_product_image_first_image_becomes_main() -> None:
+    image_repository = FakeProductImageRepository()
+
+    response = await add_image(product_image_repository=image_repository)
+
+    assert response.is_main is True
+    assert image_repository.images[0].is_main is True
+
+
+@pytest.mark.asyncio
+async def test_admin_product_image_main_unsets_others() -> None:
+    image_repository = FakeProductImageRepository(
+        images=[
+            SimpleNamespace(id=1, product_id=1, is_main=True),
+        ],
+    )
+
+    response = await add_image(product_image_repository=image_repository, is_main=True)
+
+    assert response.is_main is True
+    assert image_repository.unset_called is True
+    assert image_repository.images[0].is_main is False
+
+
+@pytest.mark.asyncio
+async def test_admin_product_image_unsupported_mime_type() -> None:
+    with pytest.raises(UploadUnsupportedFormatError):
+        await add_image(file=FakeUploadFile(content_type="application/pdf"))
+
+
+@pytest.mark.asyncio
+async def test_admin_product_image_file_too_large() -> None:
+    with pytest.raises(UploadFileTooLargeError):
+        await add_image(file=FakeUploadFile(size=settings.media.max_image_size_mb * 1024 * 1024 + 1))
+
+
+@pytest.mark.asyncio
+async def test_admin_product_image_product_not_found() -> None:
+    with pytest.raises(ProductNotFoundError):
+        await add_image(product_id=999)
+
+
+@pytest.mark.asyncio
+async def test_admin_product_image_cache_invalidated() -> None:
+    redis_service = FakeRedisService()
+
+    await add_image(redis_service=redis_service)
+
+    assert "products:detail:1:*" in redis_service.deleted_patterns
+    assert "products:slug:product-1:*" in redis_service.deleted_patterns
+    assert "products:list:*" in redis_service.deleted_patterns
+    assert "admin:products:detail:1" in redis_service.deleted_patterns
+    assert "admin:products:list:*" in redis_service.deleted_patterns

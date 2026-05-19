@@ -1,7 +1,7 @@
 from dishka.integrations.fastapi import FromDishka, inject
 from datetime import date
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Path, Query, status
+from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Path, Query, UploadFile, status
 from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -17,6 +17,7 @@ from source.errors.product import (
     ProductSkuAlreadyExistsError,
     ProductSlugAlreadyExistsError,
 )
+from source.errors.upload import UploadFileMissingError, UploadFileTooLargeError, UploadStorageError, UploadUnsupportedFormatError
 from source.repositories.admin_audit_log import AdminAuditLogRepository
 from source.repositories.category import CategoryRepository
 from source.repositories.discount import DiscountRepository
@@ -26,7 +27,9 @@ from source.repositories.product import ProductRepository
 from source.repositories.product_availability_log import ProductAvailabilityLogRepository
 from source.repositories.product_image import ProductImageRepository
 from source.repositories.stock_movement import StockMovementRepository
+from source.repositories.upload import UploadRepository
 from source.repositories.user import UserRepository
+from source.config.settings import Settings
 from source.schemas.pydantic.admin_dashboard import (
     AdminDashboardResponse,
     AdminLowStockQueryParams,
@@ -37,6 +40,7 @@ from source.schemas.pydantic.admin_dashboard import (
 from source.schemas.pydantic.admin_product import (
     AdminProductCreateRequest,
     AdminProductDetailResponse,
+    AdminProductImageResponse,
     AdminProductListQueryParams,
     AdminProductListResponse,
     AdminProductUpdateRequest,
@@ -53,9 +57,12 @@ from source.services.admin_dashboard import AdminDashboardService
 from source.services.admin_dashboard_cache import AdminDashboardCacheService
 from source.services.admin_product import AdminProductService
 from source.services.admin_product_cache import AdminProductCacheService
+from source.services.admin_product_image import AdminProductImageService
 from source.services.product_cache import ProductCacheService
 from source.services.redis import RedisService
+from source.services.storage import StorageService
 from source.services.stock import StockMovementService, StockService
+from source.services.upload import UploadService
 
 router = APIRouter(prefix="/admin", tags=["admin-dashboard"])
 
@@ -154,6 +161,79 @@ async def get_admin_product_detail(
     except InactiveUserError as error:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Пользователь заблокирован") from error
     except ProductNotFoundError as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Товар не найден") from error
+
+
+@router.post("/products/{product_id}/images", response_model=AdminProductImageResponse, status_code=status.HTTP_201_CREATED)
+@inject
+async def add_admin_product_image(
+    token_payload: dict = Depends(verify_access_token),
+    current_user: User = Depends(get_current_user),
+    product_id: int = Path(ge=1),
+    file: UploadFile | None = File(default=None),
+    sort_order: int = Form(default=0),
+    is_main: bool = Form(default=False),
+    session: FromDishka[AsyncSession] = None,
+    redis_service: FromDishka[RedisService] = None,
+    commiter: FromDishka[Commiter] = None,
+    config: FromDishka[Settings] = None,
+    admin_product_image_service: FromDishka[AdminProductImageService] = None,
+    storage_service: FromDishka[StorageService] = None,
+    upload_service: FromDishka[UploadService] = None,
+    product_cache_service: FromDishka[ProductCacheService] = None,
+    admin_product_cache_service: FromDishka[AdminProductCacheService] = None,
+    permission_service: FromDishka[PermissionService] = None,
+    product_repository: FromDishka[ProductRepository] = None,
+    upload_repository: FromDishka[UploadRepository] = None,
+    product_image_repository: FromDishka[ProductImageRepository] = None,
+    admin_audit_log_repository: FromDishka[AdminAuditLogRepository] = None,
+) -> AdminProductImageResponse:
+    if token_payload.get("token_type") != "access":
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь не авторизован")
+    try:
+        return await admin_product_image_service.add_image(
+            session=session,
+            redis_service=redis_service,
+            user=current_user,
+            product_id=product_id,
+            file=file,
+            sort_order=sort_order,
+            is_main=is_main,
+            commiter=commiter,
+            media_settings=config.media,
+            permission_service=permission_service,
+            product_repository=product_repository,
+            upload_service=upload_service,
+            storage_service=storage_service,
+            upload_repository=upload_repository,
+            product_image_repository=product_image_repository,
+            admin_audit_log_repository=admin_audit_log_repository,
+            product_cache_service=product_cache_service,
+            admin_product_cache_service=admin_product_cache_service,
+        )
+    except UploadFileMissingError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Файл не передан") from error
+    except UploadUnsupportedFormatError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Неподдерживаемый формат файла") from error
+    except UploadFileTooLargeError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Файл слишком большой") from error
+    except UploadStorageError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Ошибка загрузки файла") from error
+    except InvalidCredentialsError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь не авторизован") from error
+    except AdminAuthAccessDeniedError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Недостаточно прав") from error
+    except InactiveUserError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Пользователь заблокирован") from error
+    except ProductNotFoundError as error:
+        await commiter.rollback()
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Товар не найден") from error
 
 

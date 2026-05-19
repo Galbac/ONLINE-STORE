@@ -155,8 +155,12 @@ class AdminProductCategoryResponse(BaseModel):
 
 class AdminProductImageResponse(BaseModel):
     id: int
+    product_id: int | None = None
+    file_id: int | None = None
     url: str
     sort_order: int
+    is_main: bool | None = None
+    created_at: datetime | None = None
 
 
 class AdminProductSeoResponse(BaseModel):

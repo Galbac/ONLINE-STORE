@@ -48,6 +48,7 @@ from source.services.admin_dashboard import AdminDashboardService
 from source.services.admin_dashboard_cache import AdminDashboardCacheService
 from source.services.admin_product import AdminProductService
 from source.services.admin_product_cache import AdminProductCacheService
+from source.services.admin_product_image import AdminProductImageService
 from source.services.auth import AuthService
 from source.services.cart import CartCalculatorService, CartService
 from source.services.cart_cache import CartCacheService
@@ -400,6 +401,10 @@ class AppProvider(Provider):
     )
     admin_product_service = provide(
         AdminProductService,
+        scope=Scope.REQUEST,
+    )
+    admin_product_image_service = provide(
+        AdminProductImageService,
         scope=Scope.REQUEST,
     )
     admin_product_cache_service = provide(
