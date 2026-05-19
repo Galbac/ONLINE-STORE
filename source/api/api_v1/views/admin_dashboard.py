@@ -1,13 +1,22 @@
 from dishka.integrations.fastapi import FromDishka, inject
 from datetime import date
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, status
 from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from source.api.dependencies import get_current_user, verify_access_token
+from source.common.commiter import Commiter
 from source.db.models.user import User
+from source.errors.category import CategoryNotFoundError
 from source.errors.auth import AdminAuthAccessDeniedError, InactiveUserError, InvalidCredentialsError
+from source.errors.product import (
+    ProductBarcodeAlreadyExistsError,
+    ProductSkuAlreadyExistsError,
+    ProductSlugAlreadyExistsError,
+)
+from source.repositories.admin_audit_log import AdminAuditLogRepository
+from source.repositories.category import CategoryRepository
 from source.repositories.order import OrderRepository
 from source.repositories.product import ProductRepository
 from source.repositories.user import UserRepository
@@ -18,12 +27,19 @@ from source.schemas.pydantic.admin_dashboard import (
     AdminSalesQueryParams,
     AdminSalesResponse,
 )
-from source.schemas.pydantic.admin_product import AdminProductListQueryParams, AdminProductListResponse
+from source.schemas.pydantic.admin_product import (
+    AdminProductCreateRequest,
+    AdminProductDetailResponse,
+    AdminProductListQueryParams,
+    AdminProductListResponse,
+)
+from source.services.category_cache import CategoryCacheService
 from source.services.admin_auth import PermissionService
 from source.services.admin_dashboard import AdminDashboardService
 from source.services.admin_dashboard_cache import AdminDashboardCacheService
 from source.services.admin_product import AdminProductService
 from source.services.admin_product_cache import AdminProductCacheService
+from source.services.product_cache import ProductCacheService
 from source.services.redis import RedisService
 
 router = APIRouter(prefix="/admin", tags=["admin-dashboard"])
@@ -85,6 +101,59 @@ async def get_admin_products(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Недостаточно прав") from error
     except InactiveUserError as error:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Пользователь заблокирован") from error
+
+
+@router.post("/products", response_model=AdminProductDetailResponse, status_code=status.HTTP_201_CREATED)
+@inject
+async def create_admin_product(
+    payload: dict = Body(...),
+    token_payload: dict = Depends(verify_access_token),
+    current_user: User = Depends(get_current_user),
+    session: FromDishka[AsyncSession] = None,
+    redis_service: FromDishka[RedisService] = None,
+    commiter: FromDishka[Commiter] = None,
+    admin_product_service: FromDishka[AdminProductService] = None,
+    product_cache_service: FromDishka[ProductCacheService] = None,
+    admin_product_cache_service: FromDishka[AdminProductCacheService] = None,
+    category_cache_service: FromDishka[CategoryCacheService] = None,
+    permission_service: FromDishka[PermissionService] = None,
+    product_repository: FromDishka[ProductRepository] = None,
+    category_repository: FromDishka[CategoryRepository] = None,
+    admin_audit_log_repository: FromDishka[AdminAuditLogRepository] = None,
+) -> AdminProductDetailResponse:
+    if token_payload.get("token_type") != "access":
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь не авторизован")
+    try:
+        return await admin_product_service.create_product(
+            session=session,
+            redis_service=redis_service,
+            user=current_user,
+            data=AdminProductCreateRequest.model_validate(payload),
+            commiter=commiter,
+            permission_service=permission_service,
+            product_repository=product_repository,
+            category_repository=category_repository,
+            admin_audit_log_repository=admin_audit_log_repository,
+            product_cache_service=product_cache_service,
+            admin_product_cache_service=admin_product_cache_service,
+            category_cache_service=category_cache_service,
+        )
+    except ValidationError as error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Неверные данные") from error
+    except InvalidCredentialsError as error:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь не авторизован") from error
+    except AdminAuthAccessDeniedError as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Недостаточно прав") from error
+    except InactiveUserError as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Пользователь заблокирован") from error
+    except CategoryNotFoundError as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Категория не найдена") from error
+    except ProductSlugAlreadyExistsError as error:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Slug уже занят") from error
+    except ProductSkuAlreadyExistsError as error:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="SKU уже занят") from error
+    except ProductBarcodeAlreadyExistsError as error:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Barcode уже занят") from error
 
 
 @router.get("/dashboard", response_model=AdminDashboardResponse, status_code=status.HTTP_200_OK)

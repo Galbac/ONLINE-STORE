@@ -35,3 +35,6 @@ class AdminProductCacheService:
 
     async def invalidate_list(self, *, redis_service: RedisService) -> None:
         await redis_service.delete_by_pattern("admin:products:list:*")
+
+    async def invalidate_all(self, *, redis_service: RedisService) -> None:
+        await redis_service.delete_by_pattern("admin:products:list:*")

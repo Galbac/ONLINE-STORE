@@ -40,6 +40,47 @@ class AdminProductListQueryParams(BaseModel):
         return (self.page - 1) * self.limit
 
 
+class AdminProductCreateRequest(BaseModel):
+    name: str = Field(min_length=2, max_length=255)
+    slug: str = Field(min_length=2, max_length=255)
+    description: str | None = None
+    category_id: int = Field(ge=1)
+    price: Decimal = Field(gt=0)
+    old_price: Decimal | None = Field(default=None, gt=0)
+    unit: str = Field(min_length=1, max_length=20)
+    product_type: ProductType
+    quantity_step: Decimal = Field(gt=0)
+    min_quantity: Decimal = Field(gt=0)
+    stock_quantity: Decimal = Field(default=Decimal("0"), ge=0)
+    low_stock_threshold: Decimal = Field(gt=0)
+    is_active: bool = True
+    is_available: bool = True
+    sku: str | None = Field(default=None, min_length=1, max_length=100)
+    barcode: str | None = Field(default=None, min_length=1, max_length=100)
+    meta_title: str | None = Field(default=None, max_length=255)
+    meta_description: str | None = Field(default=None, max_length=500)
+
+    @model_validator(mode="after")
+    def validate_product_quantities(self) -> "AdminProductCreateRequest":
+        self.name = self.name.strip()
+        self.slug = self.slug.strip()
+        self.unit = self.unit.strip()
+        self.sku = self.sku.strip() if self.sku is not None else None
+        self.barcode = self.barcode.strip() if self.barcode is not None else None
+        if self.product_type == "piece":
+            if self.min_quantity < 1:
+                raise ValueError("min_quantity must be greater than or equal to 1 for piece products")
+            if self.quantity_step != Decimal("1"):
+                raise ValueError("quantity_step must be 1 for piece products")
+        if self.product_type == "weight" and self.quantity_step not in {
+            Decimal("0.1"),
+            Decimal("0.5"),
+            Decimal("1"),
+        }:
+            raise ValueError("quantity_step must be one of 0.1, 0.5, 1 for weight products")
+        return self
+
+
 class AdminProductCategoryResponse(BaseModel):
     id: int
     name: str
@@ -61,6 +102,19 @@ class AdminProductListItemResponse(BaseModel):
     is_available: bool
     sync_status: str | None = None
     external_1c_id: str | None = None
+
+
+class AdminProductDetailResponse(BaseModel):
+    id: int
+    name: str
+    slug: str
+    category_id: int
+    price: Decimal
+    unit: str
+    product_type: str
+    stock_quantity: Decimal
+    is_active: bool
+    is_available: bool
 
 
 class AdminProductListResponse(BaseModel):

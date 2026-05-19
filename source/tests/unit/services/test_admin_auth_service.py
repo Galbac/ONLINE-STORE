@@ -196,6 +196,7 @@ async def test_admin_login_success_admin() -> None:
         "admin:dashboard:read",
         "admin:dashboard:sales:read",
         "admin:products:read",
+        "admin:products:create",
         "admin:products:manage",
         "admin:orders:manage",
     ]
@@ -211,6 +212,7 @@ async def test_admin_login_success_manager() -> None:
     response = await login(user=build_user(role=UserRole.MANAGER))
 
     assert response.user.role == UserRole.MANAGER
+    assert "admin:products:create" in response.user.permissions
     assert "admin:orders:manage" in response.user.permissions
 
 

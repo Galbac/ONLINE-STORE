@@ -20,6 +20,10 @@ depends_on: str | Sequence[str] | None = None
 def upgrade() -> None:
     op.add_column("products", sa.Column("external_1c_id", sa.String(length=100), nullable=True))
     op.add_column("products", sa.Column("sync_status", sa.String(length=50), nullable=True))
+    op.add_column(
+        "products",
+        sa.Column("low_stock_threshold", sa.Numeric(12, 3), server_default="5", nullable=False),
+    )
     op.create_index(op.f("ix_products_external_1c_id"), "products", ["external_1c_id"], unique=False)
     op.create_index(op.f("ix_products_sync_status"), "products", ["sync_status"], unique=False)
 
@@ -27,5 +31,6 @@ def upgrade() -> None:
 def downgrade() -> None:
     op.drop_index(op.f("ix_products_sync_status"), table_name="products")
     op.drop_index(op.f("ix_products_external_1c_id"), table_name="products")
+    op.drop_column("products", "low_stock_threshold")
     op.drop_column("products", "sync_status")
     op.drop_column("products", "external_1c_id")

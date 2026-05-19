@@ -117,6 +117,20 @@ class CategoryRepository:
             return None
         return self._build_category_detail_response(category=category)
 
+    async def get_by_id(
+        self,
+        *,
+        session: AsyncSession,
+        category_id: int,
+    ) -> Category | None:
+        result = await session.execute(
+            select(Category).where(
+                Category.id == category_id,
+                Category.is_deleted.is_(False),
+            ),
+        )
+        return result.scalar_one_or_none()
+
     async def get_active_by_slug(
         self,
         *,

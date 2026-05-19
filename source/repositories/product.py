@@ -51,9 +51,9 @@ class ProductRepository:
         elif query.in_stock is False:
             statement = statement.where(Product.stock_quantity <= 0)
         if query.low_stock is True:
-            statement = statement.where(Product.stock_quantity <= Product.min_quantity)
+            statement = statement.where(Product.stock_quantity <= Product.low_stock_threshold)
         elif query.low_stock is False:
-            statement = statement.where(Product.stock_quantity > Product.min_quantity)
+            statement = statement.where(Product.stock_quantity > Product.low_stock_threshold)
         if query.product_type is not None:
             statement = statement.where(Product.product_type == query.product_type)
         if query.sync_status is not None:
@@ -111,7 +111,7 @@ class ProductRepository:
         statement = select(Product).where(
             Product.is_active.is_(True),
             Product.is_deleted.is_(False),
-            Product.stock_quantity <= Product.min_quantity,
+            Product.stock_quantity <= Product.low_stock_threshold,
         )
         if category_id is not None:
             statement = statement.where(Product.category_id == category_id)
@@ -142,7 +142,7 @@ class ProductRepository:
                 unit=product.unit,
                 product_type=product.product_type,
                 stock_quantity=product.stock_quantity,
-                low_stock_threshold=product.min_quantity,
+                low_stock_threshold=product.low_stock_threshold,
                 is_available=product.is_available,
             )
             for product in result.scalars().all()
@@ -570,6 +570,45 @@ class ProductRepository:
         result = await session.execute(select(Product).where(Product.id == product_id))
         return result.scalar_one_or_none()
 
+    async def get_by_slug(
+        self,
+        *,
+        session: AsyncSession,
+        slug: str,
+    ) -> Product | None:
+        result = await session.execute(select(Product).where(Product.slug == slug))
+        return result.scalar_one_or_none()
+
+    async def get_by_sku(
+        self,
+        *,
+        session: AsyncSession,
+        sku: str,
+    ) -> Product | None:
+        result = await session.execute(select(Product).where(Product.article == sku))
+        return result.scalar_one_or_none()
+
+    async def get_by_barcode(
+        self,
+        *,
+        session: AsyncSession,
+        barcode: str,
+    ) -> Product | None:
+        result = await session.execute(select(Product).where(Product.barcode == barcode))
+        return result.scalar_one_or_none()
+
+    async def create(
+        self,
+        *,
+        session: AsyncSession,
+        **data,
+    ) -> Product:
+        product = Product(**data)
+        session.add(product)
+        await session.flush()
+        await session.refresh(product)
+        return product
+
     async def get_by_ids(
         self,
         *,
@@ -774,7 +813,7 @@ class ProductRepository:
             unit=product.unit,
             product_type=product.product_type,
             stock_quantity=product.stock_quantity,
-            low_stock_threshold=product.min_quantity,
+            low_stock_threshold=product.low_stock_threshold,
             is_active=product.is_active,
             is_available=product.is_available,
             sync_status=product.sync_status,

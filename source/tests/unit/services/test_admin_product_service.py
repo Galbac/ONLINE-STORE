@@ -3,11 +3,15 @@ from decimal import Decimal
 from types import SimpleNamespace
 
 import pytest
+from pydantic import ValidationError
 
 from source.config.settings import settings
 from source.db.models.choises.enum import UserRole
 from source.errors.auth import AdminAuthAccessDeniedError
+from source.errors.category import CategoryNotFoundError
+from source.errors.product import ProductSlugAlreadyExistsError
 from source.schemas.pydantic.admin_product import (
+    AdminProductCreateRequest,
     AdminProductCategoryResponse,
     AdminProductListItemResponse,
     AdminProductListQueryParams,
@@ -24,6 +28,7 @@ class FakeRedisService:
     def __init__(self) -> None:
         self.values = {}
         self.ttls = {}
+        self.deleted_patterns = []
 
     async def get(self, key: str):
         return self.values.get(key)
@@ -33,11 +38,23 @@ class FakeRedisService:
         if ttl_seconds is not None:
             self.ttls[key] = ttl_seconds
 
+    async def delete_by_pattern(self, pattern: str) -> None:
+        self.deleted_patterns.append(pattern)
+
+
+class FakeCommiter:
+    def __init__(self) -> None:
+        self.committed = False
+
+    async def commit(self) -> None:
+        self.committed = True
+
 
 class FakeProductRepository:
     def __init__(self, *, products: list[SimpleNamespace]) -> None:
         self.products = products
         self.called = False
+        self.created_product = None
 
     async def admin_get_list(self, *, session, query: AdminProductListQueryParams):
         self.called = True
@@ -47,6 +64,21 @@ class FakeProductRepository:
 
     async def admin_count(self, *, session, query: AdminProductListQueryParams):
         return len(self._filter(query=query))
+
+    async def get_by_slug(self, *, session, slug: str):
+        return next((product for product in self.products if product.slug == slug), None)
+
+    async def get_by_sku(self, *, session, sku: str):
+        return next((product for product in self.products if product.article == sku), None)
+
+    async def get_by_barcode(self, *, session, barcode: str):
+        return next((product for product in self.products if product.barcode == barcode), None)
+
+    async def create(self, *, session, **data):
+        product = SimpleNamespace(id=55, **data)
+        self.created_product = product
+        self.products.append(product)
+        return product
 
     def _filter(self, *, query: AdminProductListQueryParams):
         products = [product for product in self.products if not product.is_deleted]
@@ -71,9 +103,9 @@ class FakeProductRepository:
         elif query.in_stock is False:
             products = [product for product in products if product.stock_quantity <= 0]
         if query.low_stock is True:
-            products = [product for product in products if product.stock_quantity <= product.min_quantity]
+            products = [product for product in products if product.stock_quantity <= product.low_stock_threshold]
         elif query.low_stock is False:
-            products = [product for product in products if product.stock_quantity > product.min_quantity]
+            products = [product for product in products if product.stock_quantity > product.low_stock_threshold]
         if query.product_type is not None:
             products = [product for product in products if product.product_type == query.product_type]
         if query.sync_status is not None:
@@ -103,7 +135,7 @@ class FakeProductRepository:
             unit=product.unit,
             product_type=product.product_type,
             stock_quantity=product.stock_quantity,
-            low_stock_threshold=product.min_quantity,
+            low_stock_threshold=product.low_stock_threshold,
             is_active=product.is_active,
             is_available=product.is_available,
             sync_status=product.sync_status,
@@ -112,7 +144,14 @@ class FakeProductRepository:
 
 
 def build_user(*, role=UserRole.ADMIN, is_active: bool = True, is_deleted: bool = False):
-    return SimpleNamespace(id=1, role=role, is_active=is_active, is_deleted=is_deleted)
+    return SimpleNamespace(
+        id=1,
+        role=role,
+        is_active=is_active,
+        is_deleted=is_deleted,
+        email="admin@example.com",
+        phone="+79990000000",
+    )
 
 
 def build_product(
@@ -124,6 +163,7 @@ def build_product(
     price: Decimal = Decimal("100.00"),
     stock_quantity: Decimal = Decimal("10"),
     min_quantity: Decimal = Decimal("5"),
+    low_stock_threshold: Decimal = Decimal("5"),
     is_active: bool = True,
     is_available: bool = True,
     is_deleted: bool = False,
@@ -144,6 +184,7 @@ def build_product(
         product_type=product_type,
         stock_quantity=stock_quantity,
         min_quantity=min_quantity,
+        low_stock_threshold=low_stock_threshold,
         is_active=is_active,
         is_available=is_available,
         is_deleted=is_deleted,
@@ -183,6 +224,37 @@ def build_repository() -> FakeProductRepository:
     )
 
 
+class FakeCategoryRepository:
+    def __init__(self, *, exists: bool = True) -> None:
+        self.exists = exists
+
+    async def get_by_id(self, *, session, category_id: int):
+        if not self.exists:
+            return None
+        return SimpleNamespace(id=category_id, name="Фрукты")
+
+
+class FakeAuditLogRepository:
+    def __init__(self) -> None:
+        self.logs = []
+
+    async def create(self, *, session, **data):
+        self.logs.append(data)
+        return SimpleNamespace(id=1, **data)
+
+
+class FakeProductCacheService:
+    async def invalidate_all(self, *, redis_service: FakeRedisService) -> None:
+        await redis_service.delete_by_pattern("products:list:*")
+        await redis_service.delete_by_pattern("products:new:*")
+
+
+class FakeCategoryCacheService:
+    async def invalidate_all(self, *, redis_service: FakeRedisService) -> None:
+        await redis_service.delete_by_pattern("categories:list:*")
+        await redis_service.delete_by_pattern("categories:tree:*")
+
+
 async def get_products(
     *,
     redis_service=None,
@@ -198,6 +270,55 @@ async def get_products(
         permission_service=PermissionService(),
         product_repository=product_repository or build_repository(),
         admin_product_cache_service=AdminProductCacheService(),
+    )
+
+
+def build_create_request(**overrides) -> AdminProductCreateRequest:
+    data = {
+        "name": "Яблоки красные",
+        "slug": "yabloki-krasnye",
+        "description": "Свежие красные яблоки",
+        "category_id": 11,
+        "price": Decimal("150.00"),
+        "old_price": Decimal("180.00"),
+        "unit": "kg",
+        "product_type": "weight",
+        "quantity_step": Decimal("0.5"),
+        "min_quantity": Decimal("0.5"),
+        "stock_quantity": Decimal("30.5"),
+        "low_stock_threshold": Decimal("5"),
+        "sku": "APL-NEW",
+        "barcode": "4600000000002",
+        "meta_title": "Яблоки красные купить онлайн",
+        "meta_description": "Свежие яблоки с доставкой",
+    }
+    data.update(overrides)
+    return AdminProductCreateRequest(**data)
+
+
+async def create_product(
+    *,
+    redis_service=None,
+    user=None,
+    product_repository=None,
+    category_repository=None,
+    audit_log_repository=None,
+    commiter=None,
+    data=None,
+):
+    return await AdminProductService().create_product(
+        session=None,
+        redis_service=redis_service or FakeRedisService(),
+        user=user or build_user(),
+        data=data or build_create_request(),
+        commiter=commiter or FakeCommiter(),
+        permission_service=PermissionService(),
+        product_repository=product_repository or build_repository(),
+        category_repository=category_repository or FakeCategoryRepository(),
+        admin_audit_log_repository=audit_log_repository or FakeAuditLogRepository(),
+        product_cache_service=FakeProductCacheService(),
+        admin_product_cache_service=AdminProductCacheService(),
+        category_cache_service=FakeCategoryCacheService(),
     )
 
 
@@ -291,3 +412,71 @@ async def test_admin_products_response_is_cached() -> None:
     cache_key = f"admin:products:list:{build_query_hash(query.model_dump())}"
     assert cache_key in redis_service.values
     assert redis_service.ttls[cache_key] == settings.products.admin_list_cache_ttl_seconds
+
+
+@pytest.mark.asyncio
+async def test_admin_product_create_success() -> None:
+    product_repository = build_repository()
+    commiter = FakeCommiter()
+
+    response = await create_product(product_repository=product_repository, commiter=commiter)
+
+    assert response.id == 55
+    assert response.name == "Яблоки красные"
+    assert response.category_id == 11
+    assert response.product_type == "weight"
+    assert product_repository.created_product.article == "APL-NEW"
+    assert product_repository.created_product.sync_status == "manual"
+    assert commiter.committed is True
+
+
+@pytest.mark.asyncio
+async def test_admin_product_create_slug_taken_error() -> None:
+    product_repository = build_repository()
+
+    with pytest.raises(ProductSlugAlreadyExistsError):
+        await create_product(
+            product_repository=product_repository,
+            data=build_create_request(slug="product-1"),
+        )
+
+
+@pytest.mark.asyncio
+async def test_admin_product_create_category_not_found_error() -> None:
+    with pytest.raises(CategoryNotFoundError):
+        await create_product(category_repository=FakeCategoryRepository(exists=False))
+
+
+def test_admin_product_create_invalid_product_type_error() -> None:
+    with pytest.raises(ValidationError):
+        build_create_request(product_type="box")
+
+
+def test_admin_product_create_invalid_quantity_step_error() -> None:
+    with pytest.raises(ValidationError):
+        build_create_request(product_type="weight", quantity_step=Decimal("0.3"))
+
+
+@pytest.mark.asyncio
+async def test_admin_product_create_invalidates_cache() -> None:
+    redis_service = FakeRedisService()
+
+    await create_product(redis_service=redis_service)
+
+    assert "products:list:*" in redis_service.deleted_patterns
+    assert "products:new:*" in redis_service.deleted_patterns
+    assert "admin:products:list:*" in redis_service.deleted_patterns
+    assert "categories:list:*" in redis_service.deleted_patterns
+    assert "categories:tree:*" in redis_service.deleted_patterns
+
+
+@pytest.mark.asyncio
+async def test_admin_product_create_audit_log_created() -> None:
+    audit_log_repository = FakeAuditLogRepository()
+
+    await create_product(audit_log_repository=audit_log_repository)
+
+    assert len(audit_log_repository.logs) == 1
+    assert audit_log_repository.logs[0]["event"] == "admin_product_create"
+    assert audit_log_repository.logs[0]["status"] == "success"
+    assert audit_log_repository.logs[0]["details"]["product_id"] == 55

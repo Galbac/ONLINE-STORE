@@ -28,6 +28,7 @@ class Product(IdBigIntPkMixin, CreateUpdateMixin, Base):
     stock_quantity: Mapped[Decimal] = mapped_column(Numeric(12, 3), default=0, server_default="0", nullable=False)
     quantity_step: Mapped[Decimal] = mapped_column(Numeric(12, 3), default=1, server_default="1", nullable=False)
     min_quantity: Mapped[Decimal] = mapped_column(Numeric(12, 3), default=1, server_default="1", nullable=False)
+    low_stock_threshold: Mapped[Decimal] = mapped_column(Numeric(12, 3), default=5, server_default="5", nullable=False)
     popularity: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
     meta_title: Mapped[str | None] = mapped_column(String(255))
     meta_description: Mapped[str | None] = mapped_column(String(500))
