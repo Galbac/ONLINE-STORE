@@ -9,7 +9,7 @@ from source.config.settings import settings
 from source.db.models.choises.enum import UserRole
 from source.errors.auth import AdminAuthAccessDeniedError
 from source.errors.category import CategoryNotFoundError
-from source.errors.product import ProductSlugAlreadyExistsError
+from source.errors.product import ProductNotFoundError, ProductSlugAlreadyExistsError
 from source.schemas.pydantic.admin_product import (
     AdminProductCreateRequest,
     AdminProductCategoryResponse,
@@ -65,6 +65,15 @@ class FakeProductRepository:
     async def admin_count(self, *, session, query: AdminProductListQueryParams):
         return len(self._filter(query=query))
 
+    async def admin_get_by_id(self, *, session, product_id: int):
+        product = next(
+            (item for item in self.products if item.id == product_id and not item.is_deleted),
+            None,
+        )
+        if product is None:
+            return None
+        return product, product.category
+
     async def get_by_slug(self, *, session, slug: str):
         return next((product for product in self.products if product.slug == slug), None)
 
@@ -75,7 +84,7 @@ class FakeProductRepository:
         return next((product for product in self.products if product.barcode == barcode), None)
 
     async def create(self, *, session, **data):
-        product = SimpleNamespace(id=55, **data)
+        product = SimpleNamespace(id=55, external_1c_id=None, **data)
         self.created_product = product
         self.products.append(product)
         return product
@@ -176,12 +185,16 @@ def build_product(
         id=product_id,
         name=name,
         slug=f"product-{product_id}",
+        description="Описание товара",
         article=article or f"SKU-{product_id}",
         barcode=barcode,
+        category_id=10,
         category=SimpleNamespace(id=10, name="Фрукты"),
         price=price,
+        old_price=None,
         unit="kg" if product_type == "weight" else "pcs",
         product_type=product_type,
+        quantity_step=Decimal("0.5") if product_type == "weight" else Decimal("1"),
         stock_quantity=stock_quantity,
         min_quantity=min_quantity,
         low_stock_threshold=low_stock_threshold,
@@ -190,6 +203,8 @@ def build_product(
         is_deleted=is_deleted,
         sync_status=sync_status,
         external_1c_id=external_1c_id,
+        meta_title="SEO title",
+        meta_description="SEO description",
         created_date=created_date or datetime(2026, 5, product_id),
     )
 
@@ -253,6 +268,26 @@ class FakeCategoryCacheService:
     async def invalidate_all(self, *, redis_service: FakeRedisService) -> None:
         await redis_service.delete_by_pattern("categories:list:*")
         await redis_service.delete_by_pattern("categories:tree:*")
+
+
+class FakeProductImageRepository:
+    def __init__(self) -> None:
+        self.called = False
+
+    async def get_by_product_id(self, *, session, product_id: int):
+        self.called = True
+        return [
+            SimpleNamespace(id=1, url="/media/apple.jpg", sort_order=0),
+        ]
+
+
+class FakeDiscountRepository:
+    def __init__(self) -> None:
+        self.called = False
+
+    async def get_by_product_id(self, *, session, product_id: int):
+        self.called = True
+        return []
 
 
 async def get_products(
@@ -319,6 +354,28 @@ async def create_product(
         product_cache_service=FakeProductCacheService(),
         admin_product_cache_service=AdminProductCacheService(),
         category_cache_service=FakeCategoryCacheService(),
+    )
+
+
+async def get_product_detail(
+    *,
+    redis_service=None,
+    user=None,
+    product_repository=None,
+    product_image_repository=None,
+    discount_repository=None,
+    product_id: int = 1,
+):
+    return await AdminProductService().get_product_detail(
+        session=None,
+        redis_service=redis_service or FakeRedisService(),
+        user=user or build_user(),
+        product_id=product_id,
+        permission_service=PermissionService(),
+        product_repository=product_repository or build_repository(),
+        product_image_repository=product_image_repository or FakeProductImageRepository(),
+        discount_repository=discount_repository or FakeDiscountRepository(),
+        admin_product_cache_service=AdminProductCacheService(),
     )
 
 
@@ -480,3 +537,62 @@ async def test_admin_product_create_audit_log_created() -> None:
     assert audit_log_repository.logs[0]["event"] == "admin_product_create"
     assert audit_log_repository.logs[0]["status"] == "success"
     assert audit_log_repository.logs[0]["details"]["product_id"] == 55
+
+
+@pytest.mark.asyncio
+async def test_admin_product_detail_success() -> None:
+    image_repository = FakeProductImageRepository()
+    discount_repository = FakeDiscountRepository()
+
+    response = await get_product_detail(
+        product_image_repository=image_repository,
+        discount_repository=discount_repository,
+    )
+
+    assert response.id == 1
+    assert response.name == "Яблоки красные"
+    assert response.category_id == 10
+    assert response.sku == "APL-001"
+    assert response.barcode == "4600000000001"
+    assert response.external_1c_id == "1c-abc-123"
+    assert response.sync_status == "synced"
+    assert response.images[0].url == "/media/apple.jpg"
+    assert image_repository.called is True
+    assert discount_repository.called is True
+
+
+@pytest.mark.asyncio
+async def test_admin_product_detail_from_redis_cache() -> None:
+    redis_service = FakeRedisService()
+    cached_response = build_create_request().model_dump()
+    response = await create_product(data=AdminProductCreateRequest(**cached_response))
+    redis_service.values["admin:products:detail:1"] = response.model_dump_json()
+    product_repository = build_repository()
+    image_repository = FakeProductImageRepository()
+
+    result = await get_product_detail(
+        redis_service=redis_service,
+        product_repository=product_repository,
+        product_image_repository=image_repository,
+    )
+
+    assert result == response
+    assert image_repository.called is False
+
+
+@pytest.mark.asyncio
+async def test_admin_product_detail_not_found_error() -> None:
+    with pytest.raises(ProductNotFoundError):
+        await get_product_detail(product_id=999)
+
+
+@pytest.mark.asyncio
+async def test_admin_product_detail_deleted_product_not_returned() -> None:
+    with pytest.raises(ProductNotFoundError):
+        await get_product_detail(product_id=4)
+
+
+@pytest.mark.asyncio
+async def test_admin_product_detail_no_permission_error() -> None:
+    with pytest.raises(AdminAuthAccessDeniedError):
+        await get_product_detail(user=build_user(role=UserRole.PICKER))

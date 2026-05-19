@@ -51,6 +51,22 @@ class DiscountRepository:
         )
         return list(result.scalars().all())
 
+    async def get_by_product_id(
+        self,
+        *,
+        session: AsyncSession,
+        product_id: int,
+    ) -> list[Discount]:
+        result = await session.execute(
+            select(Discount)
+            .where(
+                Discount.applicable_product_id == product_id,
+                Discount.is_deleted.is_(False),
+            )
+            .order_by(Discount.created_date.desc(), Discount.id.desc()),
+        )
+        return list(result.scalars().all())
+
     def _active_statement(self, *, query: ActiveDiscountsQueryParams, now: datetime):
         statement = select(Discount).where(
             Discount.is_active.is_(True),

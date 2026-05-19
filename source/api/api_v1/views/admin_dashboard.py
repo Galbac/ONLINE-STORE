@@ -1,7 +1,7 @@
 from dishka.integrations.fastapi import FromDishka, inject
 from datetime import date
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Body, Depends, HTTPException, Path, Query, status
 from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -12,13 +12,16 @@ from source.errors.category import CategoryNotFoundError
 from source.errors.auth import AdminAuthAccessDeniedError, InactiveUserError, InvalidCredentialsError
 from source.errors.product import (
     ProductBarcodeAlreadyExistsError,
+    ProductNotFoundError,
     ProductSkuAlreadyExistsError,
     ProductSlugAlreadyExistsError,
 )
 from source.repositories.admin_audit_log import AdminAuditLogRepository
 from source.repositories.category import CategoryRepository
+from source.repositories.discount import DiscountRepository
 from source.repositories.order import OrderRepository
 from source.repositories.product import ProductRepository
+from source.repositories.product_image import ProductImageRepository
 from source.repositories.user import UserRepository
 from source.schemas.pydantic.admin_dashboard import (
     AdminDashboardResponse,
@@ -101,6 +104,45 @@ async def get_admin_products(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Недостаточно прав") from error
     except InactiveUserError as error:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Пользователь заблокирован") from error
+
+
+@router.get("/products/{product_id}", response_model=AdminProductDetailResponse, status_code=status.HTTP_200_OK)
+@inject
+async def get_admin_product_detail(
+    token_payload: dict = Depends(verify_access_token),
+    current_user: User = Depends(get_current_user),
+    product_id: int = Path(ge=1),
+    session: FromDishka[AsyncSession] = None,
+    redis_service: FromDishka[RedisService] = None,
+    admin_product_service: FromDishka[AdminProductService] = None,
+    admin_product_cache_service: FromDishka[AdminProductCacheService] = None,
+    permission_service: FromDishka[PermissionService] = None,
+    product_repository: FromDishka[ProductRepository] = None,
+    product_image_repository: FromDishka[ProductImageRepository] = None,
+    discount_repository: FromDishka[DiscountRepository] = None,
+) -> AdminProductDetailResponse:
+    if token_payload.get("token_type") != "access":
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь не авторизован")
+    try:
+        return await admin_product_service.get_product_detail(
+            session=session,
+            redis_service=redis_service,
+            user=current_user,
+            product_id=product_id,
+            permission_service=permission_service,
+            product_repository=product_repository,
+            product_image_repository=product_image_repository,
+            discount_repository=discount_repository,
+            admin_product_cache_service=admin_product_cache_service,
+        )
+    except InvalidCredentialsError as error:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь не авторизован") from error
+    except AdminAuthAccessDeniedError as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Недостаточно прав") from error
+    except InactiveUserError as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Пользователь заблокирован") from error
+    except ProductNotFoundError as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Товар не найден") from error
 
 
 @router.post("/products", response_model=AdminProductDetailResponse, status_code=status.HTTP_201_CREATED)

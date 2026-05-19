@@ -3,14 +3,17 @@ from source.errors.category import CategoryNotFoundError
 from source.errors.auth import AdminAuthAccessDeniedError, InactiveUserError
 from source.errors.product import (
     ProductBarcodeAlreadyExistsError,
+    ProductNotFoundError,
     ProductSkuAlreadyExistsError,
     ProductSlugAlreadyExistsError,
 )
 from source.schemas.pydantic.admin_product import (
     AdminProductCreateRequest,
     AdminProductDetailResponse,
+    AdminProductImageResponse,
     AdminProductListQueryParams,
     AdminProductListResponse,
+    AdminProductSeoResponse,
 )
 from source.services.admin_auth import STAFF_ROLES
 from source.services.redis import RedisService
@@ -149,11 +152,95 @@ class AdminProductService:
             id=product.id,
             name=product.name,
             slug=product.slug,
+            description=product.description,
             category_id=product.category_id,
             price=product.price,
+            old_price=product.old_price,
             unit=product.unit,
             product_type=product.product_type,
+            quantity_step=product.quantity_step,
+            min_quantity=product.min_quantity,
             stock_quantity=product.stock_quantity,
+            low_stock_threshold=product.low_stock_threshold,
             is_active=product.is_active,
             is_available=product.is_available,
+            sku=product.article,
+            barcode=product.barcode,
+            external_1c_id=product.external_1c_id,
+            sync_status=product.sync_status,
+            images=[],
+            seo=AdminProductSeoResponse(
+                meta_title=product.meta_title,
+                meta_description=product.meta_description,
+            ),
         )
+
+    async def get_product_detail(
+        self,
+        *,
+        session,
+        redis_service: RedisService,
+        user,
+        product_id: int,
+        permission_service,
+        product_repository,
+        product_image_repository,
+        discount_repository,
+        admin_product_cache_service,
+    ) -> AdminProductDetailResponse:
+        self._check_read_permission(user=user, permission_service=permission_service)
+
+        cached_product = await admin_product_cache_service.get_detail(
+            redis_service=redis_service,
+            product_id=product_id,
+        )
+        if cached_product is not None:
+            return cached_product
+
+        row = await product_repository.admin_get_by_id(session=session, product_id=product_id)
+        if row is None:
+            raise ProductNotFoundError
+        product, _category = row
+
+        images = await product_image_repository.get_by_product_id(session=session, product_id=product.id)
+        await discount_repository.get_by_product_id(session=session, product_id=product.id)
+        response = AdminProductDetailResponse(
+            id=product.id,
+            name=product.name,
+            slug=product.slug,
+            description=product.description,
+            category_id=product.category_id,
+            price=product.price,
+            old_price=product.old_price,
+            unit=product.unit,
+            product_type=product.product_type,
+            quantity_step=product.quantity_step,
+            min_quantity=product.min_quantity,
+            stock_quantity=product.stock_quantity,
+            low_stock_threshold=product.low_stock_threshold,
+            is_active=product.is_active,
+            is_available=product.is_available,
+            sku=product.article,
+            barcode=product.barcode,
+            external_1c_id=product.external_1c_id,
+            sync_status=product.sync_status,
+            images=[
+                AdminProductImageResponse(
+                    id=image.id,
+                    url=image.url,
+                    sort_order=image.sort_order,
+                )
+                for image in images
+            ],
+            seo=AdminProductSeoResponse(
+                meta_title=product.meta_title,
+                meta_description=product.meta_description,
+            ),
+        )
+        await admin_product_cache_service.set_detail(
+            redis_service=redis_service,
+            product_id=product.id,
+            response=response,
+            ttl_seconds=settings.products.admin_detail_cache_ttl_seconds,
+        )
+        return response

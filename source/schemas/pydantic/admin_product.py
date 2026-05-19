@@ -86,6 +86,17 @@ class AdminProductCategoryResponse(BaseModel):
     name: str
 
 
+class AdminProductImageResponse(BaseModel):
+    id: int
+    url: str
+    sort_order: int
+
+
+class AdminProductSeoResponse(BaseModel):
+    meta_title: str | None = None
+    meta_description: str | None = None
+
+
 class AdminProductListItemResponse(BaseModel):
     id: int
     name: str
@@ -108,13 +119,24 @@ class AdminProductDetailResponse(BaseModel):
     id: int
     name: str
     slug: str
-    category_id: int
+    description: str | None = None
+    category_id: int | None = None
     price: Decimal
+    old_price: Decimal | None = None
     unit: str
     product_type: str
+    quantity_step: Decimal
+    min_quantity: Decimal
     stock_quantity: Decimal
+    low_stock_threshold: Decimal
     is_active: bool
     is_available: bool
+    sku: str | None = None
+    barcode: str | None = None
+    external_1c_id: str | None = None
+    sync_status: str | None = None
+    images: list[AdminProductImageResponse] = Field(default_factory=list)
+    seo: AdminProductSeoResponse | None = None
 
 
 class AdminProductListResponse(BaseModel):

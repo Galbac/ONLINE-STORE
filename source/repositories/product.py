@@ -107,6 +107,22 @@ class ProductRepository:
         result = await session.execute(select(func.count()).select_from(products_subquery))
         return int(result.scalar_one())
 
+    async def admin_get_by_id(
+        self,
+        *,
+        session: AsyncSession,
+        product_id: int,
+    ) -> tuple[Product, Category | None] | None:
+        result = await session.execute(
+            select(Product, Category)
+            .outerjoin(Category, Product.category_id == Category.id)
+            .where(
+                Product.id == product_id,
+                Product.is_deleted.is_(False),
+            ),
+        )
+        return result.one_or_none()
+
     def _low_stock_statement(self, *, category_id: int | None = None):
         statement = select(Product).where(
             Product.is_active.is_(True),

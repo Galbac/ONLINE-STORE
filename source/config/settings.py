@@ -336,6 +336,7 @@ class CategoriesSettings(BaseSettings):
 class ProductsSettings(BaseSettings):
     list_cache_ttl_seconds: int = Field(default=120, alias="PRODUCTS_LIST_CACHE_TTL_SECONDS")
     admin_list_cache_ttl_seconds: int = Field(default=60, alias="ADMIN_PRODUCTS_LIST_CACHE_TTL_SECONDS")
+    admin_detail_cache_ttl_seconds: int = Field(default=120, alias="ADMIN_PRODUCTS_DETAIL_CACHE_TTL_SECONDS")
     detail_cache_ttl_seconds: int = Field(default=180, alias="PRODUCT_DETAIL_CACHE_TTL_SECONDS")
     slug_cache_ttl_seconds: int = Field(default=180, alias="PRODUCT_SLUG_CACHE_TTL_SECONDS")
     search_cache_ttl_seconds: int = Field(default=60, alias="PRODUCT_SEARCH_CACHE_TTL_SECONDS")
