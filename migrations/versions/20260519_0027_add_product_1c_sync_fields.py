@@ -26,6 +26,8 @@ def upgrade() -> None:
     )
     op.add_column("products", sa.Column("deleted_by", sa.BigInteger(), nullable=True))
     op.add_column("product_images", sa.Column("is_main", sa.Boolean(), server_default="false", nullable=False))
+    op.add_column("product_images", sa.Column("is_deleted", sa.Boolean(), server_default="false", nullable=False))
+    op.add_column("product_images", sa.Column("deleted_at", sa.DateTime(timezone=True), nullable=True))
     op.create_index(op.f("ix_products_external_1c_id"), "products", ["external_1c_id"], unique=False)
     op.create_index(op.f("ix_products_sync_status"), "products", ["sync_status"], unique=False)
     op.create_table(
@@ -75,6 +77,8 @@ def downgrade() -> None:
     op.drop_index(op.f("ix_products_sync_status"), table_name="products")
     op.drop_index(op.f("ix_products_external_1c_id"), table_name="products")
     op.drop_column("products", "deleted_by")
+    op.drop_column("product_images", "deleted_at")
+    op.drop_column("product_images", "is_deleted")
     op.drop_column("product_images", "is_main")
     op.drop_column("products", "low_stock_threshold")
     op.drop_column("products", "sync_status")

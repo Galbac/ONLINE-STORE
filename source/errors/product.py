@@ -16,3 +16,11 @@ class ProductBarcodeAlreadyExistsError(Exception):
 
 class ProductActiveOrderExistsError(Exception):
     pass
+
+
+class ProductImageNotFoundError(Exception):
+    pass
+
+
+class ProductImageOwnershipError(Exception):
+    pass

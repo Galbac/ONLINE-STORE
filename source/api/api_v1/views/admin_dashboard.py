@@ -13,6 +13,8 @@ from source.errors.auth import AdminAuthAccessDeniedError, InactiveUserError, In
 from source.errors.product import (
     ProductActiveOrderExistsError,
     ProductBarcodeAlreadyExistsError,
+    ProductImageNotFoundError,
+    ProductImageOwnershipError,
     ProductNotFoundError,
     ProductSkuAlreadyExistsError,
     ProductSlugAlreadyExistsError,
@@ -235,6 +237,61 @@ async def add_admin_product_image(
     except ProductNotFoundError as error:
         await commiter.rollback()
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Товар не найден") from error
+
+
+@router.delete("/products/{product_id}/images/{image_id}", response_model=MessageResponse, status_code=status.HTTP_200_OK)
+@inject
+async def delete_admin_product_image(
+    token_payload: dict = Depends(verify_access_token),
+    current_user: User = Depends(get_current_user),
+    product_id: int = Path(ge=1),
+    image_id: int = Path(ge=1),
+    session: FromDishka[AsyncSession] = None,
+    redis_service: FromDishka[RedisService] = None,
+    commiter: FromDishka[Commiter] = None,
+    admin_product_image_service: FromDishka[AdminProductImageService] = None,
+    product_cache_service: FromDishka[ProductCacheService] = None,
+    admin_product_cache_service: FromDishka[AdminProductCacheService] = None,
+    permission_service: FromDishka[PermissionService] = None,
+    product_repository: FromDishka[ProductRepository] = None,
+    product_image_repository: FromDishka[ProductImageRepository] = None,
+    admin_audit_log_repository: FromDishka[AdminAuditLogRepository] = None,
+) -> MessageResponse:
+    if token_payload.get("token_type") != "access":
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь не авторизован")
+    try:
+        return await admin_product_image_service.delete_image(
+            session=session,
+            redis_service=redis_service,
+            user=current_user,
+            product_id=product_id,
+            image_id=image_id,
+            commiter=commiter,
+            permission_service=permission_service,
+            product_repository=product_repository,
+            product_image_repository=product_image_repository,
+            admin_audit_log_repository=admin_audit_log_repository,
+            product_cache_service=product_cache_service,
+            admin_product_cache_service=admin_product_cache_service,
+        )
+    except InvalidCredentialsError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь не авторизован") from error
+    except AdminAuthAccessDeniedError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Недостаточно прав") from error
+    except InactiveUserError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Пользователь заблокирован") from error
+    except ProductNotFoundError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Товар не найден") from error
+    except ProductImageNotFoundError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Изображение не найдено") from error
+    except ProductImageOwnershipError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Изображение не принадлежит товару") from error
 
 
 @router.patch("/products/{product_id}/stock", response_model=ProductStockResponse, status_code=status.HTTP_200_OK)

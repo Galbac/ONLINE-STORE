@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -18,7 +20,10 @@ class ProductImageRepository:
     ) -> list[ProductImageResponse]:
         result = await session.execute(
             select(ProductImage)
-            .where(ProductImage.product_id == product_id)
+            .where(
+                ProductImage.product_id == product_id,
+                ProductImage.is_deleted.is_(False),
+            )
             .order_by(ProductImage.sort_order.asc(), ProductImage.id.asc()),
         )
         return [
@@ -36,7 +41,12 @@ class ProductImageRepository:
         session: AsyncSession,
         product_id: int,
     ) -> int:
-        result = await session.execute(select(func.count(ProductImage.id)).where(ProductImage.product_id == product_id))
+        result = await session.execute(
+            select(func.count(ProductImage.id)).where(
+                ProductImage.product_id == product_id,
+                ProductImage.is_deleted.is_(False),
+            ),
+        )
         return int(result.scalar_one())
 
     async def unset_main_by_product_id(
@@ -45,7 +55,12 @@ class ProductImageRepository:
         session: AsyncSession,
         product_id: int,
     ) -> None:
-        result = await session.execute(select(ProductImage).where(ProductImage.product_id == product_id))
+        result = await session.execute(
+            select(ProductImage).where(
+                ProductImage.product_id == product_id,
+                ProductImage.is_deleted.is_(False),
+            ),
+        )
         for image in result.scalars().all():
             image.is_main = False
             session.add(image)
@@ -68,6 +83,64 @@ class ProductImageRepository:
             sort_order=sort_order,
             is_main=is_main,
         )
+        session.add(image)
+        await session.flush()
+        await session.refresh(image)
+        return image
+
+    async def get_by_id(
+        self,
+        *,
+        session: AsyncSession,
+        image_id: int,
+    ) -> ProductImage | None:
+        result = await session.execute(
+            select(ProductImage).where(
+                ProductImage.id == image_id,
+                ProductImage.is_deleted.is_(False),
+            ),
+        )
+        return result.scalar_one_or_none()
+
+    async def soft_delete(
+        self,
+        *,
+        session: AsyncSession,
+        image: ProductImage,
+        deleted_at: datetime,
+    ) -> ProductImage:
+        image.is_deleted = True
+        image.is_main = False
+        image.deleted_at = deleted_at
+        session.add(image)
+        await session.flush()
+        await session.refresh(image)
+        return image
+
+    async def get_first_active_by_product_id(
+        self,
+        *,
+        session: AsyncSession,
+        product_id: int,
+    ) -> ProductImage | None:
+        result = await session.execute(
+            select(ProductImage)
+            .where(
+                ProductImage.product_id == product_id,
+                ProductImage.is_deleted.is_(False),
+            )
+            .order_by(ProductImage.sort_order.asc(), ProductImage.id.asc())
+            .limit(1),
+        )
+        return result.scalar_one_or_none()
+
+    async def set_main(
+        self,
+        *,
+        session: AsyncSession,
+        image: ProductImage,
+    ) -> ProductImage:
+        image.is_main = True
         session.add(image)
         await session.flush()
         await session.refresh(image)

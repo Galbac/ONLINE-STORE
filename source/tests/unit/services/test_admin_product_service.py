@@ -9,7 +9,7 @@ from source.config.settings import settings
 from source.db.models.choises.enum import UserRole
 from source.errors.auth import AdminAuthAccessDeniedError
 from source.errors.category import CategoryNotFoundError
-from source.errors.product import ProductNotFoundError, ProductSlugAlreadyExistsError
+from source.errors.product import ProductImageNotFoundError, ProductImageOwnershipError, ProductNotFoundError, ProductSlugAlreadyExistsError
 from source.errors.upload import UploadFileTooLargeError, UploadUnsupportedFormatError
 from source.schemas.pydantic.admin_product import (
     AdminProductCreateRequest,
@@ -359,6 +359,27 @@ class FakeProductImageRepository:
             SimpleNamespace(id=1, url="/media/apple.jpg", sort_order=0),
         ]
 
+    async def get_by_id(self, *, session, image_id: int):
+        return next((image for image in self.images if image.id == image_id and not getattr(image, "is_deleted", False)), None)
+
+    async def soft_delete(self, *, session, image, deleted_at: datetime):
+        image.is_deleted = True
+        image.is_main = False
+        image.deleted_at = deleted_at
+        return image
+
+    async def get_first_active_by_product_id(self, *, session, product_id: int):
+        images = [
+            image
+            for image in self.images
+            if image.product_id == product_id and not getattr(image, "is_deleted", False)
+        ]
+        return sorted(images, key=lambda image: (image.sort_order, image.id))[0] if images else None
+
+    async def set_main(self, *, session, image):
+        image.is_main = True
+        return image
+
 
 class FakeUploadFile:
     def __init__(self, *, content_type: str = "image/png", size: int = 10) -> None:
@@ -632,6 +653,46 @@ async def add_image(
         storage_service=None,
         upload_repository=None,
         product_image_repository=product_image_repository or FakeProductImageRepository(),
+        admin_audit_log_repository=audit_log_repository or FakeAuditLogRepository(),
+        product_cache_service=FakeProductCacheService(),
+        admin_product_cache_service=AdminProductCacheService(),
+    )
+
+
+async def delete_image(
+    *,
+    redis_service=None,
+    user=None,
+    product_repository=None,
+    product_image_repository=None,
+    audit_log_repository=None,
+    commiter=None,
+    product_id: int = 1,
+    image_id: int = 10,
+):
+    return await AdminProductImageService().delete_image(
+        session=None,
+        redis_service=redis_service or FakeRedisService(),
+        user=user or build_user(),
+        product_id=product_id,
+        image_id=image_id,
+        commiter=commiter or FakeCommiter(),
+        permission_service=PermissionService(),
+        product_repository=product_repository or build_repository(),
+        product_image_repository=product_image_repository
+        or FakeProductImageRepository(
+            images=[
+                SimpleNamespace(
+                    id=10,
+                    product_id=1,
+                    file_id=1001,
+                    url="/media/product/apple.png",
+                    sort_order=1,
+                    is_main=False,
+                    is_deleted=False,
+                ),
+            ],
+        ),
         admin_audit_log_repository=audit_log_repository or FakeAuditLogRepository(),
         product_cache_service=FakeProductCacheService(),
         admin_product_cache_service=AdminProductCacheService(),
@@ -1204,6 +1265,72 @@ async def test_admin_product_image_cache_invalidated() -> None:
     redis_service = FakeRedisService()
 
     await add_image(redis_service=redis_service)
+
+    assert "products:detail:1:*" in redis_service.deleted_patterns
+    assert "products:slug:product-1:*" in redis_service.deleted_patterns
+    assert "products:list:*" in redis_service.deleted_patterns
+    assert "admin:products:detail:1" in redis_service.deleted_patterns
+    assert "admin:products:list:*" in redis_service.deleted_patterns
+
+
+@pytest.mark.asyncio
+async def test_admin_product_image_delete_success() -> None:
+    image_repository = FakeProductImageRepository(
+        images=[
+            SimpleNamespace(id=10, product_id=1, file_id=1001, url="/media/product/apple.png", sort_order=1, is_main=False, is_deleted=False),
+        ],
+    )
+
+    response = await delete_image(product_image_repository=image_repository)
+
+    assert response.message == "Изображение товара удалено"
+    assert image_repository.images[0].is_deleted is True
+
+
+@pytest.mark.asyncio
+async def test_admin_product_image_delete_wrong_product_error() -> None:
+    image_repository = FakeProductImageRepository(
+        images=[
+            SimpleNamespace(id=10, product_id=2, file_id=1001, url="/media/product/apple.png", sort_order=1, is_main=False, is_deleted=False),
+        ],
+    )
+
+    with pytest.raises(ProductImageOwnershipError):
+        await delete_image(product_image_repository=image_repository, product_id=1, image_id=10)
+
+
+@pytest.mark.asyncio
+async def test_admin_product_image_delete_main_assigns_next_main() -> None:
+    image_repository = FakeProductImageRepository(
+        images=[
+            SimpleNamespace(id=10, product_id=1, file_id=1001, url="/media/product/apple.png", sort_order=1, is_main=True, is_deleted=False),
+            SimpleNamespace(id=11, product_id=1, file_id=1002, url="/media/product/apple-2.png", sort_order=2, is_main=False, is_deleted=False),
+        ],
+    )
+
+    await delete_image(product_image_repository=image_repository, image_id=10)
+
+    assert image_repository.images[0].is_deleted is True
+    assert image_repository.images[1].is_main is True
+
+
+@pytest.mark.asyncio
+async def test_admin_product_image_delete_product_not_found() -> None:
+    with pytest.raises(ProductNotFoundError):
+        await delete_image(product_id=999)
+
+
+@pytest.mark.asyncio
+async def test_admin_product_image_delete_image_not_found() -> None:
+    with pytest.raises(ProductImageNotFoundError):
+        await delete_image(image_id=999)
+
+
+@pytest.mark.asyncio
+async def test_admin_product_image_delete_cache_invalidated() -> None:
+    redis_service = FakeRedisService()
+
+    await delete_image(redis_service=redis_service)
 
     assert "products:detail:1:*" in redis_service.deleted_patterns
     assert "products:slug:product-1:*" in redis_service.deleted_patterns
