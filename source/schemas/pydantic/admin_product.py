@@ -2,7 +2,9 @@ from decimal import Decimal
 from math import ceil
 from typing import Literal
 
-from pydantic import BaseModel, Field, model_validator
+from datetime import datetime
+
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from source.schemas.pydantic.product import ProductType
 
@@ -81,6 +83,42 @@ class AdminProductCreateRequest(BaseModel):
         return self
 
 
+class AdminProductUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str | None = Field(default=None, min_length=2, max_length=255)
+    slug: str | None = Field(default=None, min_length=2, max_length=255)
+    description: str | None = None
+    category_id: int | None = Field(default=None, ge=1)
+    price: Decimal | None = Field(default=None, gt=0)
+    old_price: Decimal | None = Field(default=None, gt=0)
+    unit: str | None = Field(default=None, min_length=1, max_length=20)
+    product_type: ProductType | None = None
+    quantity_step: Decimal | None = Field(default=None, gt=0)
+    min_quantity: Decimal | None = Field(default=None, gt=0)
+    low_stock_threshold: Decimal | None = Field(default=None, gt=0)
+    is_active: bool | None = None
+    is_available: bool | None = None
+    sku: str | None = Field(default=None, min_length=1, max_length=100)
+    barcode: str | None = Field(default=None, min_length=1, max_length=100)
+    meta_title: str | None = Field(default=None, max_length=255)
+    meta_description: str | None = Field(default=None, max_length=500)
+
+    @model_validator(mode="after")
+    def normalize_strings(self) -> "AdminProductUpdateRequest":
+        if self.name is not None:
+            self.name = self.name.strip()
+        if self.slug is not None:
+            self.slug = self.slug.strip()
+        if self.unit is not None:
+            self.unit = self.unit.strip()
+        if self.sku is not None:
+            self.sku = self.sku.strip()
+        if self.barcode is not None:
+            self.barcode = self.barcode.strip()
+        return self
+
+
 class AdminProductCategoryResponse(BaseModel):
     id: int
     name: str
@@ -137,6 +175,16 @@ class AdminProductDetailResponse(BaseModel):
     sync_status: str | None = None
     images: list[AdminProductImageResponse] = Field(default_factory=list)
     seo: AdminProductSeoResponse | None = None
+
+
+class AdminProductUpdateResponse(BaseModel):
+    id: int
+    name: str
+    slug: str
+    price: Decimal
+    is_active: bool
+    is_available: bool
+    updated_at: datetime
 
 
 class AdminProductListResponse(BaseModel):

@@ -16,6 +16,7 @@ from source.schemas.pydantic.admin_product import (
     AdminProductListItemResponse,
     AdminProductListQueryParams,
     AdminProductListResponse,
+    AdminProductUpdateRequest,
 )
 from source.services.admin_auth import PermissionService
 from source.services.admin_product import AdminProductService
@@ -40,6 +41,9 @@ class FakeRedisService:
 
     async def delete_by_pattern(self, pattern: str) -> None:
         self.deleted_patterns.append(pattern)
+
+    async def delete(self, key: str) -> None:
+        self.deleted_patterns.append(key)
 
 
 class FakeCommiter:
@@ -87,6 +91,12 @@ class FakeProductRepository:
         product = SimpleNamespace(id=55, external_1c_id=None, **data)
         self.created_product = product
         self.products.append(product)
+        return product
+
+    async def update(self, *, session, product, data: dict):
+        for field, value in data.items():
+            setattr(product, field, value)
+        product.updated_date = datetime(2026, 5, 12, 11)
         return product
 
     def _filter(self, *, query: AdminProductListQueryParams):
@@ -206,6 +216,7 @@ def build_product(
         meta_title="SEO title",
         meta_description="SEO description",
         created_date=created_date or datetime(2026, 5, product_id),
+        updated_date=datetime(2026, 5, product_id, 10),
     )
 
 
@@ -261,6 +272,15 @@ class FakeAuditLogRepository:
 class FakeProductCacheService:
     async def invalidate_all(self, *, redis_service: FakeRedisService) -> None:
         await redis_service.delete_by_pattern("products:list:*")
+        await redis_service.delete_by_pattern("products:new:*")
+
+    async def invalidate_product(self, *, redis_service: FakeRedisService, product_id: int, slug: str | None = None) -> None:
+        await redis_service.delete_by_pattern(f"products:detail:{product_id}:*")
+        if slug is not None:
+            await redis_service.delete_by_pattern(f"products:slug:{slug}:*")
+        await redis_service.delete_by_pattern("products:list:*")
+        await redis_service.delete_by_pattern("products:search:*")
+        await redis_service.delete_by_pattern("products:discounted:*")
         await redis_service.delete_by_pattern("products:new:*")
 
 
@@ -375,6 +395,33 @@ async def get_product_detail(
         product_repository=product_repository or build_repository(),
         product_image_repository=product_image_repository or FakeProductImageRepository(),
         discount_repository=discount_repository or FakeDiscountRepository(),
+        admin_product_cache_service=AdminProductCacheService(),
+    )
+
+
+async def update_product(
+    *,
+    redis_service=None,
+    user=None,
+    product_repository=None,
+    category_repository=None,
+    audit_log_repository=None,
+    commiter=None,
+    data=None,
+    product_id: int = 1,
+):
+    return await AdminProductService().update_product(
+        session=None,
+        redis_service=redis_service or FakeRedisService(),
+        user=user or build_user(),
+        product_id=product_id,
+        data=data or AdminProductUpdateRequest(name="Яблоки красные отборные", price=Decimal("160.00")),
+        commiter=commiter or FakeCommiter(),
+        permission_service=PermissionService(),
+        product_repository=product_repository or build_repository(),
+        category_repository=category_repository or FakeCategoryRepository(),
+        admin_audit_log_repository=audit_log_repository or FakeAuditLogRepository(),
+        product_cache_service=FakeProductCacheService(),
         admin_product_cache_service=AdminProductCacheService(),
     )
 
@@ -596,3 +643,81 @@ async def test_admin_product_detail_deleted_product_not_returned() -> None:
 async def test_admin_product_detail_no_permission_error() -> None:
     with pytest.raises(AdminAuthAccessDeniedError):
         await get_product_detail(user=build_user(role=UserRole.PICKER))
+
+
+@pytest.mark.asyncio
+async def test_admin_product_update_success() -> None:
+    product_repository = build_repository()
+    commiter = FakeCommiter()
+
+    response = await update_product(product_repository=product_repository, commiter=commiter)
+
+    assert response.id == 1
+    assert response.name == "Яблоки красные отборные"
+    assert response.price == Decimal("160.00")
+    assert response.updated_at == datetime(2026, 5, 12, 11)
+    assert product_repository.products[0].name == "Яблоки красные отборные"
+    assert commiter.committed is True
+
+
+@pytest.mark.asyncio
+async def test_admin_product_update_slug_taken_error() -> None:
+    with pytest.raises(ProductSlugAlreadyExistsError):
+        await update_product(data=AdminProductUpdateRequest(slug="product-2"))
+
+
+@pytest.mark.asyncio
+async def test_admin_product_update_category_not_found_error() -> None:
+    with pytest.raises(CategoryNotFoundError):
+        await update_product(
+            data=AdminProductUpdateRequest(category_id=99),
+            category_repository=FakeCategoryRepository(exists=False),
+        )
+
+
+@pytest.mark.asyncio
+async def test_admin_product_update_empty_body_error() -> None:
+    with pytest.raises(ValueError):
+        await update_product(data=AdminProductUpdateRequest())
+
+
+def test_admin_product_update_system_fields_forbidden() -> None:
+    with pytest.raises(ValidationError):
+        AdminProductUpdateRequest.model_validate({"external_1c_id": "1c-new"})
+
+
+@pytest.mark.asyncio
+async def test_admin_product_update_invalidates_cache() -> None:
+    redis_service = FakeRedisService()
+
+    await update_product(
+        redis_service=redis_service,
+        data=AdminProductUpdateRequest(slug="yabloki-krasnye-otbornye"),
+    )
+
+    assert "admin:products:detail:1" in redis_service.deleted_patterns
+    assert "admin:products:list:*" in redis_service.deleted_patterns
+    assert "products:detail:1:*" in redis_service.deleted_patterns
+    assert "products:slug:product-1:*" in redis_service.deleted_patterns
+    assert "products:slug:yabloki-krasnye-otbornye:*" in redis_service.deleted_patterns
+    assert "products:list:*" in redis_service.deleted_patterns
+    assert "products:search:*" in redis_service.deleted_patterns
+    assert "products:discounted:*" in redis_service.deleted_patterns
+    assert "products:new:*" in redis_service.deleted_patterns
+
+
+@pytest.mark.asyncio
+async def test_admin_product_update_audit_log_created() -> None:
+    audit_log_repository = FakeAuditLogRepository()
+
+    await update_product(
+        audit_log_repository=audit_log_repository,
+        data=AdminProductUpdateRequest(name="Яблоки красные отборные"),
+    )
+
+    assert len(audit_log_repository.logs) == 1
+    assert audit_log_repository.logs[0]["event"] == "admin_product_update"
+    assert audit_log_repository.logs[0]["status"] == "success"
+    assert audit_log_repository.logs[0]["details"]["product_id"] == 1
+    assert audit_log_repository.logs[0]["details"]["changes"]["name"]["old"] == "Яблоки красные"
+    assert audit_log_repository.logs[0]["details"]["changes"]["name"]["new"] == "Яблоки красные отборные"

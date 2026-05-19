@@ -625,6 +625,20 @@ class ProductRepository:
         await session.refresh(product)
         return product
 
+    async def update(
+        self,
+        *,
+        session: AsyncSession,
+        product: Product,
+        data: dict,
+    ) -> Product:
+        for field, value in data.items():
+            setattr(product, field, value)
+        session.add(product)
+        await session.flush()
+        await session.refresh(product)
+        return product
+
     async def get_by_ids(
         self,
         *,

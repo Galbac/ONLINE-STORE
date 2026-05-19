@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 from source.config.settings import settings
 from source.errors.category import CategoryNotFoundError
 from source.errors.auth import AdminAuthAccessDeniedError, InactiveUserError
@@ -14,6 +16,8 @@ from source.schemas.pydantic.admin_product import (
     AdminProductListQueryParams,
     AdminProductListResponse,
     AdminProductSeoResponse,
+    AdminProductUpdateRequest,
+    AdminProductUpdateResponse,
 )
 from source.services.admin_auth import STAFF_ROLES
 from source.services.redis import RedisService
@@ -37,6 +41,33 @@ class AdminProductService:
             raise AdminAuthAccessDeniedError
         if "admin:products:create" not in permission_service.get_user_permissions(role=user.role):
             raise AdminAuthAccessDeniedError
+
+    def _check_update_permission(self, *, user, permission_service) -> None:
+        if not user.is_active or user.is_deleted:
+            raise InactiveUserError
+        if user.role not in STAFF_ROLES:
+            raise AdminAuthAccessDeniedError
+        if "admin:products:update" not in permission_service.get_user_permissions(role=user.role):
+            raise AdminAuthAccessDeniedError
+
+    def _validate_quantities(
+        self,
+        *,
+        product_type: str,
+        quantity_step,
+        min_quantity,
+    ) -> None:
+        if product_type == "piece":
+            if min_quantity < 1:
+                raise ValueError("min_quantity must be greater than or equal to 1 for piece products")
+            if quantity_step != Decimal("1"):
+                raise ValueError("quantity_step must be 1 for piece products")
+        if product_type == "weight" and quantity_step not in {
+            Decimal("0.1"),
+            Decimal("0.5"),
+            Decimal("1"),
+        }:
+            raise ValueError("quantity_step must be one of 0.1, 0.5, 1 for weight products")
 
     async def get_products(
         self,
@@ -244,3 +275,117 @@ class AdminProductService:
             ttl_seconds=settings.products.admin_detail_cache_ttl_seconds,
         )
         return response
+
+    async def update_product(
+        self,
+        *,
+        session,
+        redis_service: RedisService,
+        user,
+        product_id: int,
+        data: AdminProductUpdateRequest,
+        commiter,
+        permission_service,
+        product_repository,
+        category_repository,
+        admin_audit_log_repository,
+        product_cache_service,
+        admin_product_cache_service,
+    ) -> AdminProductUpdateResponse:
+        self._check_update_permission(user=user, permission_service=permission_service)
+
+        update_fields = data.model_dump(exclude_unset=True)
+        if not update_fields:
+            raise ValueError("No fields to update")
+
+        row = await product_repository.admin_get_by_id(session=session, product_id=product_id)
+        if row is None:
+            raise ProductNotFoundError
+        product, _category = row
+        old_slug = product.slug
+
+        if "slug" in update_fields and update_fields["slug"] != product.slug:
+            existing_product = await product_repository.get_by_slug(session=session, slug=update_fields["slug"])
+            if existing_product is not None and existing_product.id != product.id:
+                raise ProductSlugAlreadyExistsError
+        if "sku" in update_fields and update_fields["sku"] is not None and update_fields["sku"] != product.article:
+            existing_product = await product_repository.get_by_sku(session=session, sku=update_fields["sku"])
+            if existing_product is not None and existing_product.id != product.id:
+                raise ProductSkuAlreadyExistsError
+        if "barcode" in update_fields and update_fields["barcode"] is not None and update_fields["barcode"] != product.barcode:
+            existing_product = await product_repository.get_by_barcode(session=session, barcode=update_fields["barcode"])
+            if existing_product is not None and existing_product.id != product.id:
+                raise ProductBarcodeAlreadyExistsError
+        if "category_id" in update_fields:
+            category = await category_repository.get_by_id(session=session, category_id=update_fields["category_id"])
+            if category is None:
+                raise CategoryNotFoundError
+
+        next_product_type = update_fields.get("product_type", product.product_type)
+        next_quantity_step = update_fields.get("quantity_step", product.quantity_step)
+        next_min_quantity = update_fields.get("min_quantity", product.min_quantity)
+        self._validate_quantities(
+            product_type=next_product_type,
+            quantity_step=next_quantity_step,
+            min_quantity=next_min_quantity,
+        )
+
+        repository_data = {
+            ("article" if field == "sku" else field): value
+            for field, value in update_fields.items()
+        }
+        before = {
+            field: getattr(product, field)
+            for field in repository_data
+        }
+        updated_product = await product_repository.update(
+            session=session,
+            product=product,
+            data=repository_data,
+        )
+        changes = {
+            field: {
+                "old": str(before[field]) if before[field] is not None else None,
+                "new": str(getattr(updated_product, field)) if getattr(updated_product, field) is not None else None,
+            }
+            for field in repository_data
+            if before[field] != getattr(updated_product, field)
+        }
+        await admin_audit_log_repository.create(
+            session=session,
+            user_id=user.id,
+            login=getattr(user, "email", None) or getattr(user, "phone", None) or str(user.id),
+            event="admin_product_update",
+            status="success",
+            details={
+                "product_id": updated_product.id,
+                "changes": changes,
+            },
+        )
+        await commiter.commit()
+
+        await admin_product_cache_service.invalidate_product(
+            redis_service=redis_service,
+            product_id=updated_product.id,
+        )
+        await product_cache_service.invalidate_product(
+            redis_service=redis_service,
+            product_id=updated_product.id,
+            slug=old_slug,
+        )
+        if updated_product.slug != old_slug:
+            await product_cache_service.invalidate_product(
+                redis_service=redis_service,
+                product_id=updated_product.id,
+                slug=updated_product.slug,
+            )
+
+        return AdminProductUpdateResponse(
+            id=updated_product.id,
+            name=updated_product.name,
+            slug=updated_product.slug,
+            price=updated_product.price,
+            is_active=updated_product.is_active,
+            is_available=updated_product.is_available,
+            updated_at=updated_product.updated_date,
+        )
