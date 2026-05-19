@@ -198,6 +198,15 @@ class AuthMeSettings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 
+class AdminAuthSettings(BaseSettings):
+    login_failed_limit: int = Field(default=5, alias="ADMIN_LOGIN_FAILED_LIMIT")
+    login_failed_window_seconds: int = Field(default=900, alias="ADMIN_LOGIN_FAILED_WINDOW_SECONDS")
+    access_expire_minutes: int = Field(default=30, alias="JWT_ACCESS_EXPIRE_MINUTES")
+    refresh_expire_days: int = Field(default=30, alias="JWT_REFRESH_EXPIRE_DAYS")
+
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+
 class UserMeSettings(BaseSettings):
     cache_ttl_seconds: int = Field(default=120, alias="USER_ME_CACHE_TTL_SECONDS")
 
@@ -423,6 +432,7 @@ class Settings(BaseSettings):
     password_reset: PasswordResetSettings = PasswordResetSettings()
     change_password: ChangePasswordSettings = ChangePasswordSettings()
     auth_me: AuthMeSettings = AuthMeSettings()
+    admin_auth: AdminAuthSettings = AdminAuthSettings()
     user_me: UserMeSettings = UserMeSettings()
     user_delete: UserDeleteSettings = UserDeleteSettings()
     profile_summary: ProfileSummarySettings = ProfileSummarySettings()

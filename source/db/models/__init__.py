@@ -1,4 +1,5 @@
 from source.db.models.base import Base
+from source.db.models.admin_audit_log import AdminAuditLog
 from source.db.models.address import Address
 from source.db.models.cart import Cart
 from source.db.models.cart_item import CartItem
@@ -24,6 +25,7 @@ from source.db.models.upload import Upload
 
 __all__ = (
     "Address",
+    "AdminAuditLog",
     "Base",
     "Cart",
     "CartItem",

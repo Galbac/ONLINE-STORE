@@ -16,6 +16,7 @@ from source.interactors.auth_me import AuthMeInteractor
 from source.interactors.auth_register import AuthRegisterInteractor
 from source.interactors.auth_reset_password import AuthResetPasswordInteractor
 from source.repositories.address import AddressRepository
+from source.repositories.admin_audit_log import AdminAuditLogRepository
 from source.repositories.cart import CartRepository
 from source.repositories.cart_item import CartItemRepository
 from source.repositories.category import CategoryRepository
@@ -30,6 +31,7 @@ from source.repositories.notification import NotificationLogRepository, Notifica
 from source.repositories.payment import PaymentRepository
 from source.repositories.payment_webhook_log import PaymentWebhookLogRepository
 from source.repositories.refund import RefundRepository
+from source.repositories.refresh_token import RefreshTokenRepository
 from source.repositories.pickup_point import PickupPointRepository
 from source.repositories.product import ProductRepository
 from source.repositories.product_image import ProductImageRepository
@@ -37,6 +39,7 @@ from source.repositories.promo_code import PromoCodeRepository, PromoCodeUsageRe
 from source.repositories.user import UserRepository
 from source.repositories.upload import UploadRepository
 from source.services.auth_cache import AuthCacheService
+from source.services.admin_auth import AdminAuthService, AuditLogService, JwtService, RateLimitService
 from source.services.auth import AuthService
 from source.services.cart import CartCalculatorService, CartService
 from source.services.cart_cache import CartCacheService
@@ -153,6 +156,14 @@ class AppProvider(Provider):
     )
     user_repository = provide(
         UserRepository,
+        scope=Scope.REQUEST,
+    )
+    refresh_token_repository = provide(
+        RefreshTokenRepository,
+        scope=Scope.REQUEST,
+    )
+    admin_audit_log_repository = provide(
+        AdminAuditLogRepository,
         scope=Scope.REQUEST,
     )
     address_repository = provide(
@@ -345,6 +356,22 @@ class AppProvider(Provider):
     )
     notification_cache_service = provide(
         NotificationCacheService,
+        scope=Scope.REQUEST,
+    )
+    admin_auth_service = provide(
+        AdminAuthService,
+        scope=Scope.REQUEST,
+    )
+    jwt_service = provide(
+        JwtService,
+        scope=Scope.REQUEST,
+    )
+    rate_limit_service = provide(
+        RateLimitService,
+        scope=Scope.REQUEST,
+    )
+    audit_log_service = provide(
+        AuditLogService,
         scope=Scope.REQUEST,
     )
 

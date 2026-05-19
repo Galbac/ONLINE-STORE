@@ -10,6 +10,14 @@ class InvalidCredentialsError(Exception):
     pass
 
 
+class AdminAuthAccessDeniedError(Exception):
+    pass
+
+
+class AdminAuthRateLimitExceededError(Exception):
+    pass
+
+
 class InactiveUserError(Exception):
     pass
 
