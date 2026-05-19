@@ -13,6 +13,7 @@ from source.interactors.auth_forgot_password import AuthForgotPasswordInteractor
 from source.interactors.auth_login import AuthLoginInteractor
 from source.interactors.auth_logout import AuthLogoutInteractor
 from source.interactors.auth_me import AuthMeInteractor
+from source.interactors.auth_refresh import AuthRefreshInteractor
 from source.interactors.auth_register import AuthRegisterInteractor
 from source.interactors.auth_reset_password import AuthResetPasswordInteractor
 from source.repositories.address import AddressRepository
@@ -99,6 +100,10 @@ class AppProvider(Provider):
     )
     auth_logout_interactor = provide(
         AuthLogoutInteractor,
+        scope=Scope.REQUEST,
+    )
+    auth_refresh_interactor = provide(
+        AuthRefreshInteractor,
         scope=Scope.REQUEST,
     )
     auth_forgot_password_interactor = provide(

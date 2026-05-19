@@ -30,6 +30,26 @@ class RefreshTokenAlreadyRevokedError(Exception):
     pass
 
 
+class InvalidRefreshTokenError(Exception):
+    pass
+
+
+class InvalidRefreshTokenTypeError(Exception):
+    pass
+
+
+class RefreshTokenExpiredError(Exception):
+    pass
+
+
+class RefreshTokenRateLimitExceededError(Exception):
+    pass
+
+
+class RefreshTokenUserNotFoundError(Exception):
+    pass
+
+
 class PasswordResetRateLimitExceededError(Exception):
     pass
 

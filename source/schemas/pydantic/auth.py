@@ -23,6 +23,10 @@ class LogoutRequest(BaseModel):
     refresh_token: str = Field(min_length=1)
 
 
+class RefreshTokenRequest(BaseModel):
+    refresh_token: str = Field(min_length=1)
+
+
 class ForgotPasswordRequest(BaseModel):
     login: str = Field(min_length=3, max_length=255)
 
@@ -113,6 +117,12 @@ class RegisterAuthResponse(UserShortResponse):
 
 class AuthResponse(BaseModel):
     user: UserShortResponse
+    access_token: str
+    refresh_token: str
+    token_type: str = "bearer"
+
+
+class TokenPairResponse(BaseModel):
     access_token: str
     refresh_token: str
     token_type: str = "bearer"

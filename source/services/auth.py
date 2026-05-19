@@ -6,12 +6,13 @@ from secrets import token_urlsafe
 from urllib.parse import urlencode
 from uuid import uuid4
 
-from jose import JWTError, jwt
+from jose import ExpiredSignatureError, JWTError, jwt
 from passlib.context import CryptContext
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from source.config.settings import settings
+from source.db.models.admin_audit_log import AdminAuditLog
 from source.db.models.choises.enum import UserRole
 from source.db.models.refresh_token import RefreshToken
 from source.db.models.user import User
@@ -22,11 +23,16 @@ from source.errors.auth import (
     InvalidCurrentPasswordError,
     InvalidPasswordResetTokenError,
     InvalidCredentialsError,
+    InvalidRefreshTokenError,
+    InvalidRefreshTokenTypeError,
     NewPasswordSameAsOldError,
     PasswordResetRateLimitExceededError,
     PasswordResetUserNotFoundError,
     RefreshTokenAlreadyRevokedError,
+    RefreshTokenExpiredError,
     RefreshTokenNotFoundError,
+    RefreshTokenRateLimitExceededError,
+    RefreshTokenUserNotFoundError,
     UserEmailAlreadyExistsError,
     UserPhoneAlreadyExistsError,
 )
@@ -38,6 +44,8 @@ from source.schemas.pydantic.auth import (
     MessageResponse,
     RegisterAuthResponse,
     ResetPasswordRequest,
+    RefreshTokenRequest,
+    TokenPairResponse,
     UserLoginRequest,
     UserRegisterRequest,
     UserShortResponse,
@@ -157,6 +165,113 @@ class AuthService:
         token.revoked_at = datetime.now(UTC)
         session.add(token)
         await session.flush()
+
+    async def refresh_tokens(
+        self,
+        *,
+        session: AsyncSession,
+        redis_service: RedisService,
+        data: RefreshTokenRequest,
+        ip_address: str | None,
+        user_agent: str | None,
+    ) -> TokenPairResponse:
+        payload = self._decode_refresh_token(data.refresh_token)
+        user_id = payload.get("user_id")
+        jti = payload.get("jti")
+        if user_id is None or not jti:
+            raise InvalidRefreshTokenError
+
+        try:
+            user_id = int(user_id)
+        except (TypeError, ValueError) as error:
+            raise InvalidRefreshTokenError from error
+        await self._check_refresh_rate_limit(redis_service=redis_service, user_id=user_id)
+
+        token = await self._get_refresh_token(session=session, refresh_token=data.refresh_token)
+        if token is None:
+            await self._log_auth_security_event(
+                session=session,
+                user_id=None,
+                event="auth_refresh",
+                status="failed",
+                ip_address=ip_address,
+                user_agent=user_agent,
+                details={"reason": "refresh_token_not_found", "jti": jti},
+            )
+            raise RefreshTokenNotFoundError
+
+        now = datetime.now(UTC)
+        if token.revoked_at is not None:
+            await self._log_auth_security_event(
+                session=session,
+                user_id=user_id,
+                event="auth_refresh_reuse_detected",
+                status="failed",
+                ip_address=ip_address,
+                user_agent=user_agent,
+                details={"reason": "refresh_token_revoked", "jti": jti},
+            )
+            if settings.auth.refresh_reuse_detection_enabled:
+                await self._revoke_active_refresh_tokens(session=session, user_id=token.user_id)
+                await session.flush()
+            raise RefreshTokenAlreadyRevokedError
+
+        if token.expires_at <= now:
+            await self._log_auth_security_event(
+                session=session,
+                user_id=None,
+                event="auth_refresh",
+                status="failed",
+                ip_address=ip_address,
+                user_agent=user_agent,
+                details={"reason": "refresh_token_expired", "jti": jti},
+            )
+            raise RefreshTokenExpiredError
+
+        if token.user_id != user_id:
+            await self._log_auth_security_event(
+                session=session,
+                user_id=None,
+                event="auth_refresh",
+                status="forbidden",
+                ip_address=ip_address,
+                user_agent=user_agent,
+                details={"reason": "refresh_token_owner_mismatch", "jti": jti},
+            )
+            raise InvalidRefreshTokenError
+
+        user = await self._get_user_by_id(session=session, user_id=user_id)
+        if user is None:
+            raise RefreshTokenUserNotFoundError
+        if not user.is_active or user.is_deleted:
+            raise InactiveUserError
+
+        access_token = self.create_access_token(user_id=user.id, role=user.role)
+        refresh_token = data.refresh_token
+        if settings.auth.refresh_rotation_enabled:
+            token.revoked_at = now
+            session.add(token)
+            refresh_token = self.create_refresh_token(user_id=user.id, role=user.role)
+            await self._store_refresh_token(
+                session=session,
+                user_id=user.id,
+                refresh_token=refresh_token,
+            )
+        await self._log_auth_security_event(
+            session=session,
+            user_id=user.id,
+            event="auth_refresh",
+            status="success",
+            ip_address=ip_address,
+            user_agent=user_agent,
+            details={"rotation": settings.auth.refresh_rotation_enabled},
+        )
+        await session.flush()
+
+        return TokenPairResponse(
+            access_token=access_token,
+            refresh_token=refresh_token,
+        )
 
     async def forgot_password(
         self,
@@ -403,6 +518,22 @@ class AuthService:
             algorithm=settings.auth.jwt_algorithm,
         )
 
+    def _decode_refresh_token(self, refresh_token: str) -> dict:
+        try:
+            payload = jwt.decode(
+                token=refresh_token,
+                key=settings.auth.jwt_secret_key,
+                algorithms=[settings.auth.jwt_algorithm],
+            )
+        except ExpiredSignatureError as error:
+            raise RefreshTokenExpiredError from error
+        except JWTError as error:
+            raise InvalidRefreshTokenError from error
+
+        if payload.get("token_type") != "refresh":
+            raise InvalidRefreshTokenTypeError
+        return payload
+
     async def _ensure_phone_is_unique(
         self,
         *,
@@ -492,6 +623,19 @@ class AuthService:
         if requests_count > limit:
             raise ChangePasswordRateLimitExceededError
 
+    async def _check_refresh_rate_limit(
+        self,
+        *,
+        redis_service: RedisService,
+        user_id: int,
+    ) -> None:
+        key = f"auth:refresh:rate:user:{user_id}"
+        requests_count = await redis_service.incr(key)
+        if requests_count == 1:
+            await redis_service.expire(key, 60)
+        if requests_count > settings.auth.refresh_rate_limit_per_minute:
+            raise RefreshTokenRateLimitExceededError
+
     def _build_password_reset_link(self, reset_token: str) -> str:
         return f"{settings.password_reset.frontend_url}?{urlencode({'token': reset_token})}"
 
@@ -566,6 +710,29 @@ class AuthService:
                 "revoked",
                 ttl_seconds=ttl_seconds,
             )
+
+    async def _log_auth_security_event(
+        self,
+        *,
+        session: AsyncSession,
+        user_id: int | None,
+        event: str,
+        status: str,
+        ip_address: str | None,
+        user_agent: str | None,
+        details: dict | None = None,
+    ) -> None:
+        session.add(
+            AdminAuditLog(
+                user_id=user_id,
+                login=str(user_id) if user_id is not None else "unknown",
+                event=event,
+                status=status,
+                ip_address=ip_address,
+                user_agent=user_agent,
+                details=details or {},
+            ),
+        )
 
     async def _get_redis_int(
         self,

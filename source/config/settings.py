@@ -127,6 +127,9 @@ class AuthSettings(BaseSettings):
         default=60 * 24 * 30,
         alias="JWT_REFRESH_TOKEN_EXPIRE_MINUTES",
     )
+    refresh_rotation_enabled: bool = Field(default=True, alias="JWT_REFRESH_ROTATION_ENABLED")
+    refresh_reuse_detection_enabled: bool = Field(default=True, alias="JWT_REFRESH_REUSE_DETECTION_ENABLED")
+    refresh_rate_limit_per_minute: int = Field(default=20, alias="AUTH_REFRESH_RATE_LIMIT_PER_MINUTE")
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

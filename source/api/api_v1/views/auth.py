@@ -12,11 +12,16 @@ from source.errors.auth import (
     InvalidCurrentPasswordError,
     InvalidCredentialsError,
     InvalidPasswordResetTokenError,
+    InvalidRefreshTokenError,
+    InvalidRefreshTokenTypeError,
     NewPasswordSameAsOldError,
     PasswordResetRateLimitExceededError,
     PasswordResetUserNotFoundError,
     RefreshTokenAlreadyRevokedError,
+    RefreshTokenExpiredError,
     RefreshTokenNotFoundError,
+    RefreshTokenRateLimitExceededError,
+    RefreshTokenUserNotFoundError,
     UserEmailAlreadyExistsError,
     UserPhoneAlreadyExistsError,
 )
@@ -25,6 +30,7 @@ from source.interactors.auth_forgot_password import AuthForgotPasswordInteractor
 from source.interactors.auth_login import AuthLoginInteractor
 from source.interactors.auth_logout import AuthLogoutInteractor
 from source.interactors.auth_me import AuthMeInteractor
+from source.interactors.auth_refresh import AuthRefreshInteractor
 from source.interactors.auth_register import AuthRegisterInteractor
 from source.interactors.auth_reset_password import AuthResetPasswordInteractor
 from source.schemas.pydantic.auth import (
@@ -35,7 +41,9 @@ from source.schemas.pydantic.auth import (
     LogoutRequest,
     MessageResponse,
     RegisterAuthResponse,
+    RefreshTokenRequest,
     ResetPasswordRequest,
+    TokenPairResponse,
     UserLoginRequest,
     UserRegisterRequest,
 )
@@ -178,6 +186,93 @@ async def login_user(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Пользователь заблокирован или неактивен",
+        ) from error
+
+
+@router.post(
+    "/refresh",
+    response_model=TokenPairResponse,
+    status_code=status.HTTP_200_OK,
+    responses={
+        status.HTTP_401_UNAUTHORIZED: {
+            "description": "Refresh token недействителен, истёк, отозван или имеет неверный тип.",
+        },
+        status.HTTP_403_FORBIDDEN: {
+            "description": "Пользователь заблокирован или неактивен.",
+        },
+        status.HTTP_404_NOT_FOUND: {
+            "description": "Пользователь не найден.",
+        },
+        status.HTTP_429_TOO_MANY_REQUESTS: {
+            "description": "Слишком много запросов на обновление токена.",
+        },
+        status.HTTP_500_INTERNAL_SERVER_ERROR: {
+            "description": "Внутренняя ошибка сервера.",
+        },
+    },
+)
+@inject
+async def refresh_tokens(
+    body: RefreshTokenRequest,
+    request: Request,
+    session: FromDishka[AsyncSession],
+    commiter: FromDishka[Commiter],
+    auth_service: FromDishka[AuthService],
+    redis_service: FromDishka[RedisService],
+    auth_refresh_interactor: FromDishka[AuthRefreshInteractor],
+) -> TokenPairResponse:
+    try:
+        response = await auth_refresh_interactor.execute(
+            session=session,
+            auth_service=auth_service,
+            redis_service=redis_service,
+            data=body,
+            ip_address=request.client.host if request.client else "unknown",
+            user_agent=request.headers.get("user-agent"),
+        )
+        await commiter.commit()
+        return response
+    except InvalidRefreshTokenTypeError as error:
+        await commiter.commit()
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Передан токен неверного типа",
+        ) from error
+    except RefreshTokenExpiredError as error:
+        await commiter.commit()
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Refresh token истёк",
+        ) from error
+    except RefreshTokenAlreadyRevokedError as error:
+        await commiter.commit()
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Refresh token уже был использован или отозван",
+        ) from error
+    except (InvalidRefreshTokenError, RefreshTokenNotFoundError) as error:
+        await commiter.commit()
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Недействительный refresh token",
+        ) from error
+    except RefreshTokenUserNotFoundError as error:
+        await commiter.commit()
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Пользователь не найден",
+        ) from error
+    except InactiveUserError as error:
+        await commiter.commit()
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Пользователь заблокирован или неактивен",
+        ) from error
+    except RefreshTokenRateLimitExceededError as error:
+        await commiter.commit()
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Слишком много запросов на обновление токена",
         ) from error
 
 
