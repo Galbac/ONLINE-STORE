@@ -6,6 +6,9 @@ class OrderCacheService:
     def _admin_list_key(self, *, query_hash: str) -> str:
         return f"admin:orders:list:{query_hash}"
 
+    def _admin_detail_key(self, *, order_id: int) -> str:
+        return f"admin:orders:detail:{order_id}"
+
     def _my_orders_key(self, *, user_id: int, query_hash: str) -> str:
         return f"orders:my:{user_id}:{query_hash}"
 
@@ -44,6 +47,46 @@ class OrderCacheService:
 
     async def invalidate_admin_list(self, *, redis_service: RedisService) -> None:
         await redis_service.delete_by_pattern("admin:orders:list:*")
+
+    async def get_admin_detail(
+        self,
+        *,
+        redis_service: RedisService,
+        order_id: int,
+    ):
+        from source.schemas.pydantic.order import AdminOrderDetailResponse
+
+        cached_order = await redis_service.get(self._admin_detail_key(order_id=order_id))
+        if cached_order is None:
+            return None
+        if isinstance(cached_order, bytes):
+            cached_order = cached_order.decode("utf-8")
+        return AdminOrderDetailResponse.model_validate_json(cached_order)
+
+    async def set_admin_detail(
+        self,
+        *,
+        redis_service: RedisService,
+        order_id: int,
+        response,
+        ttl_seconds: int,
+    ) -> None:
+        await redis_service.set(
+            self._admin_detail_key(order_id=order_id),
+            response.model_dump_json(),
+            ttl_seconds=ttl_seconds,
+        )
+
+    async def invalidate_admin_detail(
+        self,
+        *,
+        redis_service: RedisService,
+        order_id: int | None = None,
+    ) -> None:
+        if order_id is not None:
+            await redis_service.delete(self._admin_detail_key(order_id=order_id))
+            return
+        await redis_service.delete_by_pattern("admin:orders:detail:*")
 
     async def get_my_orders(
         self,
@@ -123,6 +166,7 @@ class OrderCacheService:
         await self.invalidate_status(redis_service=redis_service, user_id=user_id, order_id=order_id)
         await self.invalidate_my_orders(redis_service=redis_service, user_id=user_id)
         await self.invalidate_admin_list(redis_service=redis_service)
+        await self.invalidate_admin_detail(redis_service=redis_service, order_id=order_id)
 
     async def get_status(
         self,

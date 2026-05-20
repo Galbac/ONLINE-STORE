@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from source.db.models.choises.enum import UserRole
-from source.errors.auth import AdminAuthAccessDeniedError
+from source.errors.auth import AdminAuthAccessDeniedError, OrderNotFoundError
 from source.schemas.pydantic.order import AdminOrderListItemResponse, AdminOrderListQueryParams, AdminOrderListResponse
 from source.services.admin_auth import PermissionService
 from source.services.admin_order import AdminOrderService
@@ -28,6 +28,9 @@ class FakeRedisService:
     async def delete_by_pattern(self, pattern: str) -> None:
         self.values = {key: value for key, value in self.values.items() if not key.startswith(pattern.rstrip("*"))}
 
+    async def delete(self, key: str) -> None:
+        self.values.pop(key, None)
+
 
 class FakeOrderRepository:
     def __init__(self, orders) -> None:
@@ -44,6 +47,10 @@ class FakeOrderRepository:
     async def admin_count(self, *, session, query: AdminOrderListQueryParams) -> int:
         self.count_calls += 1
         return len(self._filter(query))
+
+    async def admin_get_by_id(self, *, session, order_id: int):
+        self.list_calls += 1
+        return next((order for order in self.orders if order.id == order_id), None)
 
     def _filter(self, query: AdminOrderListQueryParams):
         orders = list(self.orders)
@@ -94,7 +101,17 @@ def build_order(
         customer_email=customer_email,
         final_price=Decimal("3250.00"),
         sync_status=sync_status,
+        external_1c_id=None,
         created_date=created_date or datetime(2026, 5, 12, 10, 0, 0) + timedelta(minutes=order_id),
+        address_id=10,
+        pickup_point_id=None,
+        user_id=1,
+        subtotal=Decimal("270.00"),
+        discount_amount=Decimal("45.00"),
+        promo_discount_amount=Decimal("100.00"),
+        delivery_price=Decimal("250.00"),
+        comment="Позвонить заранее",
+        cancel_reason=None,
     )
 
 
@@ -123,6 +140,87 @@ async def get_orders(*, orders=None, query=None, redis_service=None, role=UserRo
         query=query or AdminOrderListQueryParams(),
         permission_service=PermissionService(),
         order_repository=repository,
+        order_cache_service=OrderCacheService(),
+    )
+
+
+class FakeOrderItemRepository:
+    def __init__(self, items=None) -> None:
+        self.items = items or []
+
+    async def get_by_order_id(self, *, session, order_id: int):
+        return self.items
+
+
+class FakeAddressRepository:
+    def __init__(self, address=None) -> None:
+        self.address = address or SimpleNamespace(city="Москва", street="Тверская", house="10", apartment="15")
+
+    async def get_by_id(self, *, session, address_id: int):
+        return self.address
+
+
+class FakePickupPointRepository:
+    async def get_by_id(self, *, session, pickup_point_id: int):
+        return SimpleNamespace(id=pickup_point_id, name="ПВЗ", city="Москва", address="Тверская, 10")
+
+
+class FakePaymentRepository:
+    def __init__(self, payment=None) -> None:
+        self.payment = payment
+
+    async def get_by_order_id(self, *, session, order_id: int):
+        return self.payment
+
+
+class FakeOrderStatusHistoryRepository:
+    def __init__(self, items=None) -> None:
+        self.items = items or []
+
+    async def get_by_order_id(self, *, session, order_id: int):
+        return self.items
+
+
+def build_order_item():
+    return SimpleNamespace(
+        id=1,
+        product_id=55,
+        product_name="Яблоки красные",
+        quantity=Decimal("1.5"),
+        unit="kg",
+        price=Decimal("150.00"),
+        final_price=Decimal("225.00"),
+    )
+
+
+def build_payment():
+    return SimpleNamespace(
+        id=5,
+        amount=Decimal("375.00"),
+        currency="RUB",
+        status="paid",
+        provider="yookassa",
+        provider_payment_id="pay_1",
+        paid_at=datetime(2026, 5, 12, 10, 5, 0),
+        cancelled_at=None,
+        refund_status=None,
+    )
+
+
+async def get_order_detail(*, orders=None, order_id: int = 101, redis_service=None, role=UserRole.ADMIN, repository=None):
+    repository = repository or FakeOrderRepository(orders or [build_order(order_id=order_id, order_number="ORD-000101")])
+    return await AdminOrderService().get_order_detail(
+        session=None,
+        redis_service=redis_service or FakeRedisService(),
+        user=build_user(role=role),
+        order_id=order_id,
+        permission_service=PermissionService(),
+        order_repository=repository,
+        order_item_repository=FakeOrderItemRepository([build_order_item()]),
+        address_repository=FakeAddressRepository(),
+        pickup_point_repository=FakePickupPointRepository(),
+        payment_repository=FakePaymentRepository(build_payment()),
+        order_status_history_repository=FakeOrderStatusHistoryRepository(),
         order_cache_service=OrderCacheService(),
     )
 
@@ -250,3 +348,56 @@ async def test_admin_get_orders_returns_cached_response() -> None:
     assert response.items[0].order_number == "ORD-CACHED"
     assert repository.list_calls == 0
     assert repository.count_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_admin_get_order_detail_success() -> None:
+    response = await get_order_detail()
+
+    assert response.id == 101
+    assert response.order_number == "ORD-000101"
+    assert response.customer.name == "Иван Иванов"
+    assert response.address.city == "Москва"
+    assert response.items[0].product_name == "Яблоки красные"
+    assert response.payment.status == "paid"
+
+
+@pytest.mark.asyncio
+async def test_admin_get_order_detail_not_found_error() -> None:
+    with pytest.raises(OrderNotFoundError):
+        await get_order_detail(orders=[], repository=FakeOrderRepository([]))
+
+
+@pytest.mark.asyncio
+async def test_admin_get_order_detail_no_permission_error() -> None:
+    with pytest.raises(AdminAuthAccessDeniedError):
+        await get_order_detail(role=UserRole.PICKER)
+
+
+@pytest.mark.asyncio
+async def test_admin_get_order_detail_returns_cached_response() -> None:
+    redis_service = FakeRedisService()
+    cached_response = await get_order_detail()
+    await OrderCacheService().set_admin_detail(
+        redis_service=redis_service,
+        order_id=101,
+        response=cached_response,
+        ttl_seconds=60,
+    )
+    repository = FakeOrderRepository([build_order(order_id=102, order_number="ORD-DB")])
+
+    response = await get_order_detail(redis_service=redis_service, repository=repository)
+
+    assert response.order_number == "ORD-000101"
+    assert repository.list_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_admin_get_order_detail_returns_sync_fields() -> None:
+    order = build_order(order_id=101, order_number="ORD-000101", sync_status="pending")
+    order.external_1c_id = "1c-101"
+
+    response = await get_order_detail(orders=[order])
+
+    assert response.sync_status == "pending"
+    assert response.external_1c_id == "1c-101"

@@ -205,6 +205,80 @@ class AdminOrderListResponse(BaseModel):
         )
 
 
+class AdminOrderCustomerResponse(BaseModel):
+    id: int
+    name: str
+    phone: str
+    email: str | None = None
+
+
+class AdminOrderAddressResponse(BaseModel):
+    city: str
+    street: str
+    house: str
+    apartment: str | None = None
+
+
+class AdminOrderPickupPointResponse(BaseModel):
+    id: int
+    name: str
+    city: str
+    address: str
+
+
+class AdminOrderItemResponse(BaseModel):
+    id: int
+    product_id: int
+    product_name: str
+    quantity: Decimal
+    unit: str
+    price: Decimal
+    final_price: Decimal
+
+
+class AdminOrderPaymentResponse(BaseModel):
+    id: int
+    amount: Decimal
+    currency: str
+    status: str
+    provider: str | None = None
+    provider_payment_id: str | None = None
+    paid_at: datetime | None = None
+    cancelled_at: datetime | None = None
+    refund_status: str | None = None
+
+
+class AdminOrderStatusHistoryItemResponse(BaseModel):
+    status: str
+    created_at: datetime
+    comment: str | None = None
+
+
+class AdminOrderDetailResponse(BaseModel):
+    id: int
+    order_number: str
+    status: str
+    payment_method: str | None = None
+    payment_status: str | None = None
+    delivery_type: str
+    customer: AdminOrderCustomerResponse
+    address: AdminOrderAddressResponse | None = None
+    pickup_point: AdminOrderPickupPointResponse | None = None
+    items: list[AdminOrderItemResponse]
+    payment: AdminOrderPaymentResponse | None = None
+    status_history: list[AdminOrderStatusHistoryItemResponse] = Field(default_factory=list)
+    comment: str | None = None
+    cancel_reason: str | None = None
+    subtotal: Decimal
+    discount_amount: Decimal
+    promo_discount_amount: Decimal
+    delivery_price: Decimal
+    final_price: Decimal
+    sync_status: str
+    external_1c_id: str | None = None
+    created_at: datetime
+
+
 class OrderCreateResponse(BaseModel):
     id: int
     order_number: str

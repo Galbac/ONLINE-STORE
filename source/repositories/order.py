@@ -32,6 +32,14 @@ class OrderRepository:
         result = await session.execute(select(Order).where(Order.id == order_id))
         return result.scalar_one_or_none()
 
+    async def admin_get_by_id(
+        self,
+        *,
+        session: AsyncSession,
+        order_id: int,
+    ) -> Order | None:
+        return await self.get_by_id(session=session, order_id=order_id)
+
     async def get_dashboard_stats(self, *, session: AsyncSession):
         today = datetime.now(settings.tz).date()
         today_from = datetime.combine(today, time.min)

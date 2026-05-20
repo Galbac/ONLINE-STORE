@@ -1,6 +1,16 @@
 from source.config.settings import settings
-from source.errors.auth import AdminAuthAccessDeniedError, InactiveUserError
-from source.schemas.pydantic.order import AdminOrderListQueryParams, AdminOrderListResponse
+from source.errors.auth import AdminAuthAccessDeniedError, InactiveUserError, OrderNotFoundError
+from source.schemas.pydantic.order import (
+    AdminOrderAddressResponse,
+    AdminOrderCustomerResponse,
+    AdminOrderDetailResponse,
+    AdminOrderItemResponse,
+    AdminOrderListQueryParams,
+    AdminOrderListResponse,
+    AdminOrderPaymentResponse,
+    AdminOrderPickupPointResponse,
+    AdminOrderStatusHistoryItemResponse,
+)
 from source.services.admin_auth import STAFF_ROLES
 from source.services.redis import RedisService
 from source.utils.query_hash import build_query_hash
@@ -55,3 +65,132 @@ class AdminOrderService:
             ttl_seconds=settings.orders.admin_list_cache_ttl_seconds,
         )
         return response
+
+    async def get_order_detail(
+        self,
+        *,
+        session,
+        redis_service: RedisService,
+        user,
+        order_id: int,
+        permission_service,
+        order_repository,
+        order_item_repository,
+        address_repository,
+        pickup_point_repository,
+        payment_repository,
+        order_status_history_repository,
+        order_cache_service,
+    ) -> AdminOrderDetailResponse:
+        self._check_read_permission(user=user, permission_service=permission_service)
+
+        cached_order = await order_cache_service.get_admin_detail(
+            redis_service=redis_service,
+            order_id=order_id,
+        )
+        if cached_order is not None:
+            return cached_order
+
+        order = await order_repository.admin_get_by_id(session=session, order_id=order_id)
+        if order is None:
+            raise OrderNotFoundError
+
+        order_items = await order_item_repository.get_by_order_id(session=session, order_id=order.id)
+        payment = await payment_repository.get_by_order_id(session=session, order_id=order.id)
+        status_history = await order_status_history_repository.get_by_order_id(session=session, order_id=order.id)
+        address = None
+        if order.address_id is not None:
+            address = await address_repository.get_by_id(session=session, address_id=order.address_id)
+        pickup_point = None
+        if order.pickup_point_id is not None:
+            pickup_point = await pickup_point_repository.get_by_id(session=session, pickup_point_id=order.pickup_point_id)
+
+        response = AdminOrderDetailResponse(
+            id=order.id,
+            order_number=order.order_number,
+            status=order.status,
+            payment_method=order.payment_method,
+            payment_status=order.payment_status,
+            delivery_type=order.delivery_type,
+            customer=AdminOrderCustomerResponse(
+                id=order.user_id,
+                name=order.customer_name,
+                phone=order.customer_phone,
+                email=order.customer_email,
+            ),
+            address=self._build_address_response(address),
+            pickup_point=self._build_pickup_point_response(pickup_point),
+            items=[self._build_item_response(item) for item in order_items],
+            payment=self._build_payment_response(payment),
+            status_history=[self._build_status_history_response(item) for item in status_history],
+            comment=order.comment,
+            cancel_reason=order.cancel_reason,
+            subtotal=order.subtotal,
+            discount_amount=order.discount_amount,
+            promo_discount_amount=order.promo_discount_amount,
+            delivery_price=order.delivery_price,
+            final_price=order.final_price,
+            sync_status=order.sync_status,
+            external_1c_id=getattr(order, "external_1c_id", None),
+            created_at=order.created_date,
+        )
+        await order_cache_service.set_admin_detail(
+            redis_service=redis_service,
+            order_id=order_id,
+            response=response,
+            ttl_seconds=settings.orders.admin_detail_cache_ttl_seconds,
+        )
+        return response
+
+    def _build_address_response(self, address) -> AdminOrderAddressResponse | None:
+        if address is None:
+            return None
+        return AdminOrderAddressResponse(
+            city=address.city,
+            street=address.street,
+            house=address.house,
+            apartment=address.apartment,
+        )
+
+    def _build_pickup_point_response(self, pickup_point) -> AdminOrderPickupPointResponse | None:
+        if pickup_point is None:
+            return None
+        return AdminOrderPickupPointResponse(
+            id=pickup_point.id,
+            name=pickup_point.name,
+            city=pickup_point.city,
+            address=pickup_point.address,
+        )
+
+    def _build_item_response(self, item) -> AdminOrderItemResponse:
+        return AdminOrderItemResponse(
+            id=item.id,
+            product_id=item.product_id,
+            product_name=item.product_name,
+            quantity=item.quantity,
+            unit=item.unit,
+            price=item.price,
+            final_price=item.final_price,
+        )
+
+    def _build_payment_response(self, payment) -> AdminOrderPaymentResponse | None:
+        if payment is None:
+            return None
+        return AdminOrderPaymentResponse(
+            id=payment.id,
+            amount=payment.amount,
+            currency=payment.currency,
+            status=payment.status,
+            provider=payment.provider,
+            provider_payment_id=payment.provider_payment_id,
+            paid_at=payment.paid_at,
+            cancelled_at=payment.cancelled_at,
+            refund_status=payment.refund_status,
+        )
+
+    def _build_status_history_response(self, item) -> AdminOrderStatusHistoryItemResponse:
+        return AdminOrderStatusHistoryItemResponse(
+            status=item.status,
+            created_at=item.created_date,
+            comment=getattr(item, "comment", None),
+        )

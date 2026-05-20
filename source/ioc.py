@@ -28,6 +28,7 @@ from source.repositories.discount import DiscountRepository
 from source.repositories.favorite import FavoriteRepository
 from source.repositories.order import OrderRepository
 from source.repositories.order_item import OrderItemRepository
+from source.repositories.order_status_history import OrderStatusHistoryRepository
 from source.repositories.notification import NotificationLogRepository, NotificationRepository
 from source.repositories.payment import PaymentRepository
 from source.repositories.payment_webhook_log import PaymentWebhookLogRepository
@@ -192,6 +193,10 @@ class AppProvider(Provider):
     )
     order_item_repository = provide(
         OrderItemRepository,
+        scope=Scope.REQUEST,
+    )
+    order_status_history_repository = provide(
+        OrderStatusHistoryRepository,
         scope=Scope.REQUEST,
     )
     payment_repository = provide(

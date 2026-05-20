@@ -10,7 +10,7 @@ from source.common.commiter import Commiter
 from source.db.models.user import User
 from source.errors.category import CategoryCycleError, CategoryNotFoundError, CategorySlugAlreadyExistsError
 from source.errors.category import CategoryHasActiveChildrenError, CategoryHasActiveProductsError
-from source.errors.auth import AdminAuthAccessDeniedError, InactiveUserError, InvalidCredentialsError
+from source.errors.auth import AdminAuthAccessDeniedError, InactiveUserError, InvalidCredentialsError, OrderNotFoundError
 from source.errors.product import (
     ProductActiveOrderExistsError,
     ProductBarcodeAlreadyExistsError,
@@ -22,10 +22,14 @@ from source.errors.product import (
 )
 from source.errors.upload import UploadFileMissingError, UploadFileTooLargeError, UploadNotFoundError, UploadStorageError, UploadUnsupportedFormatError
 from source.repositories.admin_audit_log import AdminAuditLogRepository
+from source.repositories.address import AddressRepository
 from source.repositories.category import CategoryRepository
 from source.repositories.discount import DiscountRepository
 from source.repositories.order import OrderRepository
 from source.repositories.order_item import OrderItemRepository
+from source.repositories.order_status_history import OrderStatusHistoryRepository
+from source.repositories.payment import PaymentRepository
+from source.repositories.pickup_point import PickupPointRepository
 from source.repositories.product import ProductRepository
 from source.repositories.product_availability_log import ProductAvailabilityLogRepository
 from source.repositories.product_image import ProductImageRepository
@@ -65,7 +69,7 @@ from source.schemas.pydantic.admin_product import (
     ProductStockResponse,
     ProductStockUpdateRequest,
 )
-from source.schemas.pydantic.order import AdminOrderListQueryParams, AdminOrderListResponse
+from source.schemas.pydantic.order import AdminOrderDetailResponse, AdminOrderListQueryParams, AdminOrderListResponse
 from source.services.category_cache import CategoryCacheService
 from source.services.admin_auth import AuditLogService, PermissionService
 from source.services.admin_category import AdminCategoryService, CategoryTreeService
@@ -524,6 +528,51 @@ async def get_admin_orders(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Недостаточно прав") from error
     except InactiveUserError as error:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Пользователь заблокирован") from error
+
+
+@router.get("/orders/{order_id}", response_model=AdminOrderDetailResponse, status_code=status.HTTP_200_OK)
+@inject
+async def get_admin_order_detail(
+    token_payload: dict = Depends(verify_access_token),
+    current_user: User = Depends(get_current_user),
+    order_id: int = Path(ge=1),
+    session: FromDishka[AsyncSession] = None,
+    redis_service: FromDishka[RedisService] = None,
+    admin_order_service: FromDishka[AdminOrderService] = None,
+    order_cache_service: FromDishka[OrderCacheService] = None,
+    permission_service: FromDishka[PermissionService] = None,
+    order_repository: FromDishka[OrderRepository] = None,
+    order_item_repository: FromDishka[OrderItemRepository] = None,
+    address_repository: FromDishka[AddressRepository] = None,
+    pickup_point_repository: FromDishka[PickupPointRepository] = None,
+    payment_repository: FromDishka[PaymentRepository] = None,
+    order_status_history_repository: FromDishka[OrderStatusHistoryRepository] = None,
+) -> AdminOrderDetailResponse:
+    if token_payload.get("token_type") != "access":
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь не авторизован")
+    try:
+        return await admin_order_service.get_order_detail(
+            session=session,
+            redis_service=redis_service,
+            user=current_user,
+            order_id=order_id,
+            permission_service=permission_service,
+            order_repository=order_repository,
+            order_item_repository=order_item_repository,
+            address_repository=address_repository,
+            pickup_point_repository=pickup_point_repository,
+            payment_repository=payment_repository,
+            order_status_history_repository=order_status_history_repository,
+            order_cache_service=order_cache_service,
+        )
+    except InvalidCredentialsError as error:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь не авторизован") from error
+    except AdminAuthAccessDeniedError as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Недостаточно прав") from error
+    except InactiveUserError as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Пользователь заблокирован") from error
+    except OrderNotFoundError as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Заказ не найден") from error
 
 
 @router.get("/products/{product_id}", response_model=AdminProductDetailResponse, status_code=status.HTTP_200_OK)
