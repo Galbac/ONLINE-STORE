@@ -69,6 +69,7 @@ from source.repositories.product_availability_log import ProductAvailabilityLogR
 from source.repositories.product_image import ProductImageRepository
 from source.repositories.promo_code import PromoCodeUsageRepository
 from source.repositories.refresh_token import RefreshTokenRepository
+from source.repositories.role import PermissionRepository, RoleRepository
 from source.repositories.stock_movement import StockMovementRepository
 from source.repositories.upload import UploadRepository
 from source.repositories.user import UserRepository
@@ -80,6 +81,7 @@ from source.schemas.pydantic.admin_dashboard import (
     AdminSalesQueryParams,
     AdminSalesResponse,
 )
+from source.schemas.pydantic.admin_role import AdminRoleListResponse
 from source.schemas.pydantic.admin_category import (
     AdminCategoryCreateRequest,
     AdminCategoryDetailResponse,
@@ -167,12 +169,44 @@ from source.services.profile_cache import ProfileCacheService
 from source.services.promo_code import PromoCodeService
 from source.services.redis import RedisService
 from source.services.refresh_token import RefreshTokenService
+from source.services.role import RoleService
 from source.services.storage import StorageService
 from source.services.stock import StockMovementService, StockService
 from source.services.upload import UploadService
 from source.services.user_cache import UserCacheService
 
 router = APIRouter(prefix="/admin", tags=["admin-dashboard"])
+
+
+@router.get("/roles", response_model=AdminRoleListResponse, status_code=status.HTTP_200_OK)
+@inject
+async def get_admin_roles(
+    token_payload: dict = Depends(verify_access_token),
+    current_user: User = Depends(get_current_user),
+    session: FromDishka[AsyncSession] = None,
+    redis_service: FromDishka[RedisService] = None,
+    role_service: FromDishka[RoleService] = None,
+    permission_service: FromDishka[PermissionService] = None,
+    role_repository: FromDishka[RoleRepository] = None,
+    permission_repository: FromDishka[PermissionRepository] = None,
+) -> AdminRoleListResponse:
+    if token_payload.get("token_type") != "access":
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь не авторизован")
+    try:
+        return await role_service.get_admin_roles(
+            session=session,
+            redis_service=redis_service,
+            user=current_user,
+            permission_service=permission_service,
+            role_repository=role_repository,
+            permission_repository=permission_repository,
+        )
+    except InvalidCredentialsError as error:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь не авторизован") from error
+    except AdminAuthAccessDeniedError as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Недостаточно прав") from error
+    except InactiveUserError as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Пользователь заблокирован") from error
 
 
 @router.get("/staff", response_model=AdminStaffListResponse, status_code=status.HTTP_200_OK)

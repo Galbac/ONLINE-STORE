@@ -35,6 +35,7 @@ from source.repositories.payment import PaymentRepository
 from source.repositories.payment_webhook_log import PaymentWebhookLogRepository
 from source.repositories.refund import RefundRepository
 from source.repositories.refresh_token import RefreshTokenRepository
+from source.repositories.role import PermissionRepository, RoleRepository
 from source.repositories.pickup_point import PickupPointRepository
 from source.repositories.product import ProductRepository
 from source.repositories.product_availability_log import ProductAvailabilityLogRepository
@@ -86,6 +87,7 @@ from source.services.profile import ProfileService
 from source.services.profile_cache import ProfileCacheService
 from source.services.redis import RedisService
 from source.services.refresh_token import RefreshTokenService
+from source.services.role import RoleService
 from source.services.stock import StockMovementService, StockService
 from source.services.promo_code import PromoCodeService
 from source.services.user import UserService
@@ -185,6 +187,14 @@ class AppProvider(Provider):
     )
     refresh_token_repository = provide(
         RefreshTokenRepository,
+        scope=Scope.REQUEST,
+    )
+    role_repository = provide(
+        RoleRepository,
+        scope=Scope.REQUEST,
+    )
+    permission_repository = provide(
+        PermissionRepository,
         scope=Scope.REQUEST,
     )
     admin_audit_log_repository = provide(
@@ -453,6 +463,10 @@ class AppProvider(Provider):
     )
     admin_staff_cache_service = provide(
         AdminStaffCacheService,
+        scope=Scope.REQUEST,
+    )
+    role_service = provide(
+        RoleService,
         scope=Scope.REQUEST,
     )
     admin_order_print_service = provide(

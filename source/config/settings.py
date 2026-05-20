@@ -228,6 +228,7 @@ class AdminUsersSettings(BaseSettings):
 
 class AdminStaffSettings(BaseSettings):
     list_cache_ttl_seconds: int = Field(default=120, alias="ADMIN_STAFF_LIST_CACHE_TTL_SECONDS")
+    roles_cache_ttl_seconds: int = Field(default=300, alias="ADMIN_ROLES_CACHE_TTL_SECONDS")
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
