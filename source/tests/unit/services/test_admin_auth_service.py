@@ -209,6 +209,7 @@ async def test_admin_login_success_admin() -> None:
         "admin:orders:manage",
         "admin:orders:cancel",
         "admin:orders:confirm",
+        "admin:orders:sync_1c",
         "admin:orders:update",
         "admin:orders:update_status",
     ]
@@ -232,6 +233,7 @@ async def test_admin_login_success_manager() -> None:
     assert "admin:orders:manage" in response.user.permissions
     assert "admin:orders:cancel" in response.user.permissions
     assert "admin:orders:confirm" in response.user.permissions
+    assert "admin:orders:sync_1c" in response.user.permissions
     assert "admin:orders:update" in response.user.permissions
     assert "admin:orders:update_status" in response.user.permissions
 

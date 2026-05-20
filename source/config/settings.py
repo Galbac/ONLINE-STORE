@@ -303,6 +303,8 @@ class OrderStatusSettings(BaseSettings):
 
 class OneCSettings(BaseSettings):
     sync_enabled: bool = Field(default=True, alias="ONE_C_SYNC_ENABLED")
+    api_url: str = Field(default="", alias="ONE_C_API_URL")
+    api_token: str = Field(default="", alias="ONE_C_API_TOKEN")
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

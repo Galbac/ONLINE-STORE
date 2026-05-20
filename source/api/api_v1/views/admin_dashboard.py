@@ -15,7 +15,10 @@ from source.errors.auth import (
     EmptyOrderUpdateError,
     InactiveUserError,
     InvalidCredentialsError,
+    OneCIntegrationDisabledError,
+    OneCSyncError,
     OrderAlreadyCancelledError,
+    OrderAlreadySyncedError,
     OrderCompletedCancellationError,
     OrderConfirmNotAllowedError,
     OrderFieldNotEditableError,
@@ -40,6 +43,7 @@ from source.repositories.admin_audit_log import AdminAuditLogRepository
 from source.repositories.address import AddressRepository
 from source.repositories.category import CategoryRepository
 from source.repositories.discount import DiscountRepository
+from source.repositories.integration_log import IntegrationLogRepository
 from source.repositories.order import OrderRepository
 from source.repositories.order_item import OrderItemRepository
 from source.repositories.order_status_history import OrderStatusHistoryRepository
@@ -95,6 +99,8 @@ from source.schemas.pydantic.order import (
     AdminOrderListResponse,
     AdminOrderStatusResponse,
     AdminOrderStatusUpdateRequest,
+    AdminOrderSync1CRequest,
+    AdminOrderSync1CResponse,
     AdminOrderUpdateRequest,
     AdminOrderUpdateResponse,
 )
@@ -745,6 +751,63 @@ async def cancel_admin_order(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Заказ уже отменён") from error
     except OrderCompletedCancellationError as error:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Завершённый заказ нельзя отменить") from error
+
+
+@router.post("/orders/{order_id}/sync-1c", response_model=AdminOrderSync1CResponse, status_code=status.HTTP_200_OK)
+@inject
+async def sync_admin_order_1c(
+    payload: dict = Body(default_factory=dict),
+    token_payload: dict = Depends(verify_access_token),
+    current_user: User = Depends(get_current_user),
+    order_id: int = Path(ge=1),
+    session: FromDishka[AsyncSession] = None,
+    commiter: FromDishka[Commiter] = None,
+    redis_service: FromDishka[RedisService] = None,
+    admin_order_service: FromDishka[AdminOrderService] = None,
+    permission_service: FromDishka[PermissionService] = None,
+    order_repository: FromDishka[OrderRepository] = None,
+    order_item_repository: FromDishka[OrderItemRepository] = None,
+    payment_repository: FromDishka[PaymentRepository] = None,
+    integration_log_repository: FromDishka[IntegrationLogRepository] = None,
+    one_c_integration_service: FromDishka[OneCIntegrationService] = None,
+    order_cache_service: FromDishka[OrderCacheService] = None,
+    profile_cache_service: FromDishka[ProfileCacheService] = None,
+) -> AdminOrderSync1CResponse:
+    if token_payload.get("token_type") != "access":
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь не авторизован")
+    try:
+        return await admin_order_service.sync_order_1c(
+            session=session,
+            commiter=commiter,
+            redis_service=redis_service,
+            user=current_user,
+            order_id=order_id,
+            data=AdminOrderSync1CRequest.model_validate(payload),
+            permission_service=permission_service,
+            order_repository=order_repository,
+            order_item_repository=order_item_repository,
+            payment_repository=payment_repository,
+            integration_log_repository=integration_log_repository,
+            one_c_integration_service=one_c_integration_service,
+            order_cache_service=order_cache_service,
+            profile_cache_service=profile_cache_service,
+        )
+    except ValidationError as error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Неверные данные") from error
+    except InvalidCredentialsError as error:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь не авторизован") from error
+    except AdminAuthAccessDeniedError as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Недостаточно прав") from error
+    except InactiveUserError as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Пользователь заблокирован") from error
+    except OneCIntegrationDisabledError as error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Интеграция с 1С отключена") from error
+    except OrderNotFoundError as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Заказ не найден") from error
+    except OrderAlreadySyncedError as error:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Заказ уже синхронизирован") from error
+    except OneCSyncError as error:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Ошибка 1С") from error
 
 
 @router.patch("/orders/{order_id}/status", response_model=AdminOrderStatusResponse, status_code=status.HTTP_200_OK)

@@ -26,6 +26,7 @@ from source.repositories.delivery_time_slot import DeliveryTimeSlotRepository
 from source.repositories.delivery_zone import DeliveryZoneRepository
 from source.repositories.discount import DiscountRepository
 from source.repositories.favorite import FavoriteRepository
+from source.repositories.integration_log import IntegrationLogRepository
 from source.repositories.order import OrderRepository
 from source.repositories.order_item import OrderItemRepository
 from source.repositories.order_status_history import OrderStatusHistoryRepository
@@ -198,6 +199,10 @@ class AppProvider(Provider):
     )
     order_status_history_repository = provide(
         OrderStatusHistoryRepository,
+        scope=Scope.REQUEST,
+    )
+    integration_log_repository = provide(
+        IntegrationLogRepository,
         scope=Scope.REQUEST,
     )
     payment_repository = provide(

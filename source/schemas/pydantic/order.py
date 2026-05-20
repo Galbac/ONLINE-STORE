@@ -369,6 +369,18 @@ class AdminOrderCancelRequest(BaseModel):
         return normalized_value or None
 
 
+class AdminOrderSync1CRequest(BaseModel):
+    force: bool = False
+
+
+class AdminOrderSync1CResponse(BaseModel):
+    order_id: int
+    order_number: str
+    sync_status: str
+    external_1c_id: str | None = None
+    last_sync_at: datetime | None = None
+
+
 class AdminOrderActionShortResponse(BaseModel):
     id: int
     order_number: str

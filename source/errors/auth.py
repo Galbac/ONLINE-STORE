@@ -239,6 +239,18 @@ class OrderCancellationNotAllowedError(Exception):
     pass
 
 
+class OneCIntegrationDisabledError(Exception):
+    pass
+
+
+class OrderAlreadySyncedError(Exception):
+    pass
+
+
+class OneCSyncError(Exception):
+    pass
+
+
 class OrderPaidCancellationRequiresManagerError(Exception):
     pass
 

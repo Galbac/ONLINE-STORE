@@ -6,7 +6,10 @@ from source.errors.auth import (
     AdminAuthAccessDeniedError,
     EmptyOrderUpdateError,
     InactiveUserError,
+    OneCIntegrationDisabledError,
+    OneCSyncError,
     OrderAlreadyCancelledError,
+    OrderAlreadySyncedError,
     OrderCompletedCancellationError,
     OrderConfirmNotAllowedError,
     OrderFieldNotEditableError,
@@ -30,6 +33,8 @@ from source.schemas.pydantic.order import (
     AdminOrderStatusResponse,
     AdminOrderStatusHistoryItemResponse,
     AdminOrderStatusUpdateRequest,
+    AdminOrderSync1CRequest,
+    AdminOrderSync1CResponse,
     AdminOrderUpdateRequest,
     AdminOrderUpdateResponse,
 )
@@ -108,6 +113,14 @@ class AdminOrderService:
         if user.role not in STAFF_ROLES:
             raise AdminAuthAccessDeniedError
         if "admin:orders:cancel" not in permission_service.get_user_permissions(role=user.role):
+            raise AdminAuthAccessDeniedError
+
+    def _check_sync_1c_permission(self, *, user, permission_service) -> None:
+        if not user.is_active or user.is_deleted:
+            raise InactiveUserError
+        if user.role not in STAFF_ROLES:
+            raise AdminAuthAccessDeniedError
+        if "admin:orders:sync_1c" not in permission_service.get_user_permissions(role=user.role):
             raise AdminAuthAccessDeniedError
 
     def validate_update_payload_fields(self, *, payload: dict) -> None:
@@ -589,6 +602,150 @@ class AdminOrderService:
             ),
         )
 
+    async def sync_order_1c(
+        self,
+        *,
+        session,
+        commiter,
+        redis_service: RedisService,
+        user,
+        order_id: int,
+        data: AdminOrderSync1CRequest,
+        permission_service,
+        order_repository,
+        order_item_repository,
+        payment_repository,
+        integration_log_repository,
+        one_c_integration_service,
+        order_cache_service,
+        profile_cache_service,
+    ) -> AdminOrderSync1CResponse:
+        self._check_sync_1c_permission(user=user, permission_service=permission_service)
+        if not settings.one_c.sync_enabled:
+            raise OneCIntegrationDisabledError
+
+        order = await order_repository.admin_get_by_id(session=session, order_id=order_id)
+        if order is None:
+            raise OrderNotFoundError
+        if order.sync_status == "synced" and not data.force:
+            raise OrderAlreadySyncedError
+
+        order_items = await order_item_repository.get_by_order_id(session=session, order_id=order.id)
+        payment = await payment_repository.get_by_order_id(session=session, order_id=order.id)
+        payload = self._build_1c_order_payload(order=order, order_items=order_items, payment=payment)
+        now = datetime.now(settings.tz)
+
+        try:
+            sync_response = await one_c_integration_service.sync_order(payload=payload)
+            external_1c_id = sync_response.get("external_1c_id") or sync_response.get("id") or order.external_1c_id
+            order = await order_repository.update_sync_status(
+                session=session,
+                order=order,
+                sync_status="synced",
+                external_1c_id=external_1c_id,
+                sync_error=None,
+                last_sync_at=now,
+            )
+            await integration_log_repository.create(
+                session=session,
+                system="1c",
+                entity_type="order",
+                entity_id=order.id,
+                action="sync_order",
+                status="success",
+                request_payload=payload,
+                response_payload=sync_response,
+                error_message=None,
+            )
+            await commiter.commit()
+        except Exception as error:
+            error_message = str(error)
+            order = await order_repository.update_sync_status(
+                session=session,
+                order=order,
+                sync_status="error",
+                external_1c_id=getattr(order, "external_1c_id", None),
+                sync_error=error_message,
+                last_sync_at=now,
+            )
+            await integration_log_repository.create(
+                session=session,
+                system="1c",
+                entity_type="order",
+                entity_id=order.id,
+                action="sync_order",
+                status="error",
+                request_payload=payload,
+                response_payload=None,
+                error_message=error_message,
+            )
+            await commiter.commit()
+            raise OneCSyncError(error_message) from error
+
+        await order_cache_service.invalidate_admin_orders(redis_service=redis_service)
+        await order_cache_service.invalidate_detail(redis_service=redis_service, user_id=order.user_id, order_id=order.id)
+        await order_cache_service.invalidate_status(redis_service=redis_service, user_id=order.user_id, order_id=order.id)
+        await order_cache_service.invalidate_my_orders(redis_service=redis_service, user_id=order.user_id)
+        await profile_cache_service.invalidate_orders(redis_service=redis_service, user_id=order.user_id)
+        await profile_cache_service.delete_summary(redis_service=redis_service, user_id=order.user_id)
+
+        return AdminOrderSync1CResponse(
+            order_id=order.id,
+            order_number=order.order_number,
+            sync_status=order.sync_status,
+            external_1c_id=order.external_1c_id,
+            last_sync_at=order.last_sync_at,
+        )
+
+    def _build_1c_order_payload(self, *, order, order_items: list, payment) -> dict:
+        return self._serialize_json_value(
+            {
+                "order_number": order.order_number,
+                "status": order.status,
+                "customer": {
+                    "id": order.user_id,
+                    "name": order.customer_name,
+                    "phone": order.customer_phone,
+                    "email": order.customer_email,
+                },
+                "items": [
+                    {
+                        "product_id": item.product_id,
+                        "name": item.product_name,
+                        "quantity": item.quantity,
+                        "unit": item.unit,
+                        "price": item.price,
+                        "discount_amount": getattr(item, "discount_amount", None),
+                        "total_price": getattr(item, "total_price", None),
+                        "final_price": item.final_price,
+                    }
+                    for item in order_items
+                ],
+                "delivery": {
+                    "type": order.delivery_type,
+                    "date": order.delivery_date,
+                    "time_slot_id": order.delivery_time_slot_id,
+                    "price": order.delivery_price,
+                    "address_id": order.address_id,
+                    "pickup_point_id": order.pickup_point_id,
+                },
+                "payment": {
+                    "method": order.payment_method,
+                    "status": order.payment_status,
+                    "payment_id": getattr(payment, "id", None) if payment is not None else None,
+                    "provider": getattr(payment, "provider", None) if payment is not None else None,
+                    "provider_payment_id": getattr(payment, "provider_payment_id", None) if payment is not None else None,
+                },
+                "totals": {
+                    "subtotal": order.subtotal,
+                    "discount_amount": order.discount_amount,
+                    "promo_discount_amount": order.promo_discount_amount,
+                    "delivery_price": order.delivery_price,
+                    "final_price": order.final_price,
+                },
+            },
+        )
+
     def _build_update_diff(self, *, order, update_data: dict) -> dict:
         diff = {}
         for field, new_value in update_data.items():
@@ -606,6 +763,13 @@ class AdminOrderService:
         if isinstance(value, Decimal):
             return str(value)
         return value
+
+    def _serialize_json_value(self, value):
+        if isinstance(value, dict):
+            return {key: self._serialize_json_value(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [self._serialize_json_value(item) for item in value]
+        return self._serialize_audit_value(value)
 
     def _build_address_response(self, address) -> AdminOrderAddressResponse | None:
         if address is None:

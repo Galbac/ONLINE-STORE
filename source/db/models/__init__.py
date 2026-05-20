@@ -9,6 +9,7 @@ from source.db.models.delivery_time_slot import DeliveryTimeSlot
 from source.db.models.delivery_zone import DeliveryZone
 from source.db.models.discount import Discount
 from source.db.models.favorite import Favorite
+from source.db.models.integration_log import IntegrationLog
 from source.db.models.order import Order
 from source.db.models.order_item import OrderItem
 from source.db.models.order_status_history import OrderStatusHistory
@@ -38,6 +39,7 @@ __all__ = (
     "DeliveryZone",
     "Discount",
     "Favorite",
+    "IntegrationLog",
     "Order",
     "OrderItem",
     "OrderStatusHistory",

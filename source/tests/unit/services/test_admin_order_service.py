@@ -7,10 +7,13 @@ import pytest
 from source.db.models.choises.enum import UserRole
 from source.errors.auth import (
     AdminAuthAccessDeniedError,
+    OneCIntegrationDisabledError,
+    OneCSyncError,
     OrderCompletedCancellationError,
     OrderConfirmNotAllowedError,
     OrderFieldNotEditableError,
     OrderNotFoundError,
+    OrderAlreadySyncedError,
     OrderStatusTransitionError,
     OrderUpdateNotAllowedError,
 )
@@ -21,6 +24,7 @@ from source.schemas.pydantic.order import (
     AdminOrderListQueryParams,
     AdminOrderListResponse,
     AdminOrderStatusUpdateRequest,
+    AdminOrderSync1CRequest,
     AdminOrderUpdateRequest,
 )
 from source.services.admin_auth import PermissionService
@@ -88,6 +92,22 @@ class FakeOrderRepository:
         order.updated_date = datetime(2026, 5, 12, 11, 0, 0)
         return order
 
+    async def update_sync_status(
+        self,
+        *,
+        session,
+        order,
+        sync_status: str,
+        external_1c_id=None,
+        sync_error=None,
+        last_sync_at=None,
+    ):
+        order.sync_status = sync_status
+        order.external_1c_id = external_1c_id
+        order.sync_error = sync_error
+        order.last_sync_at = last_sync_at
+        return order
+
     def _filter(self, query: AdminOrderListQueryParams):
         orders = list(self.orders)
         if query.q is not None:
@@ -138,6 +158,8 @@ def build_order(
         final_price=Decimal("3250.00"),
         sync_status=sync_status,
         external_1c_id=None,
+        sync_error=None,
+        last_sync_at=None,
         created_date=created_date or datetime(2026, 5, 12, 10, 0, 0) + timedelta(minutes=order_id),
         updated_date=datetime(2026, 5, 12, 10, 30, 0),
         address_id=10,
@@ -416,8 +438,28 @@ class FakePaymentService:
 
 
 class FakeOneCIntegrationService:
+    def __init__(self, *, response=None, error: Exception | None = None) -> None:
+        self.response = response or {"external_1c_id": "1c-doc-123"}
+        self.error = error
+        self.payloads = []
+
     async def mark_cancel_pending(self, *, order) -> None:
         order.sync_status = "pending_cancel"
+
+    async def sync_order(self, *, payload: dict) -> dict:
+        self.payloads.append(payload)
+        if self.error is not None:
+            raise self.error
+        return self.response
+
+
+class FakeIntegrationLogRepository:
+    def __init__(self) -> None:
+        self.logs = []
+
+    async def create(self, *, session, **data):
+        self.logs.append(data)
+        return SimpleNamespace(id=len(self.logs), **data)
 
 
 async def update_order_status(
@@ -619,6 +661,47 @@ async def cancel_order(
         audit_repository=audit_repository,
         promo_code_usage_repository=promo_code_usage_repository,
         payment_service=payment_service,
+        commiter=commiter,
+    )
+
+
+async def sync_order_1c(
+    *,
+    order=None,
+    force: bool = False,
+    one_c_service=None,
+    role=UserRole.ADMIN,
+):
+    redis_service = FakeRedisService()
+    repository = FakeOrderRepository([] if order is None else [order])
+    integration_log_repository = FakeIntegrationLogRepository()
+    profile_cache_service = FakeProfileCacheService()
+    commiter = FakeCommiter()
+    one_c_service = one_c_service or FakeOneCIntegrationService()
+
+    response = await AdminOrderService().sync_order_1c(
+        session=None,
+        commiter=commiter,
+        redis_service=redis_service,
+        user=build_user(role=role),
+        order_id=101,
+        data=AdminOrderSync1CRequest(force=force),
+        permission_service=PermissionService(),
+        order_repository=repository,
+        order_item_repository=FakeOrderItemRepository([build_order_item()]),
+        payment_repository=FakePaymentRepository(build_payment()),
+        integration_log_repository=integration_log_repository,
+        one_c_integration_service=one_c_service,
+        order_cache_service=OrderCacheService(),
+        profile_cache_service=profile_cache_service,
+    )
+    return SimpleNamespace(
+        response=response,
+        order=order,
+        redis_service=redis_service,
+        integration_log_repository=integration_log_repository,
+        one_c_service=one_c_service,
+        profile_cache_service=profile_cache_service,
         commiter=commiter,
     )
 
@@ -1063,3 +1146,79 @@ async def test_admin_cancel_order_invalidates_cache() -> None:
     assert "orders:detail:1:101" in result.redis_service.deleted
     assert "orders:status:1:101" in result.redis_service.deleted
     assert "profile:summary:1" in result.redis_service.deleted
+
+
+@pytest.mark.asyncio
+async def test_admin_sync_order_1c_success(monkeypatch) -> None:
+    monkeypatch.setattr("source.services.admin_order.settings.one_c.sync_enabled", True)
+    order = build_order(order_id=101, order_number="ORD-000101", status="confirmed", sync_status="pending")
+    result = await sync_order_1c(order=order)
+
+    assert result.response.order_id == 101
+    assert result.response.order_number == "ORD-000101"
+    assert result.response.sync_status == "synced"
+    assert result.response.external_1c_id == "1c-doc-123"
+    assert order.sync_status == "synced"
+    assert order.sync_error is None
+    assert order.last_sync_at is not None
+    assert result.one_c_service.payloads[0]["order_number"] == "ORD-000101"
+    assert "api_token" not in result.integration_log_repository.logs[0]["request_payload"]
+
+
+@pytest.mark.asyncio
+async def test_admin_sync_order_1c_disabled(monkeypatch) -> None:
+    monkeypatch.setattr("source.services.admin_order.settings.one_c.sync_enabled", False)
+    order = build_order(order_id=101, order_number="ORD-000101", status="confirmed", sync_status="pending")
+
+    with pytest.raises(OneCIntegrationDisabledError):
+        await sync_order_1c(order=order)
+
+
+@pytest.mark.asyncio
+async def test_admin_sync_order_1c_already_synced_without_force(monkeypatch) -> None:
+    monkeypatch.setattr("source.services.admin_order.settings.one_c.sync_enabled", True)
+    order = build_order(order_id=101, order_number="ORD-000101", status="confirmed", sync_status="synced")
+
+    with pytest.raises(OrderAlreadySyncedError):
+        await sync_order_1c(order=order)
+
+
+@pytest.mark.asyncio
+async def test_admin_sync_order_1c_force_repeats_sync(monkeypatch) -> None:
+    monkeypatch.setattr("source.services.admin_order.settings.one_c.sync_enabled", True)
+    order = build_order(order_id=101, order_number="ORD-000101", status="confirmed", sync_status="synced")
+    one_c_service = FakeOneCIntegrationService(response={"external_1c_id": "1c-doc-forced"})
+
+    result = await sync_order_1c(order=order, force=True, one_c_service=one_c_service)
+
+    assert result.response.external_1c_id == "1c-doc-forced"
+    assert len(one_c_service.payloads) == 1
+
+
+@pytest.mark.asyncio
+async def test_admin_sync_order_1c_error_is_saved(monkeypatch) -> None:
+    monkeypatch.setattr("source.services.admin_order.settings.one_c.sync_enabled", True)
+    order = build_order(order_id=101, order_number="ORD-000101", status="confirmed", sync_status="pending")
+    one_c_service = FakeOneCIntegrationService(error=OneCSyncError("1C unavailable"))
+
+    with pytest.raises(OneCSyncError):
+        await sync_order_1c(order=order, one_c_service=one_c_service)
+
+    assert order.sync_status == "error"
+    assert order.sync_error == "1C unavailable"
+    assert order.last_sync_at is not None
+
+
+@pytest.mark.asyncio
+async def test_admin_sync_order_1c_creates_integration_log(monkeypatch) -> None:
+    monkeypatch.setattr("source.services.admin_order.settings.one_c.sync_enabled", True)
+    order = build_order(order_id=101, order_number="ORD-000101", status="confirmed", sync_status="pending")
+    result = await sync_order_1c(order=order)
+
+    assert len(result.integration_log_repository.logs) == 1
+    log = result.integration_log_repository.logs[0]
+    assert log["system"] == "1c"
+    assert log["entity_type"] == "order"
+    assert log["entity_id"] == 101
+    assert log["action"] == "sync_order"
+    assert log["status"] == "success"
