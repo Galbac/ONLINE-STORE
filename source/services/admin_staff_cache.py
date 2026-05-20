@@ -1,10 +1,13 @@
-from source.schemas.pydantic.admin_staff import AdminStaffListResponse
+from source.schemas.pydantic.admin_staff import AdminStaffDetailResponse, AdminStaffListResponse
 from source.services.redis import RedisService
 
 
 class AdminStaffCacheService:
     def _list_key(self, *, query_hash: str) -> str:
         return f"admin:staff:list:{query_hash}"
+
+    def _detail_key(self, *, staff_id: int) -> str:
+        return f"admin:staff:detail:{staff_id}"
 
     async def get_list(
         self,
@@ -29,6 +32,33 @@ class AdminStaffCacheService:
     ) -> None:
         await redis_service.set(
             self._list_key(query_hash=query_hash),
+            response.model_dump_json(),
+            ttl_seconds=ttl_seconds,
+        )
+
+    async def get_detail(
+        self,
+        *,
+        redis_service: RedisService,
+        staff_id: int,
+    ) -> AdminStaffDetailResponse | None:
+        cached_staff = await redis_service.get(self._detail_key(staff_id=staff_id))
+        if cached_staff is None:
+            return None
+        if isinstance(cached_staff, bytes):
+            cached_staff = cached_staff.decode("utf-8")
+        return AdminStaffDetailResponse.model_validate_json(cached_staff)
+
+    async def set_detail(
+        self,
+        *,
+        redis_service: RedisService,
+        staff_id: int,
+        response: AdminStaffDetailResponse,
+        ttl_seconds: int,
+    ) -> None:
+        await redis_service.set(
+            self._detail_key(staff_id=staff_id),
             response.model_dump_json(),
             ttl_seconds=ttl_seconds,
         )

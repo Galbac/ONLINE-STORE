@@ -104,5 +104,8 @@ class AdminStaffDetailResponse(BaseModel):
     email: EmailStr | None
     phone: str
     role: UserRole
+    permissions: list[str] = Field(default_factory=list)
     is_active: bool
+    is_blocked: bool
+    last_login_at: datetime | None = None
     created_at: datetime

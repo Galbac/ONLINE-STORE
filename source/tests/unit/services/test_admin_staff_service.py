@@ -9,6 +9,7 @@ from source.db.models.choises.enum import UserRole
 from source.errors.auth import (
     AdminAuthAccessDeniedError,
     AdminStaffInvalidRoleError,
+    AdminStaffNotFoundError,
     UserEmailAlreadyExistsError,
     UserPhoneAlreadyExistsError,
 )
@@ -59,6 +60,9 @@ class FakeUserRepository:
 
     async def get_by_email(self, *, session, email: str):
         return next((user for user in self.users if user.email == email), None)
+
+    async def get_by_id(self, *, session, user_id: int):
+        return next((user for user in self.users if user.id == user_id), None)
 
     async def create(self, *, session, **data):
         user = build_user(user_id=len(self.users) + 1, **data)
@@ -120,6 +124,18 @@ async def get_staff(*, users=None, query=None, redis_service=None, role=UserRole
         redis_service=redis_service or FakeRedisService(),
         user=build_current_user(role=role),
         query=query or AdminStaffListQueryParams(),
+        permission_service=PermissionService(),
+        user_repository=repository or FakeUserRepository(users or []),
+        admin_staff_cache_service=AdminStaffCacheService(),
+    )
+
+
+async def get_staff_detail(*, users=None, staff_id: int = 1, redis_service=None, role=UserRole.ADMIN, repository=None):
+    return await AdminStaffService().get_staff_detail(
+        session=None,
+        redis_service=redis_service or FakeRedisService(),
+        user=build_current_user(role=role),
+        staff_id=staff_id,
         permission_service=PermissionService(),
         user_repository=repository or FakeUserRepository(users or []),
         admin_staff_cache_service=AdminStaffCacheService(),
@@ -317,6 +333,56 @@ async def test_admin_get_staff_response_is_cached() -> None:
     cache_key = f"admin:staff:list:{build_query_hash(query.model_dump())}"
     assert cache_key in redis_service.values
     assert redis_service.ttls[cache_key] == settings.admin_staff.list_cache_ttl_seconds
+
+
+@pytest.mark.asyncio
+async def test_admin_get_staff_detail_success() -> None:
+    response = await get_staff_detail(users=[build_user(user_id=1, role=UserRole.MANAGER)])
+
+    assert response.id == 1
+    assert response.role == UserRole.MANAGER
+    assert "admin:orders:read" in response.permissions
+    assert response.is_blocked is False
+
+
+@pytest.mark.asyncio
+async def test_admin_get_staff_detail_returns_cached_response() -> None:
+    redis_service = FakeRedisService()
+    cached_response = await get_staff_detail(users=[build_user(user_id=1)])
+    redis_service.values["admin:staff:detail:1"] = cached_response.model_dump_json()
+    repository = FakeUserRepository([])
+
+    response = await get_staff_detail(redis_service=redis_service, repository=repository)
+
+    assert response == cached_response
+    assert repository.list_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_admin_get_staff_detail_not_found_error() -> None:
+    with pytest.raises(AdminStaffNotFoundError):
+        await get_staff_detail(users=[], staff_id=404)
+
+
+@pytest.mark.asyncio
+async def test_admin_get_staff_detail_customer_not_found_error() -> None:
+    with pytest.raises(AdminStaffNotFoundError):
+        await get_staff_detail(users=[build_user(user_id=1, role=UserRole.CUSTOMER)])
+
+
+@pytest.mark.asyncio
+async def test_admin_get_staff_detail_password_hash_not_returned() -> None:
+    response = await get_staff_detail(users=[build_user(user_id=1)])
+
+    dumped = response.model_dump()
+    assert "password_hash" not in dumped
+    assert "refresh_tokens" not in dumped
+
+
+@pytest.mark.asyncio
+async def test_admin_get_staff_detail_no_permission_error() -> None:
+    with pytest.raises(AdminAuthAccessDeniedError):
+        await get_staff_detail(users=[build_user(user_id=1)], role=UserRole.PICKER)
 
 
 @pytest.mark.asyncio

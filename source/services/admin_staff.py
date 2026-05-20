@@ -2,6 +2,7 @@ from source.config.settings import settings
 from source.errors.auth import (
     AdminAuthAccessDeniedError,
     AdminStaffInvalidRoleError,
+    AdminStaffNotFoundError,
     InactiveUserError,
     UserEmailAlreadyExistsError,
     UserPhoneAlreadyExistsError,
@@ -76,6 +77,42 @@ class AdminStaffService:
         )
         return response
 
+    async def get_staff_detail(
+        self,
+        *,
+        session,
+        redis_service: RedisService,
+        user,
+        staff_id: int,
+        permission_service,
+        user_repository,
+        admin_staff_cache_service,
+    ) -> AdminStaffDetailResponse:
+        self._check_read_permission(user=user, permission_service=permission_service)
+
+        cached_staff = await admin_staff_cache_service.get_detail(
+            redis_service=redis_service,
+            staff_id=staff_id,
+        )
+        if cached_staff is not None:
+            return cached_staff
+
+        staff = await user_repository.get_by_id(session=session, user_id=staff_id)
+        if staff is None or staff.role not in STAFF_ROLES:
+            raise AdminStaffNotFoundError
+
+        response = self._build_staff_detail_response(
+            user=staff,
+            permissions=permission_service.get_user_permissions(role=staff.role),
+        )
+        await admin_staff_cache_service.set_detail(
+            redis_service=redis_service,
+            staff_id=staff.id,
+            response=response,
+            ttl_seconds=settings.admin_staff.list_cache_ttl_seconds,
+        )
+        return response
+
     async def create_staff(
         self,
         *,
@@ -137,7 +174,10 @@ class AdminStaffService:
             email=created_user.email,
             phone=created_user.phone,
             role=created_user.role,
+            permissions=permission_service.get_user_permissions(role=created_user.role),
             is_active=created_user.is_active,
+            is_blocked=created_user.is_blocked,
+            last_login_at=getattr(created_user, "last_login_at", None),
             created_at=created_user.created_date,
         )
 
@@ -150,5 +190,19 @@ class AdminStaffService:
             role=user.role,
             is_active=user.is_active,
             is_blocked=user.is_blocked,
+            created_at=user.created_date,
+        )
+
+    def _build_staff_detail_response(self, *, user, permissions: list[str]) -> AdminStaffDetailResponse:
+        return AdminStaffDetailResponse(
+            id=user.id,
+            name=user.name,
+            email=user.email,
+            phone=user.phone,
+            role=user.role,
+            permissions=permissions,
+            is_active=user.is_active,
+            is_blocked=user.is_blocked,
+            last_login_at=getattr(user, "last_login_at", None),
             created_at=user.created_date,
         )

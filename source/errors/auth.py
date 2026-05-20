@@ -98,6 +98,10 @@ class AdminStaffInvalidRoleError(Exception):
     pass
 
 
+class AdminStaffNotFoundError(Exception):
+    pass
+
+
 class EmptyUserProfileUpdateError(Exception):
     pass
 

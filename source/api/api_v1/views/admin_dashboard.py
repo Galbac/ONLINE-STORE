@@ -14,6 +14,7 @@ from source.errors.category import CategoryHasActiveChildrenError, CategoryHasAc
 from source.errors.auth import (
     AdminAuthAccessDeniedError,
     AdminStaffInvalidRoleError,
+    AdminStaffNotFoundError,
     AdminUserAlreadyBlockedError,
     AdminUserNotFoundError,
     AdminUserNotBlockedError,
@@ -269,6 +270,41 @@ async def create_admin_staff(
     except Exception:
         await commiter.rollback()
         raise
+
+
+@router.get("/staff/{staff_id}", response_model=AdminStaffDetailResponse, status_code=status.HTTP_200_OK)
+@inject
+async def get_admin_staff_detail(
+    staff_id: int = Path(..., gt=0),
+    token_payload: dict = Depends(verify_access_token),
+    current_user: User = Depends(get_current_user),
+    session: FromDishka[AsyncSession] = None,
+    redis_service: FromDishka[RedisService] = None,
+    admin_staff_service: FromDishka[AdminStaffService] = None,
+    admin_staff_cache_service: FromDishka[AdminStaffCacheService] = None,
+    permission_service: FromDishka[PermissionService] = None,
+    user_repository: FromDishka[UserRepository] = None,
+) -> AdminStaffDetailResponse:
+    if token_payload.get("token_type") != "access":
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь не авторизован")
+    try:
+        return await admin_staff_service.get_staff_detail(
+            session=session,
+            redis_service=redis_service,
+            user=current_user,
+            staff_id=staff_id,
+            permission_service=permission_service,
+            user_repository=user_repository,
+            admin_staff_cache_service=admin_staff_cache_service,
+        )
+    except InvalidCredentialsError as error:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь не авторизован") from error
+    except AdminAuthAccessDeniedError as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Недостаточно прав") from error
+    except InactiveUserError as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Пользователь заблокирован") from error
+    except AdminStaffNotFoundError as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Сотрудник не найден") from error
 
 
 @router.get("/categories", response_model=AdminCategoryListResponse, status_code=status.HTTP_200_OK)
