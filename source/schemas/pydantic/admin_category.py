@@ -58,6 +58,43 @@ class AdminCategoryCreateRequest(BaseModel):
         return self
 
 
+class AdminCategoryUpdateRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+    slug: str | None = Field(default=None, min_length=2, max_length=200)
+    description: str | None = None
+    parent_id: int | None = Field(default=None, ge=1)
+    image_id: int | None = Field(default=None, ge=1)
+    sort_order: int | None = Field(default=None, ge=0)
+    is_active: bool | None = None
+    meta_title: str | None = Field(default=None, max_length=255)
+    meta_description: str | None = Field(default=None, max_length=500)
+
+    @model_validator(mode="after")
+    def normalize_strings(self) -> "AdminCategoryUpdateRequest":
+        for field in ("name", "slug", "sort_order", "is_active"):
+            if field in self.model_fields_set and getattr(self, field) is None:
+                raise ValueError(f"{field} cannot be null")
+        if self.name is not None:
+            self.name = self.name.strip()
+        if self.slug is not None:
+            self.slug = self.slug.strip()
+            if not self.slug:
+                self.slug = None
+        if self.description is not None:
+            self.description = self.description.strip()
+            if not self.description:
+                self.description = None
+        if self.meta_title is not None:
+            self.meta_title = self.meta_title.strip()
+            if not self.meta_title:
+                self.meta_title = None
+        if self.meta_description is not None:
+            self.meta_description = self.meta_description.strip()
+            if not self.meta_description:
+                self.meta_description = None
+        return self
+
+
 class AdminCategoryListItemResponse(BaseModel):
     id: int
     name: str
@@ -102,6 +139,7 @@ class AdminCategoryDetailResponse(BaseModel):
     products_count: int | None = None
     seo: AdminCategorySeoResponse | None = None
     created_at: datetime | None = None
+    updated_at: datetime | None = None
 
 
 class AdminCategoryListResponse(BaseModel):

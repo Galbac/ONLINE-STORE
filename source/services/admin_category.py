@@ -1,5 +1,5 @@
 from source.config.settings import settings
-from source.errors.category import CategoryNotFoundError, CategorySlugAlreadyExistsError
+from source.errors.category import CategoryCycleError, CategoryNotFoundError, CategorySlugAlreadyExistsError
 from source.errors.auth import AdminAuthAccessDeniedError, InactiveUserError
 from source.errors.upload import UploadNotFoundError
 from source.schemas.pydantic.admin_category import (
@@ -11,6 +11,7 @@ from source.schemas.pydantic.admin_category import (
     AdminCategoryListResponse,
     AdminCategorySeoResponse,
     AdminCategoryShortResponse,
+    AdminCategoryUpdateRequest,
 )
 from source.services.admin_auth import STAFF_ROLES
 from source.services.redis import RedisService
@@ -34,6 +35,14 @@ class AdminCategoryService:
         if user.role not in STAFF_ROLES:
             raise AdminAuthAccessDeniedError
         if "admin:categories:create" not in permission_service.get_user_permissions(role=user.role):
+            raise AdminAuthAccessDeniedError
+
+    def _check_update_permission(self, *, user, permission_service) -> None:
+        if not user.is_active or user.is_deleted:
+            raise InactiveUserError
+        if user.role not in STAFF_ROLES:
+            raise AdminAuthAccessDeniedError
+        if "admin:categories:update" not in permission_service.get_user_permissions(role=user.role):
             raise AdminAuthAccessDeniedError
 
     async def get_categories(
@@ -249,3 +258,138 @@ class AdminCategoryService:
             name=category.name,
             slug=category.slug,
         )
+
+    async def update_category(
+        self,
+        *,
+        session,
+        redis_service: RedisService,
+        user,
+        category_id: int,
+        data: AdminCategoryUpdateRequest,
+        commiter,
+        permission_service,
+        category_repository,
+        upload_repository,
+        admin_audit_log_repository,
+        audit_log_service,
+        category_tree_service,
+        category_cache_service,
+        admin_category_cache_service,
+        product_cache_service,
+    ) -> AdminCategoryDetailResponse:
+        self._check_update_permission(user=user, permission_service=permission_service)
+
+        update_fields = data.model_dump(exclude_unset=True)
+        if not update_fields:
+            raise ValueError("No fields to update")
+
+        category = await category_repository.admin_get_by_id(session=session, category_id=category_id)
+        if category is None:
+            raise CategoryNotFoundError
+        old_slug = category.slug
+
+        if "slug" in update_fields and update_fields["slug"] is not None:
+            update_fields["slug"] = normalize_slug(update_fields["slug"])
+            if not validate_slug(update_fields["slug"]):
+                raise ValueError("Invalid slug")
+            if update_fields["slug"] != category.slug:
+                existing_category = await category_repository.get_by_slug(session=session, slug=update_fields["slug"])
+                if existing_category is not None and existing_category.id != category.id:
+                    raise CategorySlugAlreadyExistsError
+
+        if "parent_id" in update_fields and update_fields["parent_id"] is not None:
+            parent_id = update_fields["parent_id"]
+            parent = await category_repository.get_by_id(session=session, category_id=parent_id)
+            if parent is None:
+                raise CategoryNotFoundError
+            await category_tree_service.validate_no_cycle(
+                session=session,
+                category_repository=category_repository,
+                category_id=category.id,
+                parent_id=parent_id,
+            )
+
+        if "image_id" in update_fields:
+            image_url = None
+            if update_fields["image_id"] is not None:
+                image = await upload_repository.get_by_id(session=session, file_id=update_fields["image_id"])
+                if image is None or image.is_deleted:
+                    raise UploadNotFoundError
+                image_url = image.url
+            update_fields["image_file_id"] = update_fields.pop("image_id")
+            update_fields["image_url"] = image_url
+
+        before = {
+            field: getattr(category, field)
+            for field in update_fields
+        }
+        updated_category = await category_repository.update(
+            session=session,
+            category=category,
+            data=update_fields,
+        )
+        changes = {
+            field: {
+                "old": str(before[field]) if before[field] is not None else None,
+                "new": str(getattr(updated_category, field)) if getattr(updated_category, field) is not None else None,
+            }
+            for field in update_fields
+            if before[field] != getattr(updated_category, field)
+        }
+        await audit_log_service.log_action(
+            session=session,
+            audit_log_repository=admin_audit_log_repository,
+            user_id=user.id,
+            login=getattr(user, "email", None) or getattr(user, "phone", None) or str(user.id),
+            event="admin_category_update",
+            status="success",
+            details={
+                "category_id": updated_category.id,
+                "changes": changes,
+            },
+        )
+        await commiter.commit()
+
+        await admin_category_cache_service.invalidate_all(redis_service=redis_service)
+        await category_cache_service.invalidate_category(
+            redis_service=redis_service,
+            category_id=updated_category.id,
+            slug=old_slug,
+        )
+        if updated_category.slug != old_slug:
+            await category_cache_service.invalidate_category(
+                redis_service=redis_service,
+                category_id=updated_category.id,
+                slug=updated_category.slug,
+            )
+        await product_cache_service.invalidate_all(redis_service=redis_service)
+
+        return AdminCategoryDetailResponse(
+            id=updated_category.id,
+            name=updated_category.name,
+            slug=updated_category.slug,
+            parent_id=updated_category.parent_id,
+            sort_order=updated_category.sort_order,
+            is_active=updated_category.is_active,
+            updated_at=updated_category.updated_date,
+        )
+
+
+class CategoryTreeService:
+    async def validate_no_cycle(
+        self,
+        *,
+        session,
+        category_repository,
+        category_id: int,
+        parent_id: int,
+    ) -> None:
+        if parent_id == category_id:
+            raise CategoryCycleError
+        descendant_ids = await category_repository.get_descendant_ids(
+            session=session,
+            category_id=category_id,
+        )
+        if parent_id in descendant_ids:
+            raise CategoryCycleError

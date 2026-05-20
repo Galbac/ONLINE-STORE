@@ -172,6 +172,43 @@ class CategoryRepository:
         )
         return list(result.scalars().all())
 
+    async def get_descendant_ids(
+        self,
+        *,
+        session: AsyncSession,
+        category_id: int,
+    ) -> set[int]:
+        result = await session.execute(
+            select(Category.id, Category.parent_id).where(Category.is_deleted.is_(False)),
+        )
+        children_by_parent_id: dict[int | None, list[int]] = {}
+        for child_id, parent_id in result.all():
+            children_by_parent_id.setdefault(parent_id, []).append(child_id)
+
+        descendant_ids: set[int] = set()
+        pending_ids = list(children_by_parent_id.get(category_id, []))
+        while pending_ids:
+            current_id = pending_ids.pop()
+            if current_id in descendant_ids:
+                continue
+            descendant_ids.add(current_id)
+            pending_ids.extend(children_by_parent_id.get(current_id, []))
+        return descendant_ids
+
+    async def update(
+        self,
+        *,
+        session: AsyncSession,
+        category: Category,
+        data: dict,
+    ) -> Category:
+        for field, value in data.items():
+            setattr(category, field, value)
+        session.add(category)
+        await session.flush()
+        await session.refresh(category)
+        return category
+
     async def get_active_all(
         self,
         *,

@@ -4,3 +4,7 @@ class CategoryNotFoundError(Exception):
 
 class CategorySlugAlreadyExistsError(Exception):
     pass
+
+
+class CategoryCycleError(Exception):
+    pass
