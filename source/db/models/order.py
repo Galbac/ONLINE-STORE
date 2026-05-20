@@ -44,5 +44,6 @@ class Order(IdBigIntPkMixin, CreateUpdateMixin, Base):
     cancel_reason: Mapped[str | None] = mapped_column(Text)
     cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     cancelled_by: Mapped[str | None] = mapped_column(String(50))
+    cancelled_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), index=True)
     sync_status: Mapped[str] = mapped_column(String(50), default="pending", server_default="pending", nullable=False)
     items_count: Mapped[int] = mapped_column(default=0, server_default="0", nullable=False)

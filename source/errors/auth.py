@@ -231,6 +231,10 @@ class OrderAlreadyCancelledError(Exception):
     pass
 
 
+class OrderCompletedCancellationError(Exception):
+    pass
+
+
 class OrderCancellationNotAllowedError(Exception):
     pass
 

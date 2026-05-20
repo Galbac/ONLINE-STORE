@@ -1,11 +1,13 @@
-from source.config.settings import settings
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 
+from source.config.settings import settings
 from source.errors.auth import (
     AdminAuthAccessDeniedError,
     EmptyOrderUpdateError,
     InactiveUserError,
+    OrderAlreadyCancelledError,
+    OrderCompletedCancellationError,
     OrderConfirmNotAllowedError,
     OrderFieldNotEditableError,
     OrderItemsNotFoundError,
@@ -16,6 +18,7 @@ from source.schemas.pydantic.order import (
     AdminOrderAddressResponse,
     AdminOrderActionResponse,
     AdminOrderActionShortResponse,
+    AdminOrderCancelRequest,
     AdminOrderConfirmRequest,
     AdminOrderCustomerResponse,
     AdminOrderDetailResponse,
@@ -97,6 +100,14 @@ class AdminOrderService:
         if user.role not in STAFF_ROLES:
             raise AdminAuthAccessDeniedError
         if "admin:orders:confirm" not in permission_service.get_user_permissions(role=user.role):
+            raise AdminAuthAccessDeniedError
+
+    def _check_cancel_permission(self, *, user, permission_service) -> None:
+        if not user.is_active or user.is_deleted:
+            raise InactiveUserError
+        if user.role not in STAFF_ROLES:
+            raise AdminAuthAccessDeniedError
+        if "admin:orders:cancel" not in permission_service.get_user_permissions(role=user.role):
             raise AdminAuthAccessDeniedError
 
     def validate_update_payload_fields(self, *, payload: dict) -> None:
@@ -446,6 +457,135 @@ class AdminOrderService:
                 id=order.id,
                 order_number=order.order_number,
                 status=order.status,
+            ),
+        )
+
+    async def cancel_order(
+        self,
+        *,
+        session,
+        commiter,
+        redis_service: RedisService,
+        user,
+        order_id: int,
+        data: AdminOrderCancelRequest,
+        permission_service,
+        order_repository,
+        order_item_repository,
+        product_repository,
+        promo_code_usage_repository,
+        payment_repository,
+        order_status_history_repository,
+        admin_audit_log_repository,
+        stock_service,
+        promo_code_service,
+        payment_service,
+        one_c_integration_service,
+        notification_service,
+        email_service,
+        telegram_service,
+        order_cache_service,
+        profile_cache_service,
+        product_cache_service,
+    ) -> AdminOrderActionResponse:
+        self._check_cancel_permission(user=user, permission_service=permission_service)
+
+        order = await order_repository.admin_get_by_id(session=session, order_id=order_id)
+        if order is None:
+            raise OrderNotFoundError
+        if order.status == "cancelled":
+            raise OrderAlreadyCancelledError
+        if order.status == "completed":
+            raise OrderCompletedCancellationError
+
+        payment = await payment_repository.get_by_order_id(session=session, order_id=order.id)
+        order_items = await order_item_repository.get_by_order_id(session=session, order_id=order.id)
+        products_by_id = {}
+        if data.release_stock:
+            products = await product_repository.get_by_ids(
+                session=session,
+                product_ids=[item.product_id for item in order_items],
+            )
+            products_by_id = {product.id: product for product in products}
+
+        released_products = []
+        old_status = order.status
+        try:
+            order = await order_repository.update_status(session=session, order=order, status="cancelled")
+            order.cancel_reason = data.reason
+            order.cancelled_at = datetime.now(settings.tz)
+            order.cancelled_by = "admin"
+            order.cancelled_by_user_id = user.id
+            if data.release_stock:
+                released_products = await stock_service.release_reserved_items(
+                    product_repository=product_repository,
+                    session=session,
+                    products_by_id=products_by_id,
+                    order_items=order_items,
+                )
+            await promo_code_service.cancel_usage(
+                promo_code_usage_repository=promo_code_usage_repository,
+                session=session,
+                order_id=order.id,
+            )
+            if payment is not None and order.payment_status == "paid":
+                if settings.payments.auto_refund_enabled:
+                    await payment_service.create_refund_request(order=order)
+                elif getattr(payment, "refund_status", None) is None:
+                    await payment_repository.update_refund_status(
+                        session=session,
+                        payment=payment,
+                        refund_status="pending",
+                    )
+            await one_c_integration_service.mark_cancel_pending(order=order)
+            await order_status_history_repository.create(
+                session=session,
+                order_id=order.id,
+                old_status=old_status,
+                status="cancelled",
+                comment=data.reason,
+                changed_by=user.id,
+            )
+            await admin_audit_log_repository.create(
+                session=session,
+                user_id=user.id,
+                login=getattr(user, "email", None) or getattr(user, "phone", None) or str(user.id),
+                event="admin_order_cancel",
+                status="success",
+                details={
+                    "order_id": order.id,
+                    "order_number": order.order_number,
+                    "old_status": old_status,
+                    "reason": data.reason,
+                    "release_stock": data.release_stock,
+                },
+            )
+            if data.notify_customer:
+                await notification_service.notify_order_cancelled(
+                    email_service=email_service,
+                    telegram_service=telegram_service,
+                    order=order,
+                )
+            await commiter.commit()
+        except Exception:
+            await commiter.rollback()
+            raise
+
+        await order_cache_service.invalidate_admin_orders(redis_service=redis_service)
+        await order_cache_service.invalidate_detail(redis_service=redis_service, user_id=order.user_id, order_id=order.id)
+        await order_cache_service.invalidate_status(redis_service=redis_service, user_id=order.user_id, order_id=order.id)
+        await order_cache_service.invalidate_my_orders(redis_service=redis_service, user_id=order.user_id)
+        await profile_cache_service.invalidate_orders(redis_service=redis_service, user_id=order.user_id)
+        await profile_cache_service.delete_summary(redis_service=redis_service, user_id=order.user_id)
+        await product_cache_service.invalidate_by_stock_changes(redis_service=redis_service, products=released_products)
+
+        return AdminOrderActionResponse(
+            message="Заказ отменён",
+            order=AdminOrderActionShortResponse(
+                id=order.id,
+                order_number=order.order_number,
+                status=order.status,
+                cancel_reason=order.cancel_reason,
             ),
         )
 

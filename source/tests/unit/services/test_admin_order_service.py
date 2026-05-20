@@ -7,6 +7,7 @@ import pytest
 from source.db.models.choises.enum import UserRole
 from source.errors.auth import (
     AdminAuthAccessDeniedError,
+    OrderCompletedCancellationError,
     OrderConfirmNotAllowedError,
     OrderFieldNotEditableError,
     OrderNotFoundError,
@@ -14,6 +15,7 @@ from source.errors.auth import (
     OrderUpdateNotAllowedError,
 )
 from source.schemas.pydantic.order import (
+    AdminOrderCancelRequest,
     AdminOrderConfirmRequest,
     AdminOrderListItemResponse,
     AdminOrderListQueryParams,
@@ -25,6 +27,7 @@ from source.services.admin_auth import PermissionService
 from source.services.admin_order import AdminOrderService
 from source.services.order_cache import OrderCacheService
 from source.services.order_status import OrderStatusService
+from source.services.product_cache import ProductCacheService
 from source.services.stock import StockService
 
 
@@ -149,6 +152,9 @@ def build_order(
         comment="Позвонить заранее",
         internal_comment=None,
         cancel_reason=None,
+        cancelled_at=None,
+        cancelled_by=None,
+        cancelled_by_user_id=None,
     )
 
 
@@ -209,6 +215,10 @@ class FakePaymentRepository:
     async def get_by_order_id(self, *, session, order_id: int):
         return self.payment
 
+    async def update_refund_status(self, *, session, payment, refund_status: str):
+        payment.refund_status = refund_status
+        return payment
+
 
 class FakeProductRepository:
     def __init__(self, products=None) -> None:
@@ -226,6 +236,16 @@ class FakeProductRepository:
     async def get_by_ids(self, *, session, product_ids: list[int]):
         product_ids_set = set(product_ids)
         return [product for product in self.products if product.id in product_ids_set]
+
+    async def release_stock(self, *, session, products_by_id: dict, order_items: list):
+        released_products = []
+        for item in order_items:
+            product = products_by_id.get(item.product_id)
+            if product is None:
+                continue
+            product.stock_quantity += item.quantity
+            released_products.append(product)
+        return released_products
 
 
 class FakeOrderStatusHistoryRepository:
@@ -347,6 +367,9 @@ class FakeNotificationService:
             message=order.status,
         )
 
+    async def notify_order_cancelled(self, *, email_service, telegram_service, order) -> None:
+        self.notified = True
+
 
 class FakeProfileCacheService:
     def __init__(self) -> None:
@@ -369,6 +392,32 @@ class FakeAdminAuditLogRepository:
     async def create(self, *, session, **data):
         self.logs.append(data)
         return SimpleNamespace(id=len(self.logs), **data)
+
+
+class FakePromoCodeUsageRepository:
+    def __init__(self) -> None:
+        self.cancelled_order_id = None
+
+    async def cancel_by_order_id(self, *, session, order_id: int) -> None:
+        self.cancelled_order_id = order_id
+
+
+class FakePromoCodeService:
+    async def cancel_usage(self, *, promo_code_usage_repository, session, order_id: int) -> None:
+        await promo_code_usage_repository.cancel_by_order_id(session=session, order_id=order_id)
+
+
+class FakePaymentService:
+    def __init__(self) -> None:
+        self.refund_requested = False
+
+    async def create_refund_request(self, *, order) -> None:
+        self.refund_requested = True
+
+
+class FakeOneCIntegrationService:
+    async def mark_cancel_pending(self, *, order) -> None:
+        order.sync_status = "pending_cancel"
 
 
 async def update_order_status(
@@ -497,6 +546,79 @@ async def confirm_order(
         notification_repository=notification_repository,
         notification_service=notification_service,
         profile_cache_service=profile_cache_service,
+        commiter=commiter,
+    )
+
+
+async def cancel_order(
+    *,
+    order=None,
+    payment=None,
+    product=None,
+    release_stock: bool = True,
+    role=UserRole.ADMIN,
+):
+    redis_service = FakeRedisService()
+    repository = FakeOrderRepository([] if order is None else [order])
+    history_repository = FakeOrderStatusHistoryRepository()
+    notification_service = FakeNotificationService()
+    profile_cache_service = FakeProfileCacheService()
+    audit_repository = FakeAdminAuditLogRepository()
+    promo_code_usage_repository = FakePromoCodeUsageRepository()
+    payment_service = FakePaymentService()
+    product = product or SimpleNamespace(
+        id=55,
+        slug="apples",
+        name="Яблоки красные",
+        is_active=True,
+        is_deleted=False,
+        is_available=True,
+        stock_quantity=Decimal("10.0"),
+    )
+    commiter = FakeCommiter()
+
+    response = await AdminOrderService().cancel_order(
+        session=None,
+        commiter=commiter,
+        redis_service=redis_service,
+        user=build_user(role=role),
+        order_id=101,
+        data=AdminOrderCancelRequest(
+            reason="Нет товара на складе",
+            notify_customer=True,
+            release_stock=release_stock,
+        ),
+        permission_service=PermissionService(),
+        order_repository=repository,
+        order_item_repository=FakeOrderItemRepository([build_order_item()]),
+        product_repository=FakeProductRepository([product]),
+        promo_code_usage_repository=promo_code_usage_repository,
+        payment_repository=FakePaymentRepository(payment),
+        order_status_history_repository=history_repository,
+        admin_audit_log_repository=audit_repository,
+        stock_service=StockService(),
+        promo_code_service=FakePromoCodeService(),
+        payment_service=payment_service,
+        one_c_integration_service=FakeOneCIntegrationService(),
+        notification_service=notification_service,
+        email_service=SimpleNamespace(),
+        telegram_service=SimpleNamespace(),
+        order_cache_service=OrderCacheService(),
+        profile_cache_service=profile_cache_service,
+        product_cache_service=ProductCacheService(),
+    )
+    return SimpleNamespace(
+        response=response,
+        order=order,
+        payment=payment,
+        product=product,
+        redis_service=redis_service,
+        history_repository=history_repository,
+        notification_service=notification_service,
+        profile_cache_service=profile_cache_service,
+        audit_repository=audit_repository,
+        promo_code_usage_repository=promo_code_usage_repository,
+        payment_service=payment_service,
         commiter=commiter,
     )
 
@@ -869,3 +991,75 @@ async def test_admin_confirm_order_sets_sync_status_pending() -> None:
     await confirm_order(order=order)
 
     assert order.sync_status == "pending"
+
+
+@pytest.mark.asyncio
+async def test_admin_cancel_order_success() -> None:
+    order = build_order(order_id=101, order_number="ORD-000101", status="confirmed")
+    result = await cancel_order(order=order)
+
+    assert result.response.message == "Заказ отменён"
+    assert result.response.order.id == 101
+    assert result.response.order.status == "cancelled"
+    assert result.response.order.cancel_reason == "Нет товара на складе"
+    assert order.cancelled_by == "admin"
+    assert order.cancelled_by_user_id == 1
+    assert result.audit_repository.logs[0]["event"] == "admin_order_cancel"
+    assert result.commiter.committed is True
+
+
+@pytest.mark.asyncio
+async def test_admin_cancel_order_completed_not_allowed() -> None:
+    order = build_order(order_id=101, order_number="ORD-000101", status="completed")
+
+    with pytest.raises(OrderCompletedCancellationError):
+        await cancel_order(order=order)
+
+
+@pytest.mark.asyncio
+async def test_admin_cancel_paid_order_creates_refund_request(monkeypatch) -> None:
+    monkeypatch.setattr("source.services.admin_order.settings.payments.auto_refund_enabled", True)
+    order = build_order(order_id=101, order_number="ORD-000101", status="confirmed", payment_status="paid")
+    payment = SimpleNamespace(id=1, refund_status=None)
+    result = await cancel_order(order=order, payment=payment)
+
+    assert result.payment_service.refund_requested is True
+
+
+@pytest.mark.asyncio
+async def test_admin_cancel_order_releases_stock() -> None:
+    order = build_order(order_id=101, order_number="ORD-000101", status="confirmed")
+    product = SimpleNamespace(
+        id=55,
+        slug="apples",
+        name="Яблоки красные",
+        is_active=True,
+        is_deleted=False,
+        is_available=True,
+        stock_quantity=Decimal("10.0"),
+    )
+    result = await cancel_order(order=order, product=product)
+
+    assert result.product.stock_quantity == Decimal("11.5")
+    assert result.promo_code_usage_repository.cancelled_order_id == 101
+
+
+@pytest.mark.asyncio
+async def test_admin_cancel_order_sets_sync_status_pending_cancel() -> None:
+    order = build_order(order_id=101, order_number="ORD-000101", status="confirmed", sync_status="synced")
+    await cancel_order(order=order)
+
+    assert order.sync_status == "pending_cancel"
+
+
+@pytest.mark.asyncio
+async def test_admin_cancel_order_invalidates_cache() -> None:
+    order = build_order(order_id=101, order_number="ORD-000101", status="confirmed")
+    result = await cancel_order(order=order)
+
+    assert "admin:orders:*" in result.redis_service.deleted_patterns
+    assert "orders:my:1:*" in result.redis_service.deleted_patterns
+    assert "profile:orders:1:*" in result.redis_service.deleted_patterns
+    assert "orders:detail:1:101" in result.redis_service.deleted
+    assert "orders:status:1:101" in result.redis_service.deleted
+    assert "profile:summary:1" in result.redis_service.deleted

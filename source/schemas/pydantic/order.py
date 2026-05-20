@@ -355,10 +355,25 @@ class AdminOrderConfirmRequest(BaseModel):
         return normalized_value or None
 
 
+class AdminOrderCancelRequest(BaseModel):
+    reason: str | None = Field(default=None, max_length=500)
+    notify_customer: bool = False
+    release_stock: bool = True
+
+    @field_validator("reason", mode="before")
+    @classmethod
+    def normalize_reason(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        normalized_value = " ".join(value.strip().split())
+        return normalized_value or None
+
+
 class AdminOrderActionShortResponse(BaseModel):
     id: int
     order_number: str
     status: str
+    cancel_reason: str | None = None
 
 
 class AdminOrderActionResponse(BaseModel):
