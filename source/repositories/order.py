@@ -151,6 +151,14 @@ class OrderRepository:
         await session.refresh(order)
         return order
 
+    async def update_allowed_fields(self, *, session: AsyncSession, order: Order, data: dict) -> Order:
+        for field, value in data.items():
+            setattr(order, field, value)
+        session.add(order)
+        await session.flush()
+        await session.refresh(order)
+        return order
+
     async def update_payment_status(self, *, session: AsyncSession, order: Order, payment_status: str) -> Order:
         order.payment_status = payment_status
         session.add(order)

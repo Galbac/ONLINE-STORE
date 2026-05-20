@@ -5,12 +5,19 @@ from types import SimpleNamespace
 import pytest
 
 from source.db.models.choises.enum import UserRole
-from source.errors.auth import AdminAuthAccessDeniedError, OrderNotFoundError, OrderStatusTransitionError
+from source.errors.auth import (
+    AdminAuthAccessDeniedError,
+    OrderFieldNotEditableError,
+    OrderNotFoundError,
+    OrderStatusTransitionError,
+    OrderUpdateNotAllowedError,
+)
 from source.schemas.pydantic.order import (
     AdminOrderListItemResponse,
     AdminOrderListQueryParams,
     AdminOrderListResponse,
     AdminOrderStatusUpdateRequest,
+    AdminOrderUpdateRequest,
 )
 from source.services.admin_auth import PermissionService
 from source.services.admin_order import AdminOrderService
@@ -69,6 +76,12 @@ class FakeOrderRepository:
         order.updated_date = datetime(2026, 5, 12, 11, 0, 0)
         return order
 
+    async def update_allowed_fields(self, *, session, order, data: dict):
+        for field, value in data.items():
+            setattr(order, field, value)
+        order.updated_date = datetime(2026, 5, 12, 11, 0, 0)
+        return order
+
     def _filter(self, query: AdminOrderListQueryParams):
         orders = list(self.orders)
         if query.q is not None:
@@ -102,9 +115,9 @@ def build_order(
     payment_status: str = "unpaid",
     customer_name: str = "Иван Иванов",
     customer_phone: str = "+79990000000",
-    customer_email: str | None = "ivan@example.com",
-    sync_status: str = "pending",
-    created_date: datetime | None = None,
+        customer_email: str | None = "ivan@example.com",
+        sync_status: str = "pending",
+        created_date: datetime | None = None,
 ):
     return SimpleNamespace(
         id=order_id,
@@ -123,12 +136,15 @@ def build_order(
         updated_date=datetime(2026, 5, 12, 10, 30, 0),
         address_id=10,
         pickup_point_id=None,
+        delivery_date=None,
+        delivery_time_slot_id=None,
         user_id=1,
         subtotal=Decimal("270.00"),
         discount_amount=Decimal("45.00"),
         promo_discount_amount=Decimal("100.00"),
         delivery_price=Decimal("250.00"),
         comment="Позвонить заранее",
+        internal_comment=None,
         cancel_reason=None,
     )
 
@@ -296,10 +312,24 @@ class FakeNotificationService:
 class FakeProfileCacheService:
     def __init__(self) -> None:
         self.summary_deleted = False
+        self.orders_invalidated = False
+
+    async def invalidate_orders(self, *, redis_service, user_id: int) -> None:
+        self.orders_invalidated = True
+        await redis_service.delete_by_pattern(f"profile:orders:{user_id}:*")
 
     async def delete_summary(self, *, redis_service, user_id: int) -> None:
         self.summary_deleted = True
         await redis_service.delete(f"profile:summary:{user_id}")
+
+
+class FakeAdminAuditLogRepository:
+    def __init__(self) -> None:
+        self.logs = []
+
+    async def create(self, *, session, **data):
+        self.logs.append(data)
+        return SimpleNamespace(id=len(self.logs), **data)
 
 
 async def update_order_status(
@@ -346,6 +376,41 @@ async def update_order_status(
         history_repository=history_repository,
         notification_repository=notification_repository,
         notification_service=notification_service,
+        profile_cache_service=profile_cache_service,
+        commiter=commiter,
+    )
+
+
+async def update_order(
+    *,
+    order=None,
+    data: AdminOrderUpdateRequest | None = None,
+    role=UserRole.ADMIN,
+):
+    redis_service = FakeRedisService()
+    repository = FakeOrderRepository([] if order is None else [order])
+    audit_repository = FakeAdminAuditLogRepository()
+    profile_cache_service = FakeProfileCacheService()
+    commiter = FakeCommiter()
+
+    response = await AdminOrderService().update_order(
+        session=None,
+        commiter=commiter,
+        redis_service=redis_service,
+        user=build_user(role=role),
+        order_id=101,
+        data=data or AdminOrderUpdateRequest(comment="Новый комментарий"),
+        permission_service=PermissionService(),
+        order_repository=repository,
+        admin_audit_log_repository=audit_repository,
+        order_cache_service=OrderCacheService(),
+        profile_cache_service=profile_cache_service,
+    )
+    return SimpleNamespace(
+        response=response,
+        order=order,
+        redis_service=redis_service,
+        audit_repository=audit_repository,
         profile_cache_service=profile_cache_service,
         commiter=commiter,
     )
@@ -590,4 +655,75 @@ async def test_admin_update_order_status_invalidates_cache() -> None:
     assert "orders:detail:1:101" in result.redis_service.deleted
     assert "orders:status:1:101" in result.redis_service.deleted
     assert "profile:summary:1" in result.redis_service.deleted
+    assert result.profile_cache_service.summary_deleted is True
+
+
+@pytest.mark.asyncio
+async def test_admin_update_order_comment_success() -> None:
+    order = build_order(order_id=101, order_number="ORD-000101", status="new")
+    result = await update_order(order=order, data=AdminOrderUpdateRequest(comment="Новый комментарий"))
+
+    assert result.response.id == 101
+    assert result.response.comment == "Новый комментарий"
+    assert order.comment == "Новый комментарий"
+    assert order.sync_status == "pending_update"
+    assert result.commiter.committed is True
+
+
+def test_admin_update_order_forbids_final_price() -> None:
+    with pytest.raises(OrderFieldNotEditableError):
+        AdminOrderService().validate_update_payload_fields(payload={"final_price": "100.00"})
+
+
+@pytest.mark.asyncio
+async def test_admin_update_order_not_found() -> None:
+    with pytest.raises(OrderNotFoundError):
+        await update_order(order=None, data=AdminOrderUpdateRequest(comment="Новый комментарий"))
+
+
+@pytest.mark.asyncio
+async def test_admin_update_order_invalid_status() -> None:
+    order = build_order(order_id=101, order_number="ORD-000101", status="completed")
+
+    with pytest.raises(OrderUpdateNotAllowedError):
+        await update_order(order=order, data=AdminOrderUpdateRequest(comment="Новый комментарий"))
+
+
+@pytest.mark.asyncio
+async def test_admin_update_order_creates_audit_log() -> None:
+    order = build_order(order_id=101, order_number="ORD-000101", status="new")
+    result = await update_order(
+        order=order,
+        data=AdminOrderUpdateRequest(
+            customer_name="Иван Петров",
+            internal_comment="Позвонить перед сборкой",
+        ),
+    )
+
+    assert len(result.audit_repository.logs) == 1
+    log = result.audit_repository.logs[0]
+    assert log["event"] == "admin_order_update"
+    assert log["details"]["order_id"] == 101
+    assert log["details"]["diff"]["customer_name"] == {
+        "old": "Иван Иванов",
+        "new": "Иван Петров",
+    }
+    assert log["details"]["diff"]["internal_comment"] == {
+        "old": None,
+        "new": "Позвонить перед сборкой",
+    }
+
+
+@pytest.mark.asyncio
+async def test_admin_update_order_invalidates_cache() -> None:
+    order = build_order(order_id=101, order_number="ORD-000101", status="new")
+    result = await update_order(order=order, data=AdminOrderUpdateRequest(comment="Новый комментарий"))
+
+    assert "admin:orders:*" in result.redis_service.deleted_patterns
+    assert "orders:my:1:*" in result.redis_service.deleted_patterns
+    assert "profile:orders:1:*" in result.redis_service.deleted_patterns
+    assert "orders:detail:1:101" in result.redis_service.deleted
+    assert "orders:status:1:101" in result.redis_service.deleted
+    assert "profile:summary:1" in result.redis_service.deleted
+    assert result.profile_cache_service.orders_invalidated is True
     assert result.profile_cache_service.summary_deleted is True

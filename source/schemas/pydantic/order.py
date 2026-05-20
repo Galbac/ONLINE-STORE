@@ -300,6 +300,48 @@ class AdminOrderStatusResponse(BaseModel):
     updated_at: datetime
 
 
+class AdminOrderUpdateRequest(BaseModel):
+    customer_name: str | None = Field(default=None, min_length=1, max_length=100)
+    customer_phone: str | None = Field(default=None, min_length=5, max_length=32)
+    customer_email: EmailStr | None = None
+    comment: str | None = Field(default=None, max_length=500)
+    internal_comment: str | None = Field(default=None, max_length=500)
+    delivery_date: date | None = None
+    delivery_time_slot_id: int | None = Field(default=None, gt=0)
+
+    @field_validator("customer_name", mode="before")
+    @classmethod
+    def normalize_customer_name(cls, value):
+        if value is None:
+            return value
+        return " ".join(value.strip().split())
+
+    @field_validator("comment", "internal_comment", mode="before")
+    @classmethod
+    def normalize_optional_strings(cls, value):
+        if value is None:
+            return value
+        normalized_value = " ".join(value.strip().split())
+        return normalized_value or None
+
+    @field_validator("customer_phone", mode="before")
+    @classmethod
+    def normalize_customer_phone(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        return normalize_phone(value)
+
+
+class AdminOrderUpdateResponse(BaseModel):
+    id: int
+    order_number: str
+    customer_name: str
+    customer_phone: str
+    comment: str | None = None
+    internal_comment: str | None = None
+    updated_at: datetime
+
+
 class OrderCreateResponse(BaseModel):
     id: int
     order_number: str

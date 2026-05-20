@@ -51,6 +51,7 @@ ADMIN_PERMISSIONS_BY_ROLE = {
         "admin:products:manage",
         "admin:orders:read",
         "admin:orders:manage",
+        "admin:orders:update",
         "admin:orders:update_status",
     ],
     UserRole.MANAGER: [
@@ -68,6 +69,7 @@ ADMIN_PERMISSIONS_BY_ROLE = {
         "admin:products:manage",
         "admin:orders:read",
         "admin:orders:manage",
+        "admin:orders:update",
         "admin:orders:update_status",
     ],
     UserRole.CONTENT_MANAGER: [

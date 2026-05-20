@@ -40,6 +40,7 @@ class Order(IdBigIntPkMixin, CreateUpdateMixin, Base):
     customer_phone: Mapped[str] = mapped_column(String(32), nullable=False)
     customer_email: Mapped[str | None] = mapped_column(String(255))
     comment: Mapped[str | None] = mapped_column(Text)
+    internal_comment: Mapped[str | None] = mapped_column(Text)
     cancel_reason: Mapped[str | None] = mapped_column(Text)
     cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     cancelled_by: Mapped[str | None] = mapped_column(String(50))

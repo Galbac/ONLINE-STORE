@@ -1,5 +1,15 @@
 from source.config.settings import settings
-from source.errors.auth import AdminAuthAccessDeniedError, InactiveUserError, OrderNotFoundError
+from datetime import date
+from decimal import Decimal
+
+from source.errors.auth import (
+    AdminAuthAccessDeniedError,
+    EmptyOrderUpdateError,
+    InactiveUserError,
+    OrderFieldNotEditableError,
+    OrderNotFoundError,
+    OrderUpdateNotAllowedError,
+)
 from source.schemas.pydantic.order import (
     AdminOrderAddressResponse,
     AdminOrderCustomerResponse,
@@ -12,6 +22,8 @@ from source.schemas.pydantic.order import (
     AdminOrderStatusResponse,
     AdminOrderStatusHistoryItemResponse,
     AdminOrderStatusUpdateRequest,
+    AdminOrderUpdateRequest,
+    AdminOrderUpdateResponse,
 )
 from source.services.admin_auth import STAFF_ROLES
 from source.services.redis import RedisService
@@ -20,6 +32,36 @@ from source.utils.search import normalize_search_query
 
 
 class AdminOrderService:
+    _allowed_update_fields = {
+        "customer_name",
+        "customer_phone",
+        "customer_email",
+        "comment",
+        "internal_comment",
+        "delivery_date",
+        "delivery_time_slot_id",
+    }
+    _forbidden_update_fields = {
+        "final_price",
+        "subtotal",
+        "discount_amount",
+        "promo_discount_amount",
+        "delivery_price",
+        "payment_status",
+        "order_items",
+        "items",
+        "price",
+    }
+    _editable_statuses = {
+        "pending_payment",
+        "new",
+        "confirmed",
+        "awaiting_confirmation",
+        "assembling",
+        "assembled",
+        "ready_for_pickup",
+    }
+
     def _check_read_permission(self, *, user, permission_service) -> None:
         if not user.is_active or user.is_deleted:
             raise InactiveUserError
@@ -35,6 +77,23 @@ class AdminOrderService:
             raise AdminAuthAccessDeniedError
         if "admin:orders:update_status" not in permission_service.get_user_permissions(role=user.role):
             raise AdminAuthAccessDeniedError
+
+    def _check_update_permission(self, *, user, permission_service) -> None:
+        if not user.is_active or user.is_deleted:
+            raise InactiveUserError
+        if user.role not in STAFF_ROLES:
+            raise AdminAuthAccessDeniedError
+        if "admin:orders:update" not in permission_service.get_user_permissions(role=user.role):
+            raise AdminAuthAccessDeniedError
+
+    def validate_update_payload_fields(self, *, payload: dict) -> None:
+        if not payload:
+            raise EmptyOrderUpdateError
+        fields = set(payload)
+        if fields & self._forbidden_update_fields:
+            raise OrderFieldNotEditableError
+        if fields - self._allowed_update_fields:
+            raise OrderFieldNotEditableError
 
     async def get_orders(
         self,
@@ -222,6 +281,96 @@ class AdminOrderService:
             status=order.status,
             updated_at=order.updated_date,
         )
+
+    async def update_order(
+        self,
+        *,
+        session,
+        commiter,
+        redis_service: RedisService,
+        user,
+        order_id: int,
+        data: AdminOrderUpdateRequest,
+        permission_service,
+        order_repository,
+        admin_audit_log_repository,
+        order_cache_service,
+        profile_cache_service,
+    ) -> AdminOrderUpdateResponse:
+        self._check_update_permission(user=user, permission_service=permission_service)
+
+        update_data = data.model_dump(exclude_unset=True)
+        if not update_data:
+            raise EmptyOrderUpdateError
+
+        order = await order_repository.admin_get_by_id(session=session, order_id=order_id)
+        if order is None:
+            raise OrderNotFoundError
+        if order.status not in self._editable_statuses:
+            raise OrderUpdateNotAllowedError
+
+        diff = self._build_update_diff(order=order, update_data=update_data)
+        if not diff:
+            raise EmptyOrderUpdateError
+
+        update_data["sync_status"] = "pending_update"
+        try:
+            order = await order_repository.update_allowed_fields(
+                session=session,
+                order=order,
+                data=update_data,
+            )
+            await admin_audit_log_repository.create(
+                session=session,
+                user_id=user.id,
+                login=getattr(user, "email", None) or getattr(user, "phone", None) or str(user.id),
+                event="admin_order_update",
+                status="success",
+                details={
+                    "order_id": order.id,
+                    "order_number": order.order_number,
+                    "diff": diff,
+                },
+            )
+            await commiter.commit()
+        except Exception:
+            await commiter.rollback()
+            raise
+
+        await order_cache_service.invalidate_admin_orders(redis_service=redis_service)
+        await order_cache_service.invalidate_detail(redis_service=redis_service, user_id=order.user_id, order_id=order.id)
+        await order_cache_service.invalidate_status(redis_service=redis_service, user_id=order.user_id, order_id=order.id)
+        await order_cache_service.invalidate_my_orders(redis_service=redis_service, user_id=order.user_id)
+        await profile_cache_service.invalidate_orders(redis_service=redis_service, user_id=order.user_id)
+        await profile_cache_service.delete_summary(redis_service=redis_service, user_id=order.user_id)
+
+        return AdminOrderUpdateResponse(
+            id=order.id,
+            order_number=order.order_number,
+            customer_name=order.customer_name,
+            customer_phone=order.customer_phone,
+            comment=order.comment,
+            internal_comment=getattr(order, "internal_comment", None),
+            updated_at=order.updated_date,
+        )
+
+    def _build_update_diff(self, *, order, update_data: dict) -> dict:
+        diff = {}
+        for field, new_value in update_data.items():
+            old_value = getattr(order, field)
+            if old_value != new_value:
+                diff[field] = {
+                    "old": self._serialize_audit_value(old_value),
+                    "new": self._serialize_audit_value(new_value),
+                }
+        return diff
+
+    def _serialize_audit_value(self, value):
+        if isinstance(value, date):
+            return value.isoformat()
+        if isinstance(value, Decimal):
+            return str(value)
+        return value
 
     def _build_address_response(self, address) -> AdminOrderAddressResponse | None:
         if address is None:

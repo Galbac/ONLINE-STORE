@@ -12,11 +12,14 @@ from source.errors.category import CategoryCycleError, CategoryNotFoundError, Ca
 from source.errors.category import CategoryHasActiveChildrenError, CategoryHasActiveProductsError
 from source.errors.auth import (
     AdminAuthAccessDeniedError,
+    EmptyOrderUpdateError,
     InactiveUserError,
     InvalidCredentialsError,
+    OrderFieldNotEditableError,
     OrderInvalidStatusError,
     OrderNotFoundError,
     OrderStatusTransitionError,
+    OrderUpdateNotAllowedError,
 )
 from source.errors.product import (
     ProductActiveOrderExistsError,
@@ -83,6 +86,8 @@ from source.schemas.pydantic.order import (
     AdminOrderListResponse,
     AdminOrderStatusResponse,
     AdminOrderStatusUpdateRequest,
+    AdminOrderUpdateRequest,
+    AdminOrderUpdateResponse,
 )
 from source.services.category_cache import CategoryCacheService
 from source.services.admin_auth import AuditLogService, PermissionService
@@ -649,6 +654,58 @@ async def update_admin_order_status(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Недопустимый статус") from error
     except OrderStatusTransitionError as error:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Недопустимый переход статуса") from error
+
+
+@router.patch("/orders/{order_id}", response_model=AdminOrderUpdateResponse, status_code=status.HTTP_200_OK)
+@inject
+async def update_admin_order(
+    payload: dict = Body(...),
+    token_payload: dict = Depends(verify_access_token),
+    current_user: User = Depends(get_current_user),
+    order_id: int = Path(ge=1),
+    session: FromDishka[AsyncSession] = None,
+    commiter: FromDishka[Commiter] = None,
+    redis_service: FromDishka[RedisService] = None,
+    admin_order_service: FromDishka[AdminOrderService] = None,
+    permission_service: FromDishka[PermissionService] = None,
+    order_repository: FromDishka[OrderRepository] = None,
+    admin_audit_log_repository: FromDishka[AdminAuditLogRepository] = None,
+    order_cache_service: FromDishka[OrderCacheService] = None,
+    profile_cache_service: FromDishka[ProfileCacheService] = None,
+) -> AdminOrderUpdateResponse:
+    if token_payload.get("token_type") != "access":
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь не авторизован")
+    try:
+        admin_order_service.validate_update_payload_fields(payload=payload)
+        return await admin_order_service.update_order(
+            session=session,
+            commiter=commiter,
+            redis_service=redis_service,
+            user=current_user,
+            order_id=order_id,
+            data=AdminOrderUpdateRequest.model_validate(payload),
+            permission_service=permission_service,
+            order_repository=order_repository,
+            admin_audit_log_repository=admin_audit_log_repository,
+            order_cache_service=order_cache_service,
+            profile_cache_service=profile_cache_service,
+        )
+    except ValidationError as error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Неверные данные") from error
+    except InvalidCredentialsError as error:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь не авторизован") from error
+    except AdminAuthAccessDeniedError as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Недостаточно прав") from error
+    except InactiveUserError as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Пользователь заблокирован") from error
+    except EmptyOrderUpdateError as error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Нет полей для обновления") from error
+    except OrderFieldNotEditableError as error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Поле нельзя редактировать") from error
+    except OrderNotFoundError as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Заказ не найден") from error
+    except OrderUpdateNotAllowedError as error:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Заказ нельзя редактировать в текущем статусе") from error
 
 
 @router.get("/products/{product_id}", response_model=AdminProductDetailResponse, status_code=status.HTTP_200_OK)

@@ -259,6 +259,18 @@ class OrderStatusTransitionError(Exception):
     pass
 
 
+class EmptyOrderUpdateError(Exception):
+    pass
+
+
+class OrderFieldNotEditableError(Exception):
+    pass
+
+
+class OrderUpdateNotAllowedError(Exception):
+    pass
+
+
 class PaymentProviderCreateError(Exception):
     pass
 
