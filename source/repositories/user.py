@@ -87,6 +87,17 @@ class UserRepository:
         result = await session.execute(select(func.count()).select_from(statement))
         return int(result.scalar_one())
 
+    async def count_active_admins(self, *, session: AsyncSession) -> int:
+        result = await session.execute(
+            select(func.count(User.id)).where(
+                User.role == UserRole.ADMIN,
+                User.is_active.is_(True),
+                User.is_deleted.is_(False),
+                User.is_blocked.is_(False),
+            ),
+        )
+        return int(result.scalar_one())
+
     async def get_by_phone(
         self,
         *,

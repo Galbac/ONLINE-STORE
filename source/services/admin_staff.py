@@ -1,9 +1,14 @@
+from datetime import datetime
+
 from source.config.settings import settings
+from source.db.models.choises.enum import UserRole
 from source.errors.auth import (
     AdminAuthAccessDeniedError,
     AdminStaffInvalidRoleError,
     AdminStaffNotFoundError,
+    EmptyAdminStaffUpdateError,
     InactiveUserError,
+    LastActiveAdminDeactivationError,
     UserEmailAlreadyExistsError,
     UserPhoneAlreadyExistsError,
 )
@@ -13,6 +18,7 @@ from source.schemas.pydantic.admin_staff import (
     AdminStaffListItemResponse,
     AdminStaffListQueryParams,
     AdminStaffListResponse,
+    AdminStaffUpdateRequest,
 )
 from source.services.admin_auth import STAFF_ROLES
 from source.services.redis import RedisService
@@ -35,6 +41,14 @@ class AdminStaffService:
         if user.role not in STAFF_ROLES:
             raise AdminAuthAccessDeniedError
         if "admin:staff:create" not in permission_service.get_user_permissions(role=user.role):
+            raise AdminAuthAccessDeniedError
+
+    def _check_update_permission(self, *, user, permission_service) -> None:
+        if not user.is_active or user.is_deleted or user.is_blocked:
+            raise InactiveUserError
+        if user.role not in STAFF_ROLES:
+            raise AdminAuthAccessDeniedError
+        if "admin:staff:update" not in permission_service.get_user_permissions(role=user.role):
             raise AdminAuthAccessDeniedError
 
     async def get_staff_list(
@@ -179,6 +193,97 @@ class AdminStaffService:
             is_blocked=created_user.is_blocked,
             last_login_at=getattr(created_user, "last_login_at", None),
             created_at=created_user.created_date,
+            updated_at=getattr(created_user, "updated_date", None),
+        )
+
+    async def update_staff(
+        self,
+        *,
+        session,
+        redis_service: RedisService,
+        user,
+        staff_id: int,
+        data: AdminStaffUpdateRequest,
+        commiter,
+        permission_service,
+        user_repository,
+        audit_log_service,
+        admin_audit_log_repository,
+        admin_staff_cache_service,
+        admin_auth_cache_service,
+        ip_address: str | None = None,
+        user_agent: str | None = None,
+    ) -> AdminStaffDetailResponse:
+        self._check_update_permission(user=user, permission_service=permission_service)
+
+        update_fields = data.model_dump(exclude_unset=True)
+        if not update_fields:
+            raise EmptyAdminStaffUpdateError
+
+        staff = await user_repository.get_by_id(session=session, user_id=staff_id)
+        if staff is None or staff.role not in STAFF_ROLES:
+            raise AdminStaffNotFoundError
+
+        if "phone" in update_fields and update_fields["phone"] != staff.phone:
+            existing_user = await user_repository.get_by_phone(session=session, phone=update_fields["phone"])
+            if existing_user is not None and existing_user.id != staff.id:
+                raise UserPhoneAlreadyExistsError
+        if "email" in update_fields and update_fields["email"] != staff.email:
+            email = update_fields["email"]
+            if email is not None:
+                existing_user = await user_repository.get_by_email(session=session, email=email)
+                if existing_user is not None and existing_user.id != staff.id:
+                    raise UserEmailAlreadyExistsError
+
+        if (
+            staff.id == user.id
+            and staff.role == UserRole.ADMIN
+            and staff.is_active
+            and update_fields.get("is_active") is False
+        ):
+            active_admins = await user_repository.count_active_admins(session=session)
+            if active_admins <= 1:
+                raise LastActiveAdminDeactivationError
+
+        before = {
+            field: getattr(staff, field)
+            for field in update_fields
+        }
+        for field, value in update_fields.items():
+            setattr(staff, field, value)
+        staff.updated_date = datetime.now(settings.tz)
+        updated_staff = await user_repository.update(session=session, user=staff)
+
+        changes = {
+            field: {
+                "old": str(before[field]) if before[field] is not None else None,
+                "new": str(getattr(updated_staff, field)) if getattr(updated_staff, field) is not None else None,
+            }
+            for field in update_fields
+            if before[field] != getattr(updated_staff, field)
+        }
+        await audit_log_service.log_action(
+            session=session,
+            audit_log_repository=admin_audit_log_repository,
+            user_id=user.id,
+            login=getattr(user, "email", None) or getattr(user, "phone", None) or str(user.id),
+            event="admin_staff_update",
+            status="success",
+            ip_address=ip_address,
+            user_agent=user_agent,
+            details={
+                "target_user_id": updated_staff.id,
+                "changes": changes,
+            },
+        )
+        await commiter.commit()
+
+        await admin_staff_cache_service.invalidate_all(redis_service=redis_service)
+        await admin_auth_cache_service.invalidate_me(redis_service=redis_service, user_id=updated_staff.id)
+
+        return self._build_staff_detail_response(
+            user=updated_staff,
+            permissions=permission_service.get_user_permissions(role=updated_staff.role),
         )
 
     def _build_staff_response(self, *, user) -> AdminStaffListItemResponse:
@@ -205,4 +310,5 @@ class AdminStaffService:
             is_blocked=user.is_blocked,
             last_login_at=getattr(user, "last_login_at", None),
             created_at=user.created_date,
+            updated_at=getattr(user, "updated_date", None),
         )

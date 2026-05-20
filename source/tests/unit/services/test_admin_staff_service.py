@@ -10,11 +10,19 @@ from source.errors.auth import (
     AdminAuthAccessDeniedError,
     AdminStaffInvalidRoleError,
     AdminStaffNotFoundError,
+    EmptyAdminStaffUpdateError,
+    LastActiveAdminDeactivationError,
     UserEmailAlreadyExistsError,
     UserPhoneAlreadyExistsError,
 )
-from source.schemas.pydantic.admin_staff import AdminStaffCreateRequest, AdminStaffListQueryParams, AdminStaffListResponse
-from source.services.admin_auth import PermissionService
+from source.schemas.pydantic.admin_staff import (
+    AdminStaffCreateRequest,
+    AdminStaffListQueryParams,
+    AdminStaffListResponse,
+    AdminStaffUpdateRequest,
+)
+from source.services.admin_auth import AuditLogService, PermissionService
+from source.services.admin_auth_cache import AdminAuthCacheService
 from source.services.admin_staff import AdminStaffService
 from source.services.admin_staff_cache import AdminStaffCacheService
 from source.utils.query_hash import build_query_hash
@@ -37,6 +45,10 @@ class FakeRedisService:
 
     async def delete_by_pattern(self, pattern: str) -> None:
         self.deleted_patterns.append(pattern)
+
+    async def delete(self, key: str) -> None:
+        self.values.pop(key, None)
+        self.deleted_patterns.append(key)
 
 
 class FakeUserRepository:
@@ -69,6 +81,21 @@ class FakeUserRepository:
         self.users.append(user)
         return user
 
+    async def update(self, *, session, user):
+        return user
+
+    async def count_active_admins(self, *, session) -> int:
+        return len(
+            [
+                user
+                for user in self.users
+                if user.role == UserRole.ADMIN
+                and user.is_active
+                and not user.is_deleted
+                and not user.is_blocked
+            ],
+        )
+
     def _filter(self, *, query: AdminStaffListQueryParams):
         users = [user for user in self.users if user.role != UserRole.CUSTOMER]
         if query.q is not None:
@@ -89,8 +116,16 @@ class FakeUserRepository:
         return users
 
 
-def build_current_user(*, role=UserRole.ADMIN):
-    return SimpleNamespace(id=100, role=role, is_active=True, is_deleted=False, is_blocked=False)
+def build_current_user(*, user_id: int = 100, role=UserRole.ADMIN):
+    return SimpleNamespace(
+        id=user_id,
+        role=role,
+        is_active=True,
+        is_deleted=False,
+        is_blocked=False,
+        email="admin@example.com",
+        phone="+79998887766",
+    )
 
 
 def build_user(
@@ -115,6 +150,7 @@ def build_user(
         is_deleted=False,
         is_blocked=is_blocked,
         created_date=datetime(2026, 5, 12, 10, 0, 0) + timedelta(minutes=user_id),
+        updated_date=datetime(2026, 5, 12, 11, 0, 0) + timedelta(minutes=user_id),
     )
 
 
@@ -200,6 +236,50 @@ async def create_staff(
         password_service=FakePasswordService(),
         admin_audit_log_repository=audit_log_repository,
         admin_staff_cache_service=AdminStaffCacheService(),
+    )
+    return SimpleNamespace(
+        response=response,
+        redis_service=redis_service,
+        repository=repository,
+        audit_log_repository=audit_log_repository,
+        commiter=commiter,
+    )
+
+
+async def update_staff(
+    *,
+    users=None,
+    staff_id: int = 1,
+    data: AdminStaffUpdateRequest | None = None,
+    redis_service=None,
+    role=UserRole.ADMIN,
+    current_user_id: int = 100,
+    repository=None,
+    audit_log_repository=None,
+    commiter=None,
+):
+    redis_service = redis_service or FakeRedisService()
+    audit_log_repository = audit_log_repository or FakeAuditLogRepository()
+    commiter = commiter or FakeCommiter()
+    repository = repository or FakeUserRepository(users or [])
+    response = await AdminStaffService().update_staff(
+        session=None,
+        redis_service=redis_service,
+        user=build_current_user(user_id=current_user_id, role=role),
+        staff_id=staff_id,
+        data=data or AdminStaffUpdateRequest(
+            name="Менеджер Петр",
+            email="manager2@example.com",
+            phone="+79992223344",
+            is_active=True,
+        ),
+        commiter=commiter,
+        permission_service=PermissionService(),
+        user_repository=repository,
+        audit_log_service=AuditLogService(),
+        admin_audit_log_repository=audit_log_repository,
+        admin_staff_cache_service=AdminStaffCacheService(),
+        admin_auth_cache_service=AdminAuthCacheService(),
     )
     return SimpleNamespace(
         response=response,
@@ -473,3 +553,96 @@ async def test_admin_create_staff_invalidates_cache() -> None:
 
     assert "admin:staff:*" in result.redis_service.deleted_patterns
     assert "admin:roles:*" in result.redis_service.deleted_patterns
+
+
+@pytest.mark.asyncio
+async def test_admin_update_staff_success() -> None:
+    result = await update_staff(users=[build_user(user_id=1)])
+
+    assert result.response.id == 1
+    assert result.response.name == "Менеджер Петр"
+    assert result.response.email == "manager2@example.com"
+    assert result.response.phone == "+79992223344"
+    assert result.response.is_active is True
+    assert result.commiter.committed is True
+
+
+@pytest.mark.asyncio
+async def test_admin_update_staff_email_already_exists_error() -> None:
+    with pytest.raises(UserEmailAlreadyExistsError):
+        await update_staff(
+            users=[
+                build_user(user_id=1, email="manager@example.com"),
+                build_user(user_id=2, email="busy@example.com", phone="+79991112235"),
+            ],
+            data=AdminStaffUpdateRequest(email="busy@example.com"),
+        )
+
+
+@pytest.mark.asyncio
+async def test_admin_update_staff_phone_already_exists_error() -> None:
+    with pytest.raises(UserPhoneAlreadyExistsError):
+        await update_staff(
+            users=[
+                build_user(user_id=1, phone="+79991112233"),
+                build_user(user_id=2, email="other@example.com", phone="+79994445566"),
+            ],
+            data=AdminStaffUpdateRequest(phone="+79994445566"),
+        )
+
+
+def test_admin_update_staff_role_forbidden() -> None:
+    with pytest.raises(ValidationError):
+        AdminStaffUpdateRequest.model_validate({"role": "admin"})
+
+
+def test_admin_update_staff_password_hash_forbidden() -> None:
+    with pytest.raises(ValidationError):
+        AdminStaffUpdateRequest.model_validate({"password_hash": "new-hash"})
+
+
+def test_admin_update_staff_password_forbidden() -> None:
+    with pytest.raises(ValidationError):
+        AdminStaffUpdateRequest.model_validate({"password": "StrongPassword123"})
+
+
+@pytest.mark.asyncio
+async def test_admin_update_staff_empty_update_error() -> None:
+    with pytest.raises(EmptyAdminStaffUpdateError):
+        await update_staff(users=[build_user(user_id=1)], data=AdminStaffUpdateRequest())
+
+
+@pytest.mark.asyncio
+async def test_admin_update_staff_last_active_admin_deactivation_error() -> None:
+    with pytest.raises(LastActiveAdminDeactivationError):
+        await update_staff(
+            users=[build_user(user_id=1, role=UserRole.ADMIN, email="admin@example.com")],
+            staff_id=1,
+            current_user_id=1,
+            data=AdminStaffUpdateRequest(is_active=False),
+        )
+
+
+@pytest.mark.asyncio
+async def test_admin_update_staff_invalidates_cache() -> None:
+    redis_service = FakeRedisService()
+    redis_service.values["admin:auth:me:1"] = "cached"
+
+    result = await update_staff(users=[build_user(user_id=1)], redis_service=redis_service)
+
+    assert "admin:staff:*" in result.redis_service.deleted_patterns
+    assert "admin:auth:me:1" in result.redis_service.deleted_patterns
+    assert "admin:auth:me:1" not in result.redis_service.values
+
+
+@pytest.mark.asyncio
+async def test_admin_update_staff_audit_log_created() -> None:
+    result = await update_staff(users=[build_user(user_id=1)])
+
+    log = result.audit_log_repository.logs[0]
+    assert log["event"] == "admin_staff_update"
+    assert log["details"]["target_user_id"] == 1
+    assert log["details"]["changes"]["name"] == {
+        "old": "Менеджер",
+        "new": "Менеджер Петр",
+    }

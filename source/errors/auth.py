@@ -102,6 +102,14 @@ class AdminStaffNotFoundError(Exception):
     pass
 
 
+class EmptyAdminStaffUpdateError(Exception):
+    pass
+
+
+class LastActiveAdminDeactivationError(Exception):
+    pass
+
+
 class EmptyUserProfileUpdateError(Exception):
     pass
 

@@ -1,7 +1,7 @@
 from dishka.integrations.fastapi import FromDishka, inject
 from datetime import date
 
-from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Path, Query, UploadFile, status
+from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Path, Query, Request, UploadFile, status
 from fastapi.responses import HTMLResponse
 from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -15,6 +15,7 @@ from source.errors.auth import (
     AdminAuthAccessDeniedError,
     AdminStaffInvalidRoleError,
     AdminStaffNotFoundError,
+    EmptyAdminStaffUpdateError,
     AdminUserAlreadyBlockedError,
     AdminUserNotFoundError,
     AdminUserNotBlockedError,
@@ -22,6 +23,7 @@ from source.errors.auth import (
     EmptyOrderUpdateError,
     InactiveUserError,
     InvalidCredentialsError,
+    LastActiveAdminDeactivationError,
     OneCIntegrationDisabledError,
     OneCSyncError,
     OrderAlreadyCancelledError,
@@ -106,6 +108,7 @@ from source.schemas.pydantic.admin_staff import (
     AdminStaffDetailResponse,
     AdminStaffListQueryParams,
     AdminStaffListResponse,
+    AdminStaffUpdateRequest,
 )
 from source.schemas.pydantic.order import (
     AdminOrderActionResponse,
@@ -137,6 +140,7 @@ from source.schemas.pydantic.user import (
 from source.services.category_cache import CategoryCacheService
 from source.services.admin_auth import AuditLogService, PermissionService
 from source.services.auth_cache import AuthCacheService
+from source.services.admin_auth_cache import AdminAuthCacheService
 from source.services.admin_category import AdminCategoryService, CategoryTreeService
 from source.services.admin_category_cache import AdminCategoryCacheService
 from source.services.admin_dashboard import AdminDashboardService
@@ -305,6 +309,83 @@ async def get_admin_staff_detail(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Пользователь заблокирован") from error
     except AdminStaffNotFoundError as error:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Сотрудник не найден") from error
+
+
+@router.patch(
+    "/staff/{staff_id}",
+    response_model=AdminStaffDetailResponse,
+    response_model_exclude={"permissions", "is_blocked", "last_login_at", "created_at"},
+    status_code=status.HTTP_200_OK,
+)
+@inject
+async def update_admin_staff(
+    request: Request,
+    payload: dict = Body(...),
+    staff_id: int = Path(..., gt=0),
+    token_payload: dict = Depends(verify_access_token),
+    current_user: User = Depends(get_current_user),
+    session: FromDishka[AsyncSession] = None,
+    commiter: FromDishka[Commiter] = None,
+    redis_service: FromDishka[RedisService] = None,
+    admin_staff_service: FromDishka[AdminStaffService] = None,
+    admin_staff_cache_service: FromDishka[AdminStaffCacheService] = None,
+    admin_auth_cache_service: FromDishka[AdminAuthCacheService] = None,
+    permission_service: FromDishka[PermissionService] = None,
+    user_repository: FromDishka[UserRepository] = None,
+    audit_log_service: FromDishka[AuditLogService] = None,
+    admin_audit_log_repository: FromDishka[AdminAuditLogRepository] = None,
+) -> AdminStaffDetailResponse:
+    if token_payload.get("token_type") != "access":
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь не авторизован")
+    try:
+        return await admin_staff_service.update_staff(
+            session=session,
+            redis_service=redis_service,
+            user=current_user,
+            staff_id=staff_id,
+            data=AdminStaffUpdateRequest.model_validate(payload),
+            commiter=commiter,
+            permission_service=permission_service,
+            user_repository=user_repository,
+            audit_log_service=audit_log_service,
+            admin_audit_log_repository=admin_audit_log_repository,
+            admin_staff_cache_service=admin_staff_cache_service,
+            admin_auth_cache_service=admin_auth_cache_service,
+            ip_address=request.client.host if request.client else None,
+            user_agent=request.headers.get("user-agent"),
+        )
+    except ValidationError as error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Неверные данные сотрудника") from error
+    except EmptyAdminStaffUpdateError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Не передано ни одного поля для изменения") from error
+    except InvalidCredentialsError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь не авторизован") from error
+    except AdminAuthAccessDeniedError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Недостаточно прав") from error
+    except InactiveUserError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Пользователь заблокирован") from error
+    except AdminStaffNotFoundError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Сотрудник не найден") from error
+    except UserPhoneAlreadyExistsError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Пользователь с таким телефоном уже существует") from error
+    except UserEmailAlreadyExistsError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Пользователь с таким email уже существует") from error
+    except LastActiveAdminDeactivationError as error:
+        await commiter.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Нельзя деактивировать последнего администратора",
+        ) from error
+    except Exception:
+        await commiter.rollback()
+        raise
 
 
 @router.get("/categories", response_model=AdminCategoryListResponse, status_code=status.HTTP_200_OK)
