@@ -15,11 +15,14 @@ from source.errors.auth import (
     EmptyOrderUpdateError,
     InactiveUserError,
     InvalidCredentialsError,
+    OrderConfirmNotAllowedError,
     OrderFieldNotEditableError,
     OrderInvalidStatusError,
+    OrderItemsNotFoundError,
     OrderNotFoundError,
     OrderStatusTransitionError,
     OrderUpdateNotAllowedError,
+    OrderUnavailableItemsError,
 )
 from source.errors.product import (
     ProductActiveOrderExistsError,
@@ -81,6 +84,8 @@ from source.schemas.pydantic.admin_product import (
     ProductStockUpdateRequest,
 )
 from source.schemas.pydantic.order import (
+    AdminOrderActionResponse,
+    AdminOrderConfirmRequest,
     AdminOrderDetailResponse,
     AdminOrderListQueryParams,
     AdminOrderListResponse,
@@ -595,6 +600,69 @@ async def get_admin_order_detail(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Пользователь заблокирован") from error
     except OrderNotFoundError as error:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Заказ не найден") from error
+
+
+@router.post("/orders/{order_id}/confirm", response_model=AdminOrderActionResponse, status_code=status.HTTP_200_OK)
+@inject
+async def confirm_admin_order(
+    payload: dict = Body(default_factory=dict),
+    token_payload: dict = Depends(verify_access_token),
+    current_user: User = Depends(get_current_user),
+    order_id: int = Path(ge=1),
+    session: FromDishka[AsyncSession] = None,
+    commiter: FromDishka[Commiter] = None,
+    redis_service: FromDishka[RedisService] = None,
+    admin_order_service: FromDishka[AdminOrderService] = None,
+    permission_service: FromDishka[PermissionService] = None,
+    order_repository: FromDishka[OrderRepository] = None,
+    order_item_repository: FromDishka[OrderItemRepository] = None,
+    product_repository: FromDishka[ProductRepository] = None,
+    order_status_history_repository: FromDishka[OrderStatusHistoryRepository] = None,
+    stock_service: FromDishka[StockService] = None,
+    notification_service: FromDishka[NotificationService] = None,
+    notification_repository: FromDishka[NotificationRepository] = None,
+    email_service: FromDishka[EmailService] = None,
+    telegram_service: FromDishka[TelegramNotificationService] = None,
+    order_cache_service: FromDishka[OrderCacheService] = None,
+    profile_cache_service: FromDishka[ProfileCacheService] = None,
+) -> AdminOrderActionResponse:
+    if token_payload.get("token_type") != "access":
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь не авторизован")
+    try:
+        return await admin_order_service.confirm_order(
+            session=session,
+            commiter=commiter,
+            redis_service=redis_service,
+            user=current_user,
+            order_id=order_id,
+            data=AdminOrderConfirmRequest.model_validate(payload),
+            permission_service=permission_service,
+            order_repository=order_repository,
+            order_item_repository=order_item_repository,
+            product_repository=product_repository,
+            order_status_history_repository=order_status_history_repository,
+            stock_service=stock_service,
+            notification_service=notification_service,
+            notification_repository=notification_repository,
+            email_service=email_service,
+            telegram_service=telegram_service,
+            order_cache_service=order_cache_service,
+            profile_cache_service=profile_cache_service,
+        )
+    except ValidationError as error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Неверные данные") from error
+    except InvalidCredentialsError as error:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь не авторизован") from error
+    except AdminAuthAccessDeniedError as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Недостаточно прав") from error
+    except InactiveUserError as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Пользователь заблокирован") from error
+    except OrderNotFoundError as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Заказ не найден") from error
+    except OrderConfirmNotAllowedError as error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Заказ нельзя подтвердить в текущем статусе") from error
+    except (OrderItemsNotFoundError, OrderUnavailableItemsError) as error:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Проблемы с остатками") from error
 
 
 @router.patch("/orders/{order_id}/status", response_model=AdminOrderStatusResponse, status_code=status.HTTP_200_OK)

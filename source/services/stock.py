@@ -7,6 +7,8 @@ from source.errors.auth import (
     CartPieceQuantityMustBeIntegerError,
     CartQuantityBelowMinimumError,
     CartQuantityStepError,
+    OrderItemsNotFoundError,
+    OrderUnavailableItemsError,
 )
 from source.utils.cart import is_quantity_valid_for_step
 
@@ -92,6 +94,42 @@ class StockService:
             products_by_id=products_by_id,
             order_items=order_items,
         )
+
+    async def validate_order_reserve(self, *, session, order_items: list, product_repository) -> None:
+        if not order_items:
+            raise OrderItemsNotFoundError
+
+        products = await product_repository.get_by_ids(
+            session=session,
+            product_ids=[item.product_id for item in order_items],
+        )
+        products_by_id = {product.id: product for product in products}
+        unavailable_items = []
+        for item in order_items:
+            product = products_by_id.get(item.product_id)
+            if product is None or not product.is_active or product.is_deleted or not product.is_available:
+                unavailable_items.append(
+                    {
+                        "product_id": item.product_id,
+                        "name": item.product_name,
+                        "reason": "Товар недоступен",
+                        "requested_quantity": item.quantity,
+                        "available_quantity": Decimal("0"),
+                    },
+                )
+                continue
+            if product.stock_quantity < 0:
+                unavailable_items.append(
+                    {
+                        "product_id": product.id,
+                        "name": product.name,
+                        "reason": "Проблемы с резервом",
+                        "requested_quantity": item.quantity,
+                        "available_quantity": product.stock_quantity,
+                    },
+                )
+        if unavailable_items:
+            raise OrderUnavailableItemsError(unavailable_items)
 
 
 class StockMovementService:

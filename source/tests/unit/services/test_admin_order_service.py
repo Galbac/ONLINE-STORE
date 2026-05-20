@@ -7,12 +7,14 @@ import pytest
 from source.db.models.choises.enum import UserRole
 from source.errors.auth import (
     AdminAuthAccessDeniedError,
+    OrderConfirmNotAllowedError,
     OrderFieldNotEditableError,
     OrderNotFoundError,
     OrderStatusTransitionError,
     OrderUpdateNotAllowedError,
 )
 from source.schemas.pydantic.order import (
+    AdminOrderConfirmRequest,
     AdminOrderListItemResponse,
     AdminOrderListQueryParams,
     AdminOrderListResponse,
@@ -23,6 +25,7 @@ from source.services.admin_auth import PermissionService
 from source.services.admin_order import AdminOrderService
 from source.services.order_cache import OrderCacheService
 from source.services.order_status import OrderStatusService
+from source.services.stock import StockService
 
 
 class FakeRedisService:
@@ -115,9 +118,9 @@ def build_order(
     payment_status: str = "unpaid",
     customer_name: str = "Иван Иванов",
     customer_phone: str = "+79990000000",
-        customer_email: str | None = "ivan@example.com",
-        sync_status: str = "pending",
-        created_date: datetime | None = None,
+    customer_email: str | None = "ivan@example.com",
+    sync_status: str = "pending",
+    created_date: datetime | None = None,
 ):
     return SimpleNamespace(
         id=order_id,
@@ -205,6 +208,24 @@ class FakePaymentRepository:
 
     async def get_by_order_id(self, *, session, order_id: int):
         return self.payment
+
+
+class FakeProductRepository:
+    def __init__(self, products=None) -> None:
+        self.products = products if products is not None else [
+            SimpleNamespace(
+                id=55,
+                name="Яблоки красные",
+                is_active=True,
+                is_deleted=False,
+                is_available=True,
+                stock_quantity=Decimal("10.0"),
+            ),
+        ]
+
+    async def get_by_ids(self, *, session, product_ids: list[int]):
+        product_ids_set = set(product_ids)
+        return [product for product in self.products if product.id in product_ids_set]
 
 
 class FakeOrderStatusHistoryRepository:
@@ -305,6 +326,24 @@ class FakeNotificationService:
             user_id=order.user_id,
             type="order_status",
             title="Статус заказа изменён",
+            message=order.status,
+        )
+
+    async def notify_order_confirmed(
+        self,
+        *,
+        session,
+        order,
+        notification_repository,
+        email_service,
+        telegram_service,
+    ) -> None:
+        self.notified = True
+        await notification_repository.create(
+            session=session,
+            user_id=order.user_id,
+            type="order_status",
+            title="Заказ подтверждён",
             message=order.status,
         )
 
@@ -411,6 +450,52 @@ async def update_order(
         order=order,
         redis_service=redis_service,
         audit_repository=audit_repository,
+        profile_cache_service=profile_cache_service,
+        commiter=commiter,
+    )
+
+
+async def confirm_order(
+    *,
+    order=None,
+    role=UserRole.ADMIN,
+    history_repository=None,
+):
+    redis_service = FakeRedisService()
+    repository = FakeOrderRepository([] if order is None else [order])
+    history_repository = history_repository or FakeOrderStatusHistoryRepository()
+    notification_repository = FakeNotificationRepository()
+    notification_service = FakeNotificationService()
+    profile_cache_service = FakeProfileCacheService()
+    commiter = FakeCommiter()
+
+    response = await AdminOrderService().confirm_order(
+        session=None,
+        commiter=commiter,
+        redis_service=redis_service,
+        user=build_user(role=role),
+        order_id=101,
+        data=AdminOrderConfirmRequest(comment="Заказ подтверждён", notify_customer=True),
+        permission_service=PermissionService(),
+        order_repository=repository,
+        order_item_repository=FakeOrderItemRepository([build_order_item()]),
+        product_repository=FakeProductRepository(),
+        order_status_history_repository=history_repository,
+        stock_service=StockService(),
+        notification_service=notification_service,
+        notification_repository=notification_repository,
+        email_service=SimpleNamespace(),
+        telegram_service=SimpleNamespace(),
+        order_cache_service=OrderCacheService(),
+        profile_cache_service=profile_cache_service,
+    )
+    return SimpleNamespace(
+        response=response,
+        order=order,
+        redis_service=redis_service,
+        history_repository=history_repository,
+        notification_repository=notification_repository,
+        notification_service=notification_service,
         profile_cache_service=profile_cache_service,
         commiter=commiter,
     )
@@ -727,3 +812,60 @@ async def test_admin_update_order_invalidates_cache() -> None:
     assert "profile:summary:1" in result.redis_service.deleted
     assert result.profile_cache_service.orders_invalidated is True
     assert result.profile_cache_service.summary_deleted is True
+
+
+@pytest.mark.asyncio
+async def test_admin_confirm_order_success() -> None:
+    order = build_order(order_id=101, order_number="ORD-000101", status="new")
+    result = await confirm_order(order=order)
+
+    assert result.response.message == "Заказ подтверждён"
+    assert result.response.order.id == 101
+    assert result.response.order.order_number == "ORD-000101"
+    assert result.response.order.status == "confirmed"
+    assert order.status == "confirmed"
+    assert result.commiter.committed is True
+
+
+@pytest.mark.asyncio
+async def test_admin_confirm_order_invalid_status() -> None:
+    order = build_order(order_id=101, order_number="ORD-000101", status="assembling")
+
+    with pytest.raises(OrderConfirmNotAllowedError):
+        await confirm_order(order=order)
+
+
+@pytest.mark.asyncio
+async def test_admin_confirm_order_not_found() -> None:
+    with pytest.raises(OrderNotFoundError):
+        await confirm_order(order=None)
+
+
+@pytest.mark.asyncio
+async def test_admin_confirm_order_no_permission() -> None:
+    order = build_order(order_id=101, order_number="ORD-000101", status="new")
+
+    with pytest.raises(AdminAuthAccessDeniedError):
+        await confirm_order(order=order, role=UserRole.PICKER)
+
+
+@pytest.mark.asyncio
+async def test_admin_confirm_order_creates_status_history() -> None:
+    order = build_order(order_id=101, order_number="ORD-000101", status="awaiting_confirmation")
+    result = await confirm_order(order=order)
+
+    assert len(result.history_repository.items) == 1
+    history = result.history_repository.items[0]
+    assert history.order_id == 101
+    assert history.old_status == "awaiting_confirmation"
+    assert history.status == "confirmed"
+    assert history.comment == "Заказ подтверждён"
+    assert history.changed_by == 1
+
+
+@pytest.mark.asyncio
+async def test_admin_confirm_order_sets_sync_status_pending() -> None:
+    order = build_order(order_id=101, order_number="ORD-000101", status="new", sync_status="synced")
+    await confirm_order(order=order)
+
+    assert order.sync_status == "pending"

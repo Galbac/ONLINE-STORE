@@ -271,6 +271,10 @@ class OrderUpdateNotAllowedError(Exception):
     pass
 
 
+class OrderConfirmNotAllowedError(Exception):
+    pass
+
+
 class PaymentProviderCreateError(Exception):
     pass
 

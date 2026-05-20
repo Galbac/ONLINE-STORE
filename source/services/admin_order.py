@@ -6,12 +6,17 @@ from source.errors.auth import (
     AdminAuthAccessDeniedError,
     EmptyOrderUpdateError,
     InactiveUserError,
+    OrderConfirmNotAllowedError,
     OrderFieldNotEditableError,
+    OrderItemsNotFoundError,
     OrderNotFoundError,
     OrderUpdateNotAllowedError,
 )
 from source.schemas.pydantic.order import (
     AdminOrderAddressResponse,
+    AdminOrderActionResponse,
+    AdminOrderActionShortResponse,
+    AdminOrderConfirmRequest,
     AdminOrderCustomerResponse,
     AdminOrderDetailResponse,
     AdminOrderItemResponse,
@@ -84,6 +89,14 @@ class AdminOrderService:
         if user.role not in STAFF_ROLES:
             raise AdminAuthAccessDeniedError
         if "admin:orders:update" not in permission_service.get_user_permissions(role=user.role):
+            raise AdminAuthAccessDeniedError
+
+    def _check_confirm_permission(self, *, user, permission_service) -> None:
+        if not user.is_active or user.is_deleted:
+            raise InactiveUserError
+        if user.role not in STAFF_ROLES:
+            raise AdminAuthAccessDeniedError
+        if "admin:orders:confirm" not in permission_service.get_user_permissions(role=user.role):
             raise AdminAuthAccessDeniedError
 
     def validate_update_payload_fields(self, *, payload: dict) -> None:
@@ -352,6 +365,88 @@ class AdminOrderService:
             comment=order.comment,
             internal_comment=getattr(order, "internal_comment", None),
             updated_at=order.updated_date,
+        )
+
+    async def confirm_order(
+        self,
+        *,
+        session,
+        commiter,
+        redis_service: RedisService,
+        user,
+        order_id: int,
+        data: AdminOrderConfirmRequest,
+        permission_service,
+        order_repository,
+        order_item_repository,
+        product_repository,
+        order_status_history_repository,
+        stock_service,
+        notification_service,
+        notification_repository,
+        email_service,
+        telegram_service,
+        order_cache_service,
+        profile_cache_service,
+    ) -> AdminOrderActionResponse:
+        self._check_confirm_permission(user=user, permission_service=permission_service)
+
+        order = await order_repository.admin_get_by_id(session=session, order_id=order_id)
+        if order is None:
+            raise OrderNotFoundError
+        if order.status not in {"new", "awaiting_confirmation"}:
+            raise OrderConfirmNotAllowedError
+
+        order_items = await order_item_repository.get_by_order_id(session=session, order_id=order.id)
+        await stock_service.validate_order_reserve(
+            session=session,
+            order_items=order_items,
+            product_repository=product_repository,
+        )
+
+        old_status = order.status
+        try:
+            order = await order_repository.update_status(
+                session=session,
+                order=order,
+                status="confirmed",
+                sync_status="pending",
+            )
+            await order_status_history_repository.create(
+                session=session,
+                order_id=order.id,
+                old_status=old_status,
+                status="confirmed",
+                comment=data.comment,
+                changed_by=user.id,
+            )
+            if data.notify_customer:
+                await notification_service.notify_order_confirmed(
+                    session=session,
+                    order=order,
+                    notification_repository=notification_repository,
+                    email_service=email_service,
+                    telegram_service=telegram_service,
+                )
+            await commiter.commit()
+        except Exception:
+            await commiter.rollback()
+            raise
+
+        await order_cache_service.invalidate_admin_orders(redis_service=redis_service)
+        await order_cache_service.invalidate_detail(redis_service=redis_service, user_id=order.user_id, order_id=order.id)
+        await order_cache_service.invalidate_status(redis_service=redis_service, user_id=order.user_id, order_id=order.id)
+        await order_cache_service.invalidate_my_orders(redis_service=redis_service, user_id=order.user_id)
+        await profile_cache_service.invalidate_orders(redis_service=redis_service, user_id=order.user_id)
+        await profile_cache_service.delete_summary(redis_service=redis_service, user_id=order.user_id)
+
+        return AdminOrderActionResponse(
+            message="Заказ подтверждён",
+            order=AdminOrderActionShortResponse(
+                id=order.id,
+                order_number=order.order_number,
+                status=order.status,
+            ),
         )
 
     def _build_update_diff(self, *, order, update_data: dict) -> dict:
