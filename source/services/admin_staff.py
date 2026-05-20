@@ -4,10 +4,12 @@ from source.config.settings import settings
 from source.db.models.choises.enum import UserRole
 from source.errors.auth import (
     AdminAuthAccessDeniedError,
+    AdminStaffSelfDeleteError,
     AdminStaffInvalidRoleError,
     AdminStaffNotFoundError,
     EmptyAdminStaffUpdateError,
     InactiveUserError,
+    LastActiveAdminDeleteError,
     LastActiveAdminDeactivationError,
     UserEmailAlreadyExistsError,
     UserPhoneAlreadyExistsError,
@@ -19,6 +21,7 @@ from source.schemas.pydantic.admin_staff import (
     AdminStaffListQueryParams,
     AdminStaffListResponse,
     AdminStaffUpdateRequest,
+    MessageResponse,
 )
 from source.services.admin_auth import STAFF_ROLES
 from source.services.redis import RedisService
@@ -49,6 +52,14 @@ class AdminStaffService:
         if user.role not in STAFF_ROLES:
             raise AdminAuthAccessDeniedError
         if "admin:staff:update" not in permission_service.get_user_permissions(role=user.role):
+            raise AdminAuthAccessDeniedError
+
+    def _check_delete_permission(self, *, user, permission_service) -> None:
+        if not user.is_active or user.is_deleted or user.is_blocked:
+            raise InactiveUserError
+        if user.role not in STAFF_ROLES:
+            raise AdminAuthAccessDeniedError
+        if "admin:staff:delete" not in permission_service.get_user_permissions(role=user.role):
             raise AdminAuthAccessDeniedError
 
     async def get_staff_list(
@@ -285,6 +296,71 @@ class AdminStaffService:
             user=updated_staff,
             permissions=permission_service.get_user_permissions(role=updated_staff.role),
         )
+
+    async def delete_staff(
+        self,
+        *,
+        session,
+        redis_service: RedisService,
+        user,
+        staff_id: int,
+        commiter,
+        permission_service,
+        user_repository,
+        refresh_token_repository,
+        refresh_token_service,
+        audit_log_service,
+        admin_audit_log_repository,
+        admin_staff_cache_service,
+        admin_auth_cache_service,
+        ip_address: str | None = None,
+        user_agent: str | None = None,
+    ) -> MessageResponse:
+        self._check_delete_permission(user=user, permission_service=permission_service)
+
+        staff = await user_repository.get_by_id(session=session, user_id=staff_id)
+        if staff is None or staff.role not in STAFF_ROLES or staff.is_deleted:
+            raise AdminStaffNotFoundError
+        if staff.id == user.id:
+            raise AdminStaffSelfDeleteError
+        if staff.role == UserRole.ADMIN and staff.is_active:
+            active_admins = await user_repository.count_active_admins(session=session)
+            if active_admins <= 1:
+                raise LastActiveAdminDeleteError
+
+        deleted_at = datetime.now(settings.tz)
+        deleted_staff = await user_repository.soft_delete(
+            session=session,
+            user=staff,
+            deleted_at=deleted_at,
+            deleted_by=user.id,
+        )
+        revoked_tokens_count = await refresh_token_service.revoke_all_user_tokens(
+            session=session,
+            refresh_token_repository=refresh_token_repository,
+            user_id=deleted_staff.id,
+        )
+        await audit_log_service.log_action(
+            session=session,
+            audit_log_repository=admin_audit_log_repository,
+            user_id=user.id,
+            login=getattr(user, "email", None) or getattr(user, "phone", None) or str(user.id),
+            event="admin_staff_delete",
+            status="success",
+            ip_address=ip_address,
+            user_agent=user_agent,
+            details={
+                "target_user_id": deleted_staff.id,
+                "role": deleted_staff.role.value,
+                "revoked_tokens_count": revoked_tokens_count,
+            },
+        )
+        await commiter.commit()
+
+        await admin_staff_cache_service.invalidate_all(redis_service=redis_service)
+        await admin_auth_cache_service.invalidate_me(redis_service=redis_service, user_id=deleted_staff.id)
+
+        return MessageResponse(message="Сотрудник удалён")
 
     def _build_staff_response(self, *, user) -> AdminStaffListItemResponse:
         return AdminStaffListItemResponse(

@@ -8,9 +8,11 @@ from source.config.settings import settings
 from source.db.models.choises.enum import UserRole
 from source.errors.auth import (
     AdminAuthAccessDeniedError,
+    AdminStaffSelfDeleteError,
     AdminStaffInvalidRoleError,
     AdminStaffNotFoundError,
     EmptyAdminStaffUpdateError,
+    LastActiveAdminDeleteError,
     LastActiveAdminDeactivationError,
     UserEmailAlreadyExistsError,
     UserPhoneAlreadyExistsError,
@@ -25,6 +27,7 @@ from source.services.admin_auth import AuditLogService, PermissionService
 from source.services.admin_auth_cache import AdminAuthCacheService
 from source.services.admin_staff import AdminStaffService
 from source.services.admin_staff_cache import AdminStaffCacheService
+from source.services.refresh_token import RefreshTokenService
 from source.utils.query_hash import build_query_hash
 from source.utils.search import normalize_search_query
 
@@ -82,6 +85,14 @@ class FakeUserRepository:
         return user
 
     async def update(self, *, session, user):
+        return user
+
+    async def soft_delete(self, *, session, user, deleted_at: datetime, deleted_by: int):
+        user.is_active = False
+        user.is_deleted = True
+        user.deleted_at = deleted_at
+        user.deleted_by = deleted_by
+        user.updated_date = deleted_at
         return user
 
     async def count_active_admins(self, *, session) -> int:
@@ -148,6 +159,8 @@ def build_user(
         role=role,
         is_active=is_active,
         is_deleted=False,
+        deleted_at=None,
+        deleted_by=None,
         is_blocked=is_blocked,
         created_date=datetime(2026, 5, 12, 10, 0, 0) + timedelta(minutes=user_id),
         updated_date=datetime(2026, 5, 12, 11, 0, 0) + timedelta(minutes=user_id),
@@ -202,6 +215,15 @@ class FakeAuditLogRepository:
 class FakePasswordService:
     def hash_password(self, password: str) -> str:
         return f"hashed:{password}"
+
+
+class FakeRefreshTokenRepository:
+    def __init__(self) -> None:
+        self.revoked_user_ids = []
+
+    async def revoke_all_by_user_id(self, *, session, user_id: int, revoked_at: datetime) -> int:
+        self.revoked_user_ids.append(user_id)
+        return 2
 
 
 async def create_staff(
@@ -287,6 +309,48 @@ async def update_staff(
         repository=repository,
         audit_log_repository=audit_log_repository,
         commiter=commiter,
+    )
+
+
+async def delete_staff(
+    *,
+    users=None,
+    staff_id: int = 1,
+    redis_service=None,
+    role=UserRole.ADMIN,
+    current_user_id: int = 100,
+    repository=None,
+    audit_log_repository=None,
+    commiter=None,
+    refresh_token_repository=None,
+):
+    redis_service = redis_service or FakeRedisService()
+    audit_log_repository = audit_log_repository or FakeAuditLogRepository()
+    commiter = commiter or FakeCommiter()
+    repository = repository or FakeUserRepository(users or [])
+    refresh_token_repository = refresh_token_repository or FakeRefreshTokenRepository()
+    response = await AdminStaffService().delete_staff(
+        session=None,
+        redis_service=redis_service,
+        user=build_current_user(user_id=current_user_id, role=role),
+        staff_id=staff_id,
+        commiter=commiter,
+        permission_service=PermissionService(),
+        user_repository=repository,
+        refresh_token_repository=refresh_token_repository,
+        refresh_token_service=RefreshTokenService(),
+        audit_log_service=AuditLogService(),
+        admin_audit_log_repository=audit_log_repository,
+        admin_staff_cache_service=AdminStaffCacheService(),
+        admin_auth_cache_service=AdminAuthCacheService(),
+    )
+    return SimpleNamespace(
+        response=response,
+        redis_service=redis_service,
+        repository=repository,
+        audit_log_repository=audit_log_repository,
+        commiter=commiter,
+        refresh_token_repository=refresh_token_repository,
     )
 
 
@@ -645,4 +709,80 @@ async def test_admin_update_staff_audit_log_created() -> None:
     assert log["details"]["changes"]["name"] == {
         "old": "Менеджер",
         "new": "Менеджер Петр",
+    }
+
+
+@pytest.mark.asyncio
+async def test_admin_delete_staff_success() -> None:
+    staff = build_user(user_id=1)
+
+    result = await delete_staff(users=[staff])
+
+    assert result.response.message == "Сотрудник удалён"
+    assert staff.is_active is False
+    assert staff.is_deleted is True
+    assert staff.deleted_by == 100
+    assert staff.deleted_at is not None
+    assert result.commiter.committed is True
+
+
+@pytest.mark.asyncio
+async def test_admin_delete_staff_self_delete_error() -> None:
+    with pytest.raises(AdminStaffSelfDeleteError):
+        await delete_staff(users=[build_user(user_id=1)], staff_id=1, current_user_id=1)
+
+
+@pytest.mark.asyncio
+async def test_admin_delete_staff_last_active_admin_error() -> None:
+    with pytest.raises(LastActiveAdminDeleteError):
+        await delete_staff(
+            users=[build_user(user_id=1, role=UserRole.ADMIN)],
+            staff_id=1,
+            current_user_id=100,
+        )
+
+
+@pytest.mark.asyncio
+async def test_admin_delete_staff_not_found_error() -> None:
+    with pytest.raises(AdminStaffNotFoundError):
+        await delete_staff(users=[], staff_id=404)
+
+
+@pytest.mark.asyncio
+async def test_admin_delete_staff_customer_not_found_error() -> None:
+    with pytest.raises(AdminStaffNotFoundError):
+        await delete_staff(users=[build_user(user_id=1, role=UserRole.CUSTOMER)])
+
+
+@pytest.mark.asyncio
+async def test_admin_delete_staff_revokes_refresh_tokens() -> None:
+    refresh_token_repository = FakeRefreshTokenRepository()
+
+    await delete_staff(users=[build_user(user_id=1)], refresh_token_repository=refresh_token_repository)
+
+    assert refresh_token_repository.revoked_user_ids == [1]
+
+
+@pytest.mark.asyncio
+async def test_admin_delete_staff_invalidates_cache() -> None:
+    redis_service = FakeRedisService()
+    redis_service.values["admin:auth:me:1"] = "cached"
+
+    result = await delete_staff(users=[build_user(user_id=1)], redis_service=redis_service)
+
+    assert "admin:staff:*" in result.redis_service.deleted_patterns
+    assert "admin:auth:me:1" in result.redis_service.deleted_patterns
+    assert "admin:auth:me:1" not in result.redis_service.values
+
+
+@pytest.mark.asyncio
+async def test_admin_delete_staff_audit_log_created() -> None:
+    result = await delete_staff(users=[build_user(user_id=1)])
+
+    log = result.audit_log_repository.logs[0]
+    assert log["event"] == "admin_staff_delete"
+    assert log["details"] == {
+        "target_user_id": 1,
+        "role": "manager",
+        "revoked_tokens_count": 2,
     }

@@ -127,6 +127,24 @@ class UserRepository:
         await session.refresh(user)
         return user
 
+    async def soft_delete(
+        self,
+        *,
+        session: AsyncSession,
+        user: User,
+        deleted_at: datetime,
+        deleted_by: int,
+    ) -> User:
+        user.is_active = False
+        user.is_deleted = True
+        user.deleted_at = deleted_at
+        user.deleted_by = deleted_by
+        user.updated_date = deleted_at
+        session.add(user)
+        await session.flush()
+        await session.refresh(user)
+        return user
+
     async def block(
         self,
         *,

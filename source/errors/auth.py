@@ -110,6 +110,14 @@ class LastActiveAdminDeactivationError(Exception):
     pass
 
 
+class AdminStaffSelfDeleteError(Exception):
+    pass
+
+
+class LastActiveAdminDeleteError(Exception):
+    pass
+
+
 class EmptyUserProfileUpdateError(Exception):
     pass
 

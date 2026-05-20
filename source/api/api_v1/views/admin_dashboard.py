@@ -13,6 +13,7 @@ from source.errors.category import CategoryCycleError, CategoryNotFoundError, Ca
 from source.errors.category import CategoryHasActiveChildrenError, CategoryHasActiveProductsError
 from source.errors.auth import (
     AdminAuthAccessDeniedError,
+    AdminStaffSelfDeleteError,
     AdminStaffInvalidRoleError,
     AdminStaffNotFoundError,
     EmptyAdminStaffUpdateError,
@@ -23,6 +24,7 @@ from source.errors.auth import (
     EmptyOrderUpdateError,
     InactiveUserError,
     InvalidCredentialsError,
+    LastActiveAdminDeleteError,
     LastActiveAdminDeactivationError,
     OneCIntegrationDisabledError,
     OneCSyncError,
@@ -109,6 +111,7 @@ from source.schemas.pydantic.admin_staff import (
     AdminStaffListQueryParams,
     AdminStaffListResponse,
     AdminStaffUpdateRequest,
+    MessageResponse as AdminStaffMessageResponse,
 )
 from source.schemas.pydantic.order import (
     AdminOrderActionResponse,
@@ -382,6 +385,72 @@ async def update_admin_staff(
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Нельзя деактивировать последнего администратора",
+        ) from error
+    except Exception:
+        await commiter.rollback()
+        raise
+
+
+@router.delete("/staff/{staff_id}", response_model=AdminStaffMessageResponse, status_code=status.HTTP_200_OK)
+@inject
+async def delete_admin_staff(
+    request: Request,
+    staff_id: int = Path(..., gt=0),
+    token_payload: dict = Depends(verify_access_token),
+    current_user: User = Depends(get_current_user),
+    session: FromDishka[AsyncSession] = None,
+    commiter: FromDishka[Commiter] = None,
+    redis_service: FromDishka[RedisService] = None,
+    admin_staff_service: FromDishka[AdminStaffService] = None,
+    admin_staff_cache_service: FromDishka[AdminStaffCacheService] = None,
+    admin_auth_cache_service: FromDishka[AdminAuthCacheService] = None,
+    permission_service: FromDishka[PermissionService] = None,
+    user_repository: FromDishka[UserRepository] = None,
+    refresh_token_repository: FromDishka[RefreshTokenRepository] = None,
+    refresh_token_service: FromDishka[RefreshTokenService] = None,
+    audit_log_service: FromDishka[AuditLogService] = None,
+    admin_audit_log_repository: FromDishka[AdminAuditLogRepository] = None,
+) -> AdminStaffMessageResponse:
+    if token_payload.get("token_type") != "access":
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь не авторизован")
+    try:
+        return await admin_staff_service.delete_staff(
+            session=session,
+            redis_service=redis_service,
+            user=current_user,
+            staff_id=staff_id,
+            commiter=commiter,
+            permission_service=permission_service,
+            user_repository=user_repository,
+            refresh_token_repository=refresh_token_repository,
+            refresh_token_service=refresh_token_service,
+            audit_log_service=audit_log_service,
+            admin_audit_log_repository=admin_audit_log_repository,
+            admin_staff_cache_service=admin_staff_cache_service,
+            admin_auth_cache_service=admin_auth_cache_service,
+            ip_address=request.client.host if request.client else None,
+            user_agent=request.headers.get("user-agent"),
+        )
+    except InvalidCredentialsError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь не авторизован") from error
+    except AdminAuthAccessDeniedError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Недостаточно прав") from error
+    except InactiveUserError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Пользователь заблокирован") from error
+    except AdminStaffNotFoundError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Сотрудник не найден") from error
+    except AdminStaffSelfDeleteError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Нельзя удалить самого себя") from error
+    except LastActiveAdminDeleteError as error:
+        await commiter.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Нельзя удалить последнего администратора",
         ) from error
     except Exception:
         await commiter.rollback()

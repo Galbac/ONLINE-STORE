@@ -141,3 +141,7 @@ class AdminStaffDetailResponse(BaseModel):
     last_login_at: datetime | None = None
     created_at: datetime
     updated_at: datetime | None = None
+
+
+class MessageResponse(BaseModel):
+    message: str
