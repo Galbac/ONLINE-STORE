@@ -221,6 +221,7 @@ class AdminUserService:
         user_cache_service,
         auth_cache_service,
         profile_cache_service,
+        admin_staff_cache_service=None,
     ) -> AdminUserUpdateResponse:
         self._check_update_permission(user=user, permission_service=permission_service)
 
@@ -279,6 +280,7 @@ class AdminUserService:
             user_cache_service=user_cache_service,
             auth_cache_service=auth_cache_service,
             profile_cache_service=profile_cache_service,
+            admin_staff_cache_service=admin_staff_cache_service,
         )
 
         return AdminUserUpdateResponse(
@@ -307,6 +309,7 @@ class AdminUserService:
         user_cache_service,
         auth_cache_service,
         profile_cache_service,
+        admin_staff_cache_service=None,
     ) -> AdminUserBlockResponse:
         self._check_block_permission(user=user, permission_service=permission_service)
 
@@ -352,6 +355,7 @@ class AdminUserService:
             user_cache_service=user_cache_service,
             auth_cache_service=auth_cache_service,
             profile_cache_service=profile_cache_service,
+            admin_staff_cache_service=admin_staff_cache_service,
         )
 
         return AdminUserBlockResponse(
@@ -375,6 +379,7 @@ class AdminUserService:
         user_cache_service,
         auth_cache_service,
         profile_cache_service,
+        admin_staff_cache_service=None,
     ) -> AdminUserBlockResponse:
         self._check_block_permission(user=user, permission_service=permission_service)
 
@@ -410,6 +415,7 @@ class AdminUserService:
             user_cache_service=user_cache_service,
             auth_cache_service=auth_cache_service,
             profile_cache_service=profile_cache_service,
+            admin_staff_cache_service=admin_staff_cache_service,
         )
 
         return AdminUserBlockResponse(
@@ -484,8 +490,11 @@ class AdminUserService:
         user_cache_service,
         auth_cache_service,
         profile_cache_service,
+        admin_staff_cache_service=None,
     ) -> None:
         await redis_service.delete_by_pattern("admin:users:*")
+        if admin_staff_cache_service is not None:
+            await admin_staff_cache_service.invalidate_all(redis_service=redis_service)
         await user_cache_service.delete_user_me_cache(redis_service=redis_service, user_id=user_id)
         await auth_cache_service.delete_current_user_cache(redis_service=redis_service, user_id=user_id)
         await profile_cache_service.delete_summary(redis_service=redis_service, user_id=user_id)

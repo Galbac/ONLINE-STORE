@@ -5,7 +5,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from source.db.models.user import User
 from source.db.models.choises.enum import UserRole
+from source.schemas.pydantic.admin_staff import AdminStaffListQueryParams
 from source.schemas.pydantic.user import AdminUserListQueryParams
+
+STAFF_ROLES = (
+    UserRole.ADMIN,
+    UserRole.MANAGER,
+    UserRole.CONTENT_MANAGER,
+    UserRole.PICKER,
+    UserRole.COURIER,
+)
 
 
 class UserRepository:
@@ -46,6 +55,28 @@ class UserRepository:
         query: AdminUserListQueryParams,
     ) -> int:
         statement = self._apply_admin_customer_filters(select(User.id), query=query).subquery()
+        result = await session.execute(select(func.count()).select_from(statement))
+        return int(result.scalar_one())
+
+    async def admin_get_staff_list(
+        self,
+        *,
+        session: AsyncSession,
+        query: AdminStaffListQueryParams,
+    ) -> list[User]:
+        statement = self._apply_admin_staff_filters(select(User), query=query)
+        result = await session.execute(
+            statement.order_by(desc(User.created_date)).limit(query.limit).offset(query.offset),
+        )
+        return list(result.scalars().all())
+
+    async def admin_count_staff(
+        self,
+        *,
+        session: AsyncSession,
+        query: AdminStaffListQueryParams,
+    ) -> int:
+        statement = self._apply_admin_staff_filters(select(User.id), query=query).subquery()
         result = await session.execute(select(func.count()).select_from(statement))
         return int(result.scalar_one())
 
@@ -139,4 +170,23 @@ class UserRepository:
             statement = statement.where(User.created_date >= datetime.combine(query.date_from, time.min))
         if query.date_to is not None:
             statement = statement.where(User.created_date <= datetime.combine(query.date_to, time.max))
+        return statement
+
+    def _apply_admin_staff_filters(self, statement, *, query: AdminStaffListQueryParams):
+        statement = statement.where(User.role.in_(STAFF_ROLES))
+        if query.q is not None:
+            search = f"%{query.q}%"
+            statement = statement.where(
+                or_(
+                    User.name.ilike(search),
+                    User.phone.ilike(search),
+                    User.email.ilike(search),
+                ),
+            )
+        if query.role is not None:
+            statement = statement.where(User.role == query.role)
+        if query.is_active is not None:
+            statement = statement.where(User.is_active.is_(query.is_active))
+        if query.is_blocked is not None:
+            statement = statement.where(User.is_blocked.is_(query.is_blocked))
         return statement

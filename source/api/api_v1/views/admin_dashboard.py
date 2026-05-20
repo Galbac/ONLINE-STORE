@@ -99,6 +99,7 @@ from source.schemas.pydantic.admin_product import (
     ProductStockResponse,
     ProductStockUpdateRequest,
 )
+from source.schemas.pydantic.admin_staff import AdminStaffListQueryParams, AdminStaffListResponse
 from source.schemas.pydantic.order import (
     AdminOrderActionResponse,
     AdminOrderCancelRequest,
@@ -138,6 +139,8 @@ from source.services.admin_order_print import AdminOrderPrintService
 from source.services.admin_product import AdminProductService
 from source.services.admin_product_cache import AdminProductCacheService
 from source.services.admin_product_image import AdminProductImageService
+from source.services.admin_staff import AdminStaffService
+from source.services.admin_staff_cache import AdminStaffCacheService
 from source.services.admin_user import AdminUserService
 from source.services.product_cache import ProductCacheService
 from source.services.order_cache import OrderCacheService
@@ -155,6 +158,54 @@ from source.services.upload import UploadService
 from source.services.user_cache import UserCacheService
 
 router = APIRouter(prefix="/admin", tags=["admin-dashboard"])
+
+
+@router.get("/staff", response_model=AdminStaffListResponse, status_code=status.HTTP_200_OK)
+@inject
+async def get_admin_staff(
+    token_payload: dict = Depends(verify_access_token),
+    current_user: User = Depends(get_current_user),
+    page: str = Query(default="1"),
+    limit: str = Query(default="50"),
+    q: str | None = Query(default=None),
+    role: str | None = Query(default=None),
+    is_active: str | None = Query(default=None),
+    is_blocked: str | None = Query(default=None),
+    session: FromDishka[AsyncSession] = None,
+    redis_service: FromDishka[RedisService] = None,
+    admin_staff_service: FromDishka[AdminStaffService] = None,
+    admin_staff_cache_service: FromDishka[AdminStaffCacheService] = None,
+    permission_service: FromDishka[PermissionService] = None,
+    user_repository: FromDishka[UserRepository] = None,
+) -> AdminStaffListResponse:
+    if token_payload.get("token_type") != "access":
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь не авторизован")
+    try:
+        query = AdminStaffListQueryParams(
+            page=page,
+            limit=limit,
+            q=q,
+            role=role,
+            is_active=is_active,
+            is_blocked=is_blocked,
+        )
+        return await admin_staff_service.get_staff_list(
+            session=session,
+            redis_service=redis_service,
+            user=current_user,
+            query=query,
+            permission_service=permission_service,
+            user_repository=user_repository,
+            admin_staff_cache_service=admin_staff_cache_service,
+        )
+    except ValidationError as error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Неверные параметры запроса") from error
+    except InvalidCredentialsError as error:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь не авторизован") from error
+    except AdminAuthAccessDeniedError as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Недостаточно прав") from error
+    except InactiveUserError as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Пользователь заблокирован") from error
 
 
 @router.get("/categories", response_model=AdminCategoryListResponse, status_code=status.HTTP_200_OK)
@@ -755,6 +806,7 @@ async def update_admin_user(
     user_cache_service: FromDishka[UserCacheService] = None,
     auth_cache_service: FromDishka[AuthCacheService] = None,
     profile_cache_service: FromDishka[ProfileCacheService] = None,
+    admin_staff_cache_service: FromDishka[AdminStaffCacheService] = None,
 ) -> AdminUserUpdateResponse:
     if token_payload.get("token_type") != "access":
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь не авторизован")
@@ -772,6 +824,7 @@ async def update_admin_user(
             user_cache_service=user_cache_service,
             auth_cache_service=auth_cache_service,
             profile_cache_service=profile_cache_service,
+            admin_staff_cache_service=admin_staff_cache_service,
         )
     except ValidationError as error:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Неверные данные пользователя") from error
@@ -820,6 +873,7 @@ async def block_admin_user(
     user_cache_service: FromDishka[UserCacheService] = None,
     auth_cache_service: FromDishka[AuthCacheService] = None,
     profile_cache_service: FromDishka[ProfileCacheService] = None,
+    admin_staff_cache_service: FromDishka[AdminStaffCacheService] = None,
 ) -> AdminUserBlockResponse:
     if token_payload.get("token_type") != "access":
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь не авторизован")
@@ -839,6 +893,7 @@ async def block_admin_user(
             user_cache_service=user_cache_service,
             auth_cache_service=auth_cache_service,
             profile_cache_service=profile_cache_service,
+            admin_staff_cache_service=admin_staff_cache_service,
         )
     except ValidationError as error:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Неверные данные блокировки") from error
@@ -879,6 +934,7 @@ async def unblock_admin_user(
     user_cache_service: FromDishka[UserCacheService] = None,
     auth_cache_service: FromDishka[AuthCacheService] = None,
     profile_cache_service: FromDishka[ProfileCacheService] = None,
+    admin_staff_cache_service: FromDishka[AdminStaffCacheService] = None,
 ) -> AdminUserBlockResponse:
     if token_payload.get("token_type") != "access":
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь не авторизован")
@@ -896,6 +952,7 @@ async def unblock_admin_user(
             user_cache_service=user_cache_service,
             auth_cache_service=auth_cache_service,
             profile_cache_service=profile_cache_service,
+            admin_staff_cache_service=admin_staff_cache_service,
         )
     except ValidationError as error:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Неверные данные разблокировки") from error

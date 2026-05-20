@@ -60,6 +60,7 @@ ADMIN_PERMISSIONS_BY_ROLE = {
         "admin:users:read",
         "admin:users:update",
         "admin:users:block",
+        "admin:staff:read",
     ],
     UserRole.MANAGER: [
         "admin:dashboard:read",
@@ -85,6 +86,7 @@ ADMIN_PERMISSIONS_BY_ROLE = {
         "admin:users:read",
         "admin:users:update",
         "admin:users:block",
+        "admin:staff:read",
     ],
     UserRole.CONTENT_MANAGER: [
         "admin:dashboard:read",
