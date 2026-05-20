@@ -9,7 +9,9 @@ from source.schemas.pydantic.order import (
     AdminOrderListResponse,
     AdminOrderPaymentResponse,
     AdminOrderPickupPointResponse,
+    AdminOrderStatusResponse,
     AdminOrderStatusHistoryItemResponse,
+    AdminOrderStatusUpdateRequest,
 )
 from source.services.admin_auth import STAFF_ROLES
 from source.services.redis import RedisService
@@ -24,6 +26,14 @@ class AdminOrderService:
         if user.role not in STAFF_ROLES:
             raise AdminAuthAccessDeniedError
         if "admin:orders:read" not in permission_service.get_user_permissions(role=user.role):
+            raise AdminAuthAccessDeniedError
+
+    def _check_update_status_permission(self, *, user, permission_service) -> None:
+        if not user.is_active or user.is_deleted:
+            raise InactiveUserError
+        if user.role not in STAFF_ROLES:
+            raise AdminAuthAccessDeniedError
+        if "admin:orders:update_status" not in permission_service.get_user_permissions(role=user.role):
             raise AdminAuthAccessDeniedError
 
     async def get_orders(
@@ -141,6 +151,77 @@ class AdminOrderService:
             ttl_seconds=settings.orders.admin_detail_cache_ttl_seconds,
         )
         return response
+
+    async def update_status(
+        self,
+        *,
+        session,
+        commiter,
+        redis_service: RedisService,
+        user,
+        order_id: int,
+        data: AdminOrderStatusUpdateRequest,
+        permission_service,
+        order_repository,
+        order_status_history_repository,
+        order_status_service,
+        notification_service,
+        notification_repository,
+        email_service,
+        telegram_service,
+        order_cache_service,
+        profile_cache_service,
+    ) -> AdminOrderStatusResponse:
+        self._check_update_status_permission(user=user, permission_service=permission_service)
+
+        order = await order_repository.admin_get_by_id(session=session, order_id=order_id)
+        if order is None:
+            raise OrderNotFoundError
+
+        old_status = order.status
+        order_status_service.validate_transition(current_status=old_status, new_status=data.status)
+        sync_status = "pending_status_update" if order_status_service.affects_one_c(status=data.status) else None
+
+        try:
+            order = await order_repository.update_status(
+                session=session,
+                order=order,
+                status=data.status,
+                sync_status=sync_status,
+            )
+            await order_status_history_repository.create(
+                session=session,
+                order_id=order.id,
+                old_status=old_status,
+                status=data.status,
+                comment=data.comment,
+                changed_by=user.id,
+            )
+            if data.notify_customer:
+                await notification_service.notify_order_status_changed(
+                    session=session,
+                    order=order,
+                    notification_repository=notification_repository,
+                    email_service=email_service,
+                    telegram_service=telegram_service,
+                )
+            await commiter.commit()
+        except Exception:
+            await commiter.rollback()
+            raise
+
+        await order_cache_service.invalidate_admin_orders(redis_service=redis_service)
+        await order_cache_service.invalidate_detail(redis_service=redis_service, user_id=order.user_id, order_id=order.id)
+        await order_cache_service.invalidate_status(redis_service=redis_service, user_id=order.user_id, order_id=order.id)
+        await order_cache_service.invalidate_my_orders(redis_service=redis_service, user_id=order.user_id)
+        await profile_cache_service.delete_summary(redis_service=redis_service, user_id=order.user_id)
+
+        return AdminOrderStatusResponse(
+            id=order.id,
+            order_number=order.order_number,
+            status=order.status,
+            updated_at=order.updated_date,
+        )
 
     def _build_address_response(self, address) -> AdminOrderAddressResponse | None:
         if address is None:

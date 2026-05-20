@@ -279,6 +279,27 @@ class AdminOrderDetailResponse(BaseModel):
     created_at: datetime
 
 
+class AdminOrderStatusUpdateRequest(BaseModel):
+    status: str = Field(min_length=1, max_length=50)
+    comment: str | None = Field(default=None, max_length=500)
+    notify_customer: bool = False
+
+    @field_validator("status", "comment", mode="before")
+    @classmethod
+    def normalize_strings(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        normalized_value = " ".join(value.strip().split())
+        return normalized_value or None
+
+
+class AdminOrderStatusResponse(BaseModel):
+    id: int
+    order_number: str
+    status: str
+    updated_at: datetime
+
+
 class OrderCreateResponse(BaseModel):
     id: int
     order_number: str

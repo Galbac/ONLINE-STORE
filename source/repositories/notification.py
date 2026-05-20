@@ -9,6 +9,13 @@ from source.schemas.pydantic.notifications import NotificationQueryParams, Notif
 
 
 class NotificationRepository:
+    async def create(self, *, session: AsyncSession, **data) -> Notification:
+        notification = Notification(**data)
+        session.add(notification)
+        await session.flush()
+        await session.refresh(notification)
+        return notification
+
     async def get_by_id(self, *, session: AsyncSession, notification_id: int) -> Notification | None:
         result = await session.execute(select(Notification).where(Notification.id == notification_id))
         return result.scalar_one_or_none()

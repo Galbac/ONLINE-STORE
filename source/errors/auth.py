@@ -251,6 +251,14 @@ class OrderPaymentStatusNotAllowedError(Exception):
     pass
 
 
+class OrderInvalidStatusError(Exception):
+    pass
+
+
+class OrderStatusTransitionError(Exception):
+    pass
+
+
 class PaymentProviderCreateError(Exception):
     pass
 

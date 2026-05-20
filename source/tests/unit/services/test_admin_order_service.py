@@ -5,17 +5,25 @@ from types import SimpleNamespace
 import pytest
 
 from source.db.models.choises.enum import UserRole
-from source.errors.auth import AdminAuthAccessDeniedError, OrderNotFoundError
-from source.schemas.pydantic.order import AdminOrderListItemResponse, AdminOrderListQueryParams, AdminOrderListResponse
+from source.errors.auth import AdminAuthAccessDeniedError, OrderNotFoundError, OrderStatusTransitionError
+from source.schemas.pydantic.order import (
+    AdminOrderListItemResponse,
+    AdminOrderListQueryParams,
+    AdminOrderListResponse,
+    AdminOrderStatusUpdateRequest,
+)
 from source.services.admin_auth import PermissionService
 from source.services.admin_order import AdminOrderService
 from source.services.order_cache import OrderCacheService
+from source.services.order_status import OrderStatusService
 
 
 class FakeRedisService:
     def __init__(self) -> None:
         self.values = {}
         self.ttls = {}
+        self.deleted = []
+        self.deleted_patterns = []
 
     async def get(self, key: str):
         return self.values.get(key)
@@ -26,9 +34,11 @@ class FakeRedisService:
             self.ttls[key] = ttl_seconds
 
     async def delete_by_pattern(self, pattern: str) -> None:
+        self.deleted_patterns.append(pattern)
         self.values = {key: value for key, value in self.values.items() if not key.startswith(pattern.rstrip("*"))}
 
     async def delete(self, key: str) -> None:
+        self.deleted.append(key)
         self.values.pop(key, None)
 
 
@@ -51,6 +61,13 @@ class FakeOrderRepository:
     async def admin_get_by_id(self, *, session, order_id: int):
         self.list_calls += 1
         return next((order for order in self.orders if order.id == order_id), None)
+
+    async def update_status(self, *, session, order, status: str, sync_status: str | None = None):
+        order.status = status
+        if sync_status is not None:
+            order.sync_status = sync_status
+        order.updated_date = datetime(2026, 5, 12, 11, 0, 0)
+        return order
 
     def _filter(self, query: AdminOrderListQueryParams):
         orders = list(self.orders)
@@ -103,6 +120,7 @@ def build_order(
         sync_status=sync_status,
         external_1c_id=None,
         created_date=created_date or datetime(2026, 5, 12, 10, 0, 0) + timedelta(minutes=order_id),
+        updated_date=datetime(2026, 5, 12, 10, 30, 0),
         address_id=10,
         pickup_point_id=None,
         user_id=1,
@@ -180,6 +198,11 @@ class FakeOrderStatusHistoryRepository:
     async def get_by_order_id(self, *, session, order_id: int):
         return self.items
 
+    async def create(self, *, session, **data):
+        history = SimpleNamespace(id=len(self.items) + 1, created_date=datetime(2026, 5, 12, 11), **data)
+        self.items.append(history)
+        return history
+
 
 def build_order_item():
     return SimpleNamespace(
@@ -222,6 +245,109 @@ async def get_order_detail(*, orders=None, order_id: int = 101, redis_service=No
         payment_repository=FakePaymentRepository(build_payment()),
         order_status_history_repository=FakeOrderStatusHistoryRepository(),
         order_cache_service=OrderCacheService(),
+    )
+
+
+class FakeCommiter:
+    def __init__(self) -> None:
+        self.committed = False
+        self.rolled_back = False
+
+    async def commit(self) -> None:
+        self.committed = True
+
+    async def rollback(self) -> None:
+        self.rolled_back = True
+
+
+class FakeNotificationRepository:
+    def __init__(self) -> None:
+        self.notifications = []
+
+    async def create(self, *, session, **data):
+        notification = SimpleNamespace(id=len(self.notifications) + 1, **data)
+        self.notifications.append(notification)
+        return notification
+
+
+class FakeNotificationService:
+    def __init__(self) -> None:
+        self.notified = False
+
+    async def notify_order_status_changed(
+        self,
+        *,
+        session,
+        order,
+        notification_repository,
+        email_service,
+        telegram_service,
+    ) -> None:
+        self.notified = True
+        await notification_repository.create(
+            session=session,
+            user_id=order.user_id,
+            type="order_status",
+            title="Статус заказа изменён",
+            message=order.status,
+        )
+
+
+class FakeProfileCacheService:
+    def __init__(self) -> None:
+        self.summary_deleted = False
+
+    async def delete_summary(self, *, redis_service, user_id: int) -> None:
+        self.summary_deleted = True
+        await redis_service.delete(f"profile:summary:{user_id}")
+
+
+async def update_order_status(
+    *,
+    order=None,
+    status: str = "assembling",
+    notify_customer: bool = False,
+    role=UserRole.ADMIN,
+):
+    redis_service = FakeRedisService()
+    repository = FakeOrderRepository([] if order is None else [order])
+    history_repository = FakeOrderStatusHistoryRepository()
+    notification_repository = FakeNotificationRepository()
+    notification_service = FakeNotificationService()
+    profile_cache_service = FakeProfileCacheService()
+    commiter = FakeCommiter()
+
+    response = await AdminOrderService().update_status(
+        session=None,
+        commiter=commiter,
+        redis_service=redis_service,
+        user=build_user(role=role),
+        order_id=101,
+        data=AdminOrderStatusUpdateRequest(
+            status=status,
+            comment="Заказ передан в сборку",
+            notify_customer=notify_customer,
+        ),
+        permission_service=PermissionService(),
+        order_repository=repository,
+        order_status_history_repository=history_repository,
+        order_status_service=OrderStatusService(),
+        notification_service=notification_service,
+        notification_repository=notification_repository,
+        email_service=SimpleNamespace(),
+        telegram_service=SimpleNamespace(),
+        order_cache_service=OrderCacheService(),
+        profile_cache_service=profile_cache_service,
+    )
+    return SimpleNamespace(
+        response=response,
+        order=order,
+        redis_service=redis_service,
+        history_repository=history_repository,
+        notification_repository=notification_repository,
+        notification_service=notification_service,
+        profile_cache_service=profile_cache_service,
+        commiter=commiter,
     )
 
 
@@ -401,3 +527,67 @@ async def test_admin_get_order_detail_returns_sync_fields() -> None:
 
     assert response.sync_status == "pending"
     assert response.external_1c_id == "1c-101"
+
+
+@pytest.mark.asyncio
+async def test_admin_update_order_status_success() -> None:
+    order = build_order(order_id=101, order_number="ORD-000101", status="new")
+    result = await update_order_status(order=order)
+
+    assert result.response.id == 101
+    assert result.response.order_number == "ORD-000101"
+    assert result.response.status == "assembling"
+    assert order.status == "assembling"
+    assert order.sync_status == "pending_status_update"
+    assert result.commiter.committed is True
+
+
+@pytest.mark.asyncio
+async def test_admin_update_order_status_invalid_transition() -> None:
+    order = build_order(order_id=101, order_number="ORD-000101", status="completed")
+
+    with pytest.raises(OrderStatusTransitionError):
+        await update_order_status(order=order, status="assembling")
+
+
+@pytest.mark.asyncio
+async def test_admin_update_order_status_not_found() -> None:
+    with pytest.raises(OrderNotFoundError):
+        await update_order_status(order=None)
+
+
+@pytest.mark.asyncio
+async def test_admin_update_order_status_creates_history() -> None:
+    order = build_order(order_id=101, order_number="ORD-000101", status="new")
+    result = await update_order_status(order=order)
+
+    assert len(result.history_repository.items) == 1
+    history = result.history_repository.items[0]
+    assert history.order_id == 101
+    assert history.old_status == "new"
+    assert history.status == "assembling"
+    assert history.comment == "Заказ передан в сборку"
+    assert history.changed_by == 1
+
+
+@pytest.mark.asyncio
+async def test_admin_update_order_status_creates_notification() -> None:
+    order = build_order(order_id=101, order_number="ORD-000101", status="new")
+    result = await update_order_status(order=order, notify_customer=True)
+
+    assert result.notification_service.notified is True
+    assert len(result.notification_repository.notifications) == 1
+    assert result.notification_repository.notifications[0].type == "order_status"
+
+
+@pytest.mark.asyncio
+async def test_admin_update_order_status_invalidates_cache() -> None:
+    order = build_order(order_id=101, order_number="ORD-000101", status="new")
+    result = await update_order_status(order=order)
+
+    assert "admin:orders:*" in result.redis_service.deleted_patterns
+    assert "orders:my:1:*" in result.redis_service.deleted_patterns
+    assert "orders:detail:1:101" in result.redis_service.deleted
+    assert "orders:status:1:101" in result.redis_service.deleted
+    assert "profile:summary:1" in result.redis_service.deleted
+    assert result.profile_cache_service.summary_deleted is True

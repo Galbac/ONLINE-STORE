@@ -142,8 +142,10 @@ class OrderRepository:
         result = await session.execute(select(Order).where(Order.id == order_id))
         return result.scalar_one_or_none()
 
-    async def update_status(self, *, session: AsyncSession, order: Order, status: str) -> Order:
+    async def update_status(self, *, session: AsyncSession, order: Order, status: str, sync_status: str | None = None) -> Order:
         order.status = status
+        if sync_status is not None:
+            order.sync_status = sync_status
         session.add(order)
         await session.flush()
         await session.refresh(order)

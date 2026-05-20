@@ -95,6 +95,16 @@ class EmailService:
         message.set_content(f"Ваш заказ {order_number} отменён.")
         await asyncio.to_thread(self._send_message, message)
 
+    async def send_order_status_changed_email(self, *, email: str, order_number: str, status: str) -> None:
+        if not settings.smtp.host or not settings.smtp.from_email:
+            return
+        message = EmailMessage()
+        message["Subject"] = f"Статус заказа {order_number} изменён"
+        message["From"] = settings.smtp.from_email
+        message["To"] = email
+        message.set_content(f"Статус заказа {order_number}: {status}.")
+        await asyncio.to_thread(self._send_message, message)
+
     async def send_payment_success_email(self, *, email: str, order_number: str) -> None:
         if not settings.smtp.host or not settings.smtp.from_email:
             return
@@ -153,6 +163,9 @@ class TelegramNotificationService:
 
     async def notify_admin_order_cancelled(self, *, order_number: str, user_id: int) -> None:
         logger.info("Order cancelled: order_number=%s user_id=%s", order_number, user_id)
+
+    async def notify_order_status_changed(self, *, order_number: str, user_id: int, status: str) -> None:
+        logger.info("Order status changed: order_number=%s user_id=%s status=%s", order_number, user_id, status)
 
     async def notify_admin_payment_success(self, *, order_number: str, user_id: int) -> None:
         logger.info("Payment succeeded: order_number=%s user_id=%s", order_number, user_id)
@@ -347,6 +360,36 @@ class NotificationService:
         if order.customer_email:
             await email_service.send_order_cancelled_email(email=order.customer_email, order_number=order.order_number)
         await telegram_service.notify_admin_order_cancelled(order_number=order.order_number, user_id=order.user_id)
+
+    async def notify_order_status_changed(
+        self,
+        *,
+        session,
+        order,
+        notification_repository,
+        email_service: EmailService,
+        telegram_service: TelegramNotificationService,
+    ) -> None:
+        title = f"Статус заказа {order.order_number} изменён"
+        message = f"Новый статус заказа {order.order_number}: {order.status}"
+        await notification_repository.create(
+            session=session,
+            user_id=order.user_id,
+            type="order_status",
+            title=title,
+            message=message,
+        )
+        if order.customer_email:
+            await email_service.send_order_status_changed_email(
+                email=order.customer_email,
+                order_number=order.order_number,
+                status=order.status,
+            )
+        await telegram_service.notify_order_status_changed(
+            order_number=order.order_number,
+            user_id=order.user_id,
+            status=order.status,
+        )
 
     async def notify_payment_success(
         self,

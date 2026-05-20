@@ -88,6 +88,9 @@ class OrderCacheService:
             return
         await redis_service.delete_by_pattern("admin:orders:detail:*")
 
+    async def invalidate_admin_orders(self, *, redis_service: RedisService) -> None:
+        await redis_service.delete_by_pattern("admin:orders:*")
+
     async def get_my_orders(
         self,
         *,

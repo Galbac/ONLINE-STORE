@@ -70,6 +70,7 @@ from source.services.favorite_cache import FavoriteCacheService
 from source.services.one_c import OneCIntegrationService
 from source.services.order import OrderService
 from source.services.order_cache import OrderCacheService
+from source.services.order_status import OrderStatusService
 from source.services.payment_cache import PaymentCacheService
 from source.services.payment import PaymentProviderService, PaymentService
 from source.services.payment_webhook import PaymentWebhookService
@@ -309,6 +310,10 @@ class AppProvider(Provider):
     )
     order_cache_service = provide(
         OrderCacheService,
+        scope=Scope.REQUEST,
+    )
+    order_status_service = provide(
+        OrderStatusService,
         scope=Scope.REQUEST,
     )
     payment_cache_service = provide(

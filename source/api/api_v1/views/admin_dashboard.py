@@ -10,7 +10,14 @@ from source.common.commiter import Commiter
 from source.db.models.user import User
 from source.errors.category import CategoryCycleError, CategoryNotFoundError, CategorySlugAlreadyExistsError
 from source.errors.category import CategoryHasActiveChildrenError, CategoryHasActiveProductsError
-from source.errors.auth import AdminAuthAccessDeniedError, InactiveUserError, InvalidCredentialsError, OrderNotFoundError
+from source.errors.auth import (
+    AdminAuthAccessDeniedError,
+    InactiveUserError,
+    InvalidCredentialsError,
+    OrderInvalidStatusError,
+    OrderNotFoundError,
+    OrderStatusTransitionError,
+)
 from source.errors.product import (
     ProductActiveOrderExistsError,
     ProductBarcodeAlreadyExistsError,
@@ -28,6 +35,7 @@ from source.repositories.discount import DiscountRepository
 from source.repositories.order import OrderRepository
 from source.repositories.order_item import OrderItemRepository
 from source.repositories.order_status_history import OrderStatusHistoryRepository
+from source.repositories.notification import NotificationRepository
 from source.repositories.payment import PaymentRepository
 from source.repositories.pickup_point import PickupPointRepository
 from source.repositories.product import ProductRepository
@@ -69,7 +77,13 @@ from source.schemas.pydantic.admin_product import (
     ProductStockResponse,
     ProductStockUpdateRequest,
 )
-from source.schemas.pydantic.order import AdminOrderDetailResponse, AdminOrderListQueryParams, AdminOrderListResponse
+from source.schemas.pydantic.order import (
+    AdminOrderDetailResponse,
+    AdminOrderListQueryParams,
+    AdminOrderListResponse,
+    AdminOrderStatusResponse,
+    AdminOrderStatusUpdateRequest,
+)
 from source.services.category_cache import CategoryCacheService
 from source.services.admin_auth import AuditLogService, PermissionService
 from source.services.admin_category import AdminCategoryService, CategoryTreeService
@@ -82,6 +96,9 @@ from source.services.admin_product_cache import AdminProductCacheService
 from source.services.admin_product_image import AdminProductImageService
 from source.services.product_cache import ProductCacheService
 from source.services.order_cache import OrderCacheService
+from source.services.order_status import OrderStatusService
+from source.services.notifications import EmailService, NotificationService, TelegramNotificationService
+from source.services.profile_cache import ProfileCacheService
 from source.services.redis import RedisService
 from source.services.storage import StorageService
 from source.services.stock import StockMovementService, StockService
@@ -573,6 +590,65 @@ async def get_admin_order_detail(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Пользователь заблокирован") from error
     except OrderNotFoundError as error:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Заказ не найден") from error
+
+
+@router.patch("/orders/{order_id}/status", response_model=AdminOrderStatusResponse, status_code=status.HTTP_200_OK)
+@inject
+async def update_admin_order_status(
+    payload: dict = Body(...),
+    token_payload: dict = Depends(verify_access_token),
+    current_user: User = Depends(get_current_user),
+    order_id: int = Path(ge=1),
+    session: FromDishka[AsyncSession] = None,
+    commiter: FromDishka[Commiter] = None,
+    redis_service: FromDishka[RedisService] = None,
+    admin_order_service: FromDishka[AdminOrderService] = None,
+    permission_service: FromDishka[PermissionService] = None,
+    order_repository: FromDishka[OrderRepository] = None,
+    order_status_history_repository: FromDishka[OrderStatusHistoryRepository] = None,
+    order_status_service: FromDishka[OrderStatusService] = None,
+    notification_service: FromDishka[NotificationService] = None,
+    notification_repository: FromDishka[NotificationRepository] = None,
+    email_service: FromDishka[EmailService] = None,
+    telegram_service: FromDishka[TelegramNotificationService] = None,
+    order_cache_service: FromDishka[OrderCacheService] = None,
+    profile_cache_service: FromDishka[ProfileCacheService] = None,
+) -> AdminOrderStatusResponse:
+    if token_payload.get("token_type") != "access":
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь не авторизован")
+    try:
+        return await admin_order_service.update_status(
+            session=session,
+            commiter=commiter,
+            redis_service=redis_service,
+            user=current_user,
+            order_id=order_id,
+            data=AdminOrderStatusUpdateRequest.model_validate(payload),
+            permission_service=permission_service,
+            order_repository=order_repository,
+            order_status_history_repository=order_status_history_repository,
+            order_status_service=order_status_service,
+            notification_service=notification_service,
+            notification_repository=notification_repository,
+            email_service=email_service,
+            telegram_service=telegram_service,
+            order_cache_service=order_cache_service,
+            profile_cache_service=profile_cache_service,
+        )
+    except ValidationError as error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Недопустимый статус") from error
+    except InvalidCredentialsError as error:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь не авторизован") from error
+    except AdminAuthAccessDeniedError as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Недостаточно прав") from error
+    except InactiveUserError as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Пользователь заблокирован") from error
+    except OrderNotFoundError as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Заказ не найден") from error
+    except OrderInvalidStatusError as error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Недопустимый статус") from error
+    except OrderStatusTransitionError as error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Недопустимый переход статуса") from error
 
 
 @router.get("/products/{product_id}", response_model=AdminProductDetailResponse, status_code=status.HTTP_200_OK)
