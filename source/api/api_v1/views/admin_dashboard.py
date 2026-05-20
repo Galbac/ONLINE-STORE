@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from source.api.dependencies import get_current_user, verify_access_token
 from source.common.commiter import Commiter
 from source.db.models.user import User
-from source.errors.category import CategoryNotFoundError
+from source.errors.category import CategoryNotFoundError, CategorySlugAlreadyExistsError
 from source.errors.auth import AdminAuthAccessDeniedError, InactiveUserError, InvalidCredentialsError
 from source.errors.product import (
     ProductActiveOrderExistsError,
@@ -19,7 +19,7 @@ from source.errors.product import (
     ProductSkuAlreadyExistsError,
     ProductSlugAlreadyExistsError,
 )
-from source.errors.upload import UploadFileMissingError, UploadFileTooLargeError, UploadStorageError, UploadUnsupportedFormatError
+from source.errors.upload import UploadFileMissingError, UploadFileTooLargeError, UploadNotFoundError, UploadStorageError, UploadUnsupportedFormatError
 from source.repositories.admin_audit_log import AdminAuditLogRepository
 from source.repositories.category import CategoryRepository
 from source.repositories.discount import DiscountRepository
@@ -40,6 +40,8 @@ from source.schemas.pydantic.admin_dashboard import (
     AdminSalesResponse,
 )
 from source.schemas.pydantic.admin_category import (
+    AdminCategoryCreateRequest,
+    AdminCategoryDetailResponse,
     AdminCategoryListQueryParams,
     AdminCategoryListResponse,
 )
@@ -60,7 +62,7 @@ from source.schemas.pydantic.admin_product import (
     ProductStockUpdateRequest,
 )
 from source.services.category_cache import CategoryCacheService
-from source.services.admin_auth import PermissionService
+from source.services.admin_auth import AuditLogService, PermissionService
 from source.services.admin_category import AdminCategoryService
 from source.services.admin_category_cache import AdminCategoryCacheService
 from source.services.admin_dashboard import AdminDashboardService
@@ -125,6 +127,59 @@ async def get_admin_categories(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Недостаточно прав") from error
     except InactiveUserError as error:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Пользователь заблокирован") from error
+
+
+@router.post("/categories", response_model=AdminCategoryDetailResponse, status_code=status.HTTP_201_CREATED)
+@inject
+async def create_admin_category(
+    payload: dict = Body(...),
+    token_payload: dict = Depends(verify_access_token),
+    current_user: User = Depends(get_current_user),
+    session: FromDishka[AsyncSession] = None,
+    redis_service: FromDishka[RedisService] = None,
+    commiter: FromDishka[Commiter] = None,
+    admin_category_service: FromDishka[AdminCategoryService] = None,
+    admin_category_cache_service: FromDishka[AdminCategoryCacheService] = None,
+    category_cache_service: FromDishka[CategoryCacheService] = None,
+    permission_service: FromDishka[PermissionService] = None,
+    category_repository: FromDishka[CategoryRepository] = None,
+    upload_repository: FromDishka[UploadRepository] = None,
+    admin_audit_log_repository: FromDishka[AdminAuditLogRepository] = None,
+    audit_log_service: FromDishka[AuditLogService] = None,
+) -> AdminCategoryDetailResponse:
+    if token_payload.get("token_type") != "access":
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь не авторизован")
+    try:
+        return await admin_category_service.create_category(
+            session=session,
+            redis_service=redis_service,
+            user=current_user,
+            data=AdminCategoryCreateRequest.model_validate(payload),
+            commiter=commiter,
+            permission_service=permission_service,
+            category_repository=category_repository,
+            upload_repository=upload_repository,
+            admin_audit_log_repository=admin_audit_log_repository,
+            audit_log_service=audit_log_service,
+            category_cache_service=category_cache_service,
+            admin_category_cache_service=admin_category_cache_service,
+        )
+    except ValidationError as error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Неверные данные") from error
+    except ValueError as error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Неверные данные") from error
+    except InvalidCredentialsError as error:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь не авторизован") from error
+    except AdminAuthAccessDeniedError as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Недостаточно прав") from error
+    except InactiveUserError as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Пользователь заблокирован") from error
+    except CategoryNotFoundError as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Родительская категория не найдена") from error
+    except UploadNotFoundError as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Изображение не найдено") from error
+    except CategorySlugAlreadyExistsError as error:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Slug уже занят") from error
 
 
 @router.get("/products", response_model=AdminProductListResponse, status_code=status.HTTP_200_OK)

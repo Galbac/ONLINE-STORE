@@ -906,7 +906,7 @@ async def test_admin_product_create_invalidates_cache() -> None:
     assert "products:list:*" in redis_service.deleted_patterns
     assert "products:new:*" in redis_service.deleted_patterns
     assert "admin:products:list:*" in redis_service.deleted_patterns
-    assert "admin:categories:list:*" in redis_service.deleted_patterns
+    assert "admin:categories:*" in redis_service.deleted_patterns
     assert "categories:list:*" in redis_service.deleted_patterns
     assert "categories:tree:*" in redis_service.deleted_patterns
 

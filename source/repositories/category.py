@@ -10,13 +10,42 @@ from source.schemas.pydantic.category import (
     CategorySeoResponse,
     CategoryShortResponse,
 )
-from source.schemas.pydantic.admin_category import AdminCategoryListQueryParams
+from source.schemas.pydantic.admin_category import AdminCategoryCreateRequest, AdminCategoryListQueryParams
 
 
 class CategoryRepository:
     async def exists_by_image_file_id(self, *, session: AsyncSession, file_id: int) -> bool:
         result = await session.execute(select(Category.id).where(Category.image_file_id == file_id))
         return result.scalar_one_or_none() is not None
+
+    async def get_by_slug(self, *, session: AsyncSession, slug: str) -> Category | None:
+        result = await session.execute(select(Category).where(Category.slug == slug))
+        return result.scalar_one_or_none()
+
+    async def create(
+        self,
+        *,
+        session: AsyncSession,
+        data: AdminCategoryCreateRequest,
+        slug: str,
+        image_url: str | None,
+    ) -> Category:
+        category = Category(
+            name=data.name,
+            slug=slug,
+            description=data.description,
+            parent_id=data.parent_id,
+            image_file_id=data.image_id,
+            image_url=image_url,
+            sort_order=data.sort_order,
+            is_active=data.is_active,
+            meta_title=data.meta_title,
+            meta_description=data.meta_description,
+        )
+        session.add(category)
+        await session.flush()
+        await session.refresh(category)
+        return category
 
     def _base_statement(self, *, query: CategoryListQueryParams):
         active_products_count = func.count(Product.id).label("products_count")

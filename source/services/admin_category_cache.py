@@ -34,4 +34,4 @@ class AdminCategoryCacheService:
         )
 
     async def invalidate_all(self, *, redis_service: RedisService) -> None:
-        await redis_service.delete_by_pattern("admin:categories:list:*")
+        await redis_service.delete_by_pattern("admin:categories:*")

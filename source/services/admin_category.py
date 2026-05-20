@@ -1,6 +1,10 @@
 from source.config.settings import settings
+from source.errors.category import CategoryNotFoundError, CategorySlugAlreadyExistsError
 from source.errors.auth import AdminAuthAccessDeniedError, InactiveUserError
+from source.errors.upload import UploadNotFoundError
 from source.schemas.pydantic.admin_category import (
+    AdminCategoryCreateRequest,
+    AdminCategoryDetailResponse,
     AdminCategoryListItemResponse,
     AdminCategoryListQueryParams,
     AdminCategoryListResponse,
@@ -9,6 +13,7 @@ from source.services.admin_auth import STAFF_ROLES
 from source.services.redis import RedisService
 from source.utils.query_hash import build_query_hash
 from source.utils.search import normalize_search_query
+from source.utils.slug import generate_slug, normalize_slug, validate_slug
 
 
 class AdminCategoryService:
@@ -18,6 +23,14 @@ class AdminCategoryService:
         if user.role not in STAFF_ROLES:
             raise AdminAuthAccessDeniedError
         if "admin:categories:read" not in permission_service.get_user_permissions(role=user.role):
+            raise AdminAuthAccessDeniedError
+
+    def _check_create_permission(self, *, user, permission_service) -> None:
+        if not user.is_active or user.is_deleted:
+            raise InactiveUserError
+        if user.role not in STAFF_ROLES:
+            raise AdminAuthAccessDeniedError
+        if "admin:categories:create" not in permission_service.get_user_permissions(role=user.role):
             raise AdminAuthAccessDeniedError
 
     async def get_categories(
@@ -78,3 +91,77 @@ class AdminCategoryService:
             ttl_seconds=settings.categories.admin_list_cache_ttl_seconds,
         )
         return response
+
+    async def create_category(
+        self,
+        *,
+        session,
+        redis_service: RedisService,
+        user,
+        data: AdminCategoryCreateRequest,
+        commiter,
+        permission_service,
+        category_repository,
+        upload_repository,
+        admin_audit_log_repository,
+        audit_log_service,
+        category_cache_service,
+        admin_category_cache_service,
+    ) -> AdminCategoryDetailResponse:
+        self._check_create_permission(user=user, permission_service=permission_service)
+
+        slug = normalize_slug(data.slug) if data.slug is not None else generate_slug(data.name)
+        if not validate_slug(slug):
+            raise ValueError("Invalid slug")
+        if await category_repository.get_by_slug(session=session, slug=slug) is not None:
+            raise CategorySlugAlreadyExistsError
+
+        if data.parent_id is not None:
+            parent = await category_repository.get_by_id(session=session, category_id=data.parent_id)
+            if parent is None:
+                raise CategoryNotFoundError
+
+        image_url = None
+        if data.image_id is not None:
+            image = await upload_repository.get_by_id(session=session, file_id=data.image_id)
+            if image is None or image.is_deleted:
+                raise UploadNotFoundError
+            image_url = image.url
+
+        category = await category_repository.create(
+            session=session,
+            data=data,
+            slug=slug,
+            image_url=image_url,
+        )
+        await audit_log_service.log_action(
+            session=session,
+            audit_log_repository=admin_audit_log_repository,
+            user_id=user.id,
+            login=getattr(user, "email", None) or getattr(user, "phone", None) or str(user.id),
+            event="admin_category_create",
+            status="success",
+            details={
+                "category_id": category.id,
+                "name": category.name,
+                "slug": category.slug,
+                "parent_id": category.parent_id,
+                "image_id": category.image_file_id,
+            },
+        )
+        await commiter.commit()
+
+        await admin_category_cache_service.invalidate_all(redis_service=redis_service)
+        await category_cache_service.invalidate_all(redis_service=redis_service)
+
+        return AdminCategoryDetailResponse(
+            id=category.id,
+            name=category.name,
+            slug=category.slug,
+            description=category.description,
+            parent_id=category.parent_id,
+            image_url=category.image_url,
+            sort_order=category.sort_order,
+            is_active=category.is_active,
+            created_at=category.created_date,
+        )

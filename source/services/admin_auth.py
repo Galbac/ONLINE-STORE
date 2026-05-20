@@ -40,6 +40,7 @@ ADMIN_PERMISSIONS_BY_ROLE = {
         "admin:dashboard:read",
         "admin:dashboard:sales:read",
         "admin:categories:read",
+        "admin:categories:create",
         "admin:products:read",
         "admin:products:create",
         "admin:products:update",
@@ -52,6 +53,7 @@ ADMIN_PERMISSIONS_BY_ROLE = {
         "admin:dashboard:read",
         "admin:dashboard:sales:read",
         "admin:categories:read",
+        "admin:categories:create",
         "admin:products:read",
         "admin:products:create",
         "admin:products:update",
@@ -63,6 +65,7 @@ ADMIN_PERMISSIONS_BY_ROLE = {
     UserRole.CONTENT_MANAGER: [
         "admin:dashboard:read",
         "admin:categories:read",
+        "admin:categories:create",
         "admin:products:read",
         "admin:products:manage",
     ],
@@ -151,6 +154,30 @@ class JwtBlacklistService:
 
 
 class AuditLogService:
+    async def log_action(
+        self,
+        *,
+        session,
+        audit_log_repository,
+        user_id: int,
+        login: str,
+        event: str,
+        status: str = "success",
+        ip_address: str | None = None,
+        user_agent: str | None = None,
+        details: dict | None = None,
+    ) -> None:
+        await audit_log_repository.create(
+            session=session,
+            user_id=user_id,
+            login=login,
+            event=event,
+            status=status,
+            ip_address=ip_address,
+            user_agent=user_agent,
+            details=details or {},
+        )
+
     async def log_admin_login(
         self,
         *,
