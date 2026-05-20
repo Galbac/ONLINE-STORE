@@ -147,6 +147,7 @@ class AdminProductService:
         admin_audit_log_repository,
         product_cache_service,
         admin_product_cache_service,
+        admin_category_cache_service,
         category_cache_service,
     ) -> AdminProductDetailResponse:
         self._check_create_permission(user=user, permission_service=permission_service)
@@ -201,6 +202,7 @@ class AdminProductService:
 
         await product_cache_service.invalidate_all(redis_service=redis_service)
         await admin_product_cache_service.invalidate_all(redis_service=redis_service)
+        await admin_category_cache_service.invalidate_all(redis_service=redis_service)
         await category_cache_service.invalidate_all(redis_service=redis_service)
 
         return AdminProductDetailResponse(
@@ -315,6 +317,7 @@ class AdminProductService:
         admin_audit_log_repository,
         product_cache_service,
         admin_product_cache_service,
+        admin_category_cache_service,
     ) -> AdminProductUpdateResponse:
         self._check_update_permission(user=user, permission_service=permission_service)
 
@@ -392,6 +395,7 @@ class AdminProductService:
             redis_service=redis_service,
             product_id=updated_product.id,
         )
+        await admin_category_cache_service.invalidate_all(redis_service=redis_service)
         await product_cache_service.invalidate_product(
             redis_service=redis_service,
             product_id=updated_product.id,
@@ -428,6 +432,7 @@ class AdminProductService:
         admin_audit_log_repository,
         product_cache_service,
         admin_product_cache_service,
+        admin_category_cache_service,
     ) -> MessageResponse:
         self._check_delete_permission(user=user, permission_service=permission_service)
 
@@ -469,6 +474,7 @@ class AdminProductService:
             slug=deleted_product.slug,
         )
         await admin_product_cache_service.invalidate_all(redis_service=redis_service)
+        await admin_category_cache_service.invalidate_all(redis_service=redis_service)
 
         return MessageResponse(message="Товар удалён")
 

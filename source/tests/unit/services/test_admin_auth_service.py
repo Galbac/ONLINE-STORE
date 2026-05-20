@@ -195,6 +195,7 @@ async def test_admin_login_success_admin() -> None:
     assert response.user.permissions == [
         "admin:dashboard:read",
         "admin:dashboard:sales:read",
+        "admin:categories:read",
         "admin:products:read",
         "admin:products:create",
         "admin:products:update",

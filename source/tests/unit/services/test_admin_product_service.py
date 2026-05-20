@@ -23,6 +23,7 @@ from source.schemas.pydantic.admin_product import (
     ProductStockUpdateRequest,
 )
 from source.services.admin_auth import PermissionService
+from source.services.admin_category_cache import AdminCategoryCacheService
 from source.services.admin_product import AdminProductService
 from source.services.admin_product_cache import AdminProductCacheService
 from source.services.admin_product_image import AdminProductImageService
@@ -510,6 +511,7 @@ async def create_product(
         admin_audit_log_repository=audit_log_repository or FakeAuditLogRepository(),
         product_cache_service=FakeProductCacheService(),
         admin_product_cache_service=AdminProductCacheService(),
+        admin_category_cache_service=AdminCategoryCacheService(),
         category_cache_service=FakeCategoryCacheService(),
     )
 
@@ -560,6 +562,7 @@ async def update_product(
         admin_audit_log_repository=audit_log_repository or FakeAuditLogRepository(),
         product_cache_service=FakeProductCacheService(),
         admin_product_cache_service=AdminProductCacheService(),
+        admin_category_cache_service=AdminCategoryCacheService(),
     )
 
 
@@ -585,6 +588,7 @@ async def delete_product(
         admin_audit_log_repository=audit_log_repository or FakeAuditLogRepository(),
         product_cache_service=FakeProductCacheService(),
         admin_product_cache_service=AdminProductCacheService(),
+        admin_category_cache_service=AdminCategoryCacheService(),
     )
 
 
@@ -902,6 +906,7 @@ async def test_admin_product_create_invalidates_cache() -> None:
     assert "products:list:*" in redis_service.deleted_patterns
     assert "products:new:*" in redis_service.deleted_patterns
     assert "admin:products:list:*" in redis_service.deleted_patterns
+    assert "admin:categories:list:*" in redis_service.deleted_patterns
     assert "categories:list:*" in redis_service.deleted_patterns
     assert "categories:tree:*" in redis_service.deleted_patterns
 

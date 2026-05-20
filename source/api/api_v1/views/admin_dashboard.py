@@ -39,10 +39,15 @@ from source.schemas.pydantic.admin_dashboard import (
     AdminSalesQueryParams,
     AdminSalesResponse,
 )
+from source.schemas.pydantic.admin_category import (
+    AdminCategoryListQueryParams,
+    AdminCategoryListResponse,
+)
 from source.schemas.pydantic.admin_product import (
     AdminProductCreateRequest,
     AdminProductDetailResponse,
     AdminProductImageResponse,
+    AdminProductImagesSortResponse,
     AdminProductListQueryParams,
     AdminProductListResponse,
     AdminProductUpdateRequest,
@@ -56,6 +61,8 @@ from source.schemas.pydantic.admin_product import (
 )
 from source.services.category_cache import CategoryCacheService
 from source.services.admin_auth import PermissionService
+from source.services.admin_category import AdminCategoryService
+from source.services.admin_category_cache import AdminCategoryCacheService
 from source.services.admin_dashboard import AdminDashboardService
 from source.services.admin_dashboard_cache import AdminDashboardCacheService
 from source.services.admin_product import AdminProductService
@@ -68,6 +75,56 @@ from source.services.stock import StockMovementService, StockService
 from source.services.upload import UploadService
 
 router = APIRouter(prefix="/admin", tags=["admin-dashboard"])
+
+
+@router.get("/categories", response_model=AdminCategoryListResponse, status_code=status.HTTP_200_OK)
+@inject
+async def get_admin_categories(
+    token_payload: dict = Depends(verify_access_token),
+    current_user: User = Depends(get_current_user),
+    page: str = Query(default="1"),
+    limit: str = Query(default="50"),
+    q: str | None = Query(default=None),
+    parent_id: str | None = Query(default=None),
+    is_active: str | None = Query(default=None),
+    include_deleted: str = Query(default="false"),
+    session: FromDishka[AsyncSession] = None,
+    redis_service: FromDishka[RedisService] = None,
+    admin_category_service: FromDishka[AdminCategoryService] = None,
+    admin_category_cache_service: FromDishka[AdminCategoryCacheService] = None,
+    permission_service: FromDishka[PermissionService] = None,
+    category_repository: FromDishka[CategoryRepository] = None,
+    product_repository: FromDishka[ProductRepository] = None,
+) -> AdminCategoryListResponse:
+    if token_payload.get("token_type") != "access":
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь не авторизован")
+    try:
+        query = AdminCategoryListQueryParams(
+            page=page,
+            limit=limit,
+            q=q,
+            parent_id=parent_id,
+            is_active=is_active,
+            include_deleted=include_deleted,
+        )
+        return await admin_category_service.get_categories(
+            session=session,
+            redis_service=redis_service,
+            user=current_user,
+            query=query,
+            permission_service=permission_service,
+            category_repository=category_repository,
+            product_repository=product_repository,
+            admin_category_cache_service=admin_category_cache_service,
+        )
+    except ValidationError as error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Неверные параметры запроса") from error
+    except InvalidCredentialsError as error:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь не авторизован") from error
+    except AdminAuthAccessDeniedError as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Недостаточно прав") from error
+    except InactiveUserError as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Пользователь заблокирован") from error
 
 
 @router.get("/products", response_model=AdminProductListResponse, status_code=status.HTTP_200_OK)
@@ -419,6 +476,7 @@ async def create_admin_product(
     admin_product_service: FromDishka[AdminProductService] = None,
     product_cache_service: FromDishka[ProductCacheService] = None,
     admin_product_cache_service: FromDishka[AdminProductCacheService] = None,
+    admin_category_cache_service: FromDishka[AdminCategoryCacheService] = None,
     category_cache_service: FromDishka[CategoryCacheService] = None,
     permission_service: FromDishka[PermissionService] = None,
     product_repository: FromDishka[ProductRepository] = None,
@@ -440,6 +498,7 @@ async def create_admin_product(
             admin_audit_log_repository=admin_audit_log_repository,
             product_cache_service=product_cache_service,
             admin_product_cache_service=admin_product_cache_service,
+            admin_category_cache_service=admin_category_cache_service,
             category_cache_service=category_cache_service,
         )
     except ValidationError as error:
@@ -472,6 +531,7 @@ async def delete_admin_product(
     admin_product_service: FromDishka[AdminProductService] = None,
     product_cache_service: FromDishka[ProductCacheService] = None,
     admin_product_cache_service: FromDishka[AdminProductCacheService] = None,
+    admin_category_cache_service: FromDishka[AdminCategoryCacheService] = None,
     permission_service: FromDishka[PermissionService] = None,
     product_repository: FromDishka[ProductRepository] = None,
     order_item_repository: FromDishka[OrderItemRepository] = None,
@@ -492,6 +552,7 @@ async def delete_admin_product(
             admin_audit_log_repository=admin_audit_log_repository,
             product_cache_service=product_cache_service,
             admin_product_cache_service=admin_product_cache_service,
+            admin_category_cache_service=admin_category_cache_service,
         )
     except InvalidCredentialsError as error:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь не авторизован") from error
@@ -565,6 +626,7 @@ async def update_admin_product(
     admin_product_service: FromDishka[AdminProductService] = None,
     product_cache_service: FromDishka[ProductCacheService] = None,
     admin_product_cache_service: FromDishka[AdminProductCacheService] = None,
+    admin_category_cache_service: FromDishka[AdminCategoryCacheService] = None,
     permission_service: FromDishka[PermissionService] = None,
     product_repository: FromDishka[ProductRepository] = None,
     category_repository: FromDishka[CategoryRepository] = None,
@@ -586,6 +648,7 @@ async def update_admin_product(
             admin_audit_log_repository=admin_audit_log_repository,
             product_cache_service=product_cache_service,
             admin_product_cache_service=admin_product_cache_service,
+            admin_category_cache_service=admin_category_cache_service,
         )
     except ValidationError as error:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Неверные данные") from error

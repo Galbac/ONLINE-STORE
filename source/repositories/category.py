@@ -1,4 +1,4 @@
-from sqlalchemy import and_, func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from source.db.models.category import Category
@@ -10,6 +10,7 @@ from source.schemas.pydantic.category import (
     CategorySeoResponse,
     CategoryShortResponse,
 )
+from source.schemas.pydantic.admin_category import AdminCategoryListQueryParams
 
 
 class CategoryRepository:
@@ -67,6 +68,48 @@ class CategoryRepository:
         query: CategoryListQueryParams,
     ) -> int:
         categories_subquery = self._base_statement(query=query).subquery()
+        result = await session.execute(select(func.count()).select_from(categories_subquery))
+        return int(result.scalar_one())
+
+    def _admin_statement(self, *, query: AdminCategoryListQueryParams):
+        statement = select(Category)
+        if not query.include_deleted:
+            statement = statement.where(Category.is_deleted.is_(False))
+        if query.q is not None:
+            search_pattern = f"%{query.q}%"
+            statement = statement.where(
+                or_(
+                    Category.name.ilike(search_pattern),
+                    Category.slug.ilike(search_pattern),
+                ),
+            )
+        if query.parent_id is not None:
+            statement = statement.where(Category.parent_id == query.parent_id)
+        if query.is_active is not None:
+            statement = statement.where(Category.is_active.is_(query.is_active))
+        return statement
+
+    async def admin_get_list(
+        self,
+        *,
+        session: AsyncSession,
+        query: AdminCategoryListQueryParams,
+    ) -> list[Category]:
+        result = await session.execute(
+            self._admin_statement(query=query)
+            .order_by(Category.sort_order.asc(), Category.name.asc())
+            .limit(query.limit)
+            .offset(query.offset),
+        )
+        return list(result.scalars().all())
+
+    async def admin_count(
+        self,
+        *,
+        session: AsyncSession,
+        query: AdminCategoryListQueryParams,
+    ) -> int:
+        categories_subquery = self._admin_statement(query=query).subquery()
         result = await session.execute(select(func.count()).select_from(categories_subquery))
         return int(result.scalar_one())
 
