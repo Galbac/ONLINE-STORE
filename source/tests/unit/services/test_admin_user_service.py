@@ -6,8 +6,10 @@ import pytest
 
 from source.config.settings import settings
 from source.db.models.choises.enum import UserRole
-from source.errors.auth import AdminAuthAccessDeniedError, AdminUserNotFoundError
-from source.schemas.pydantic.user import AdminUserDetailResponse, AdminUserListQueryParams, AdminUserListResponse
+from pydantic import ValidationError
+
+from source.errors.auth import AdminAuthAccessDeniedError, AdminUserNotFoundError, UserEmailAlreadyExistsError, UserPhoneAlreadyExistsError
+from source.schemas.pydantic.user import AdminUserDetailResponse, AdminUserListQueryParams, AdminUserListResponse, AdminUserUpdateRequest
 from source.services.admin_auth import PermissionService
 from source.services.admin_user import AdminUserService
 from source.utils.query_hash import build_query_hash
@@ -18,6 +20,8 @@ class FakeRedisService:
     def __init__(self) -> None:
         self.values = {}
         self.ttls = {}
+        self.deleted = []
+        self.deleted_patterns = []
 
     async def get(self, key: str):
         return self.values.get(key)
@@ -26,6 +30,13 @@ class FakeRedisService:
         self.values[key] = value
         if ttl_seconds is not None:
             self.ttls[key] = ttl_seconds
+
+    async def delete(self, key: str) -> None:
+        self.deleted.append(key)
+        self.values.pop(key, None)
+
+    async def delete_by_pattern(self, pattern: str) -> None:
+        self.deleted_patterns.append(pattern)
 
 
 class FakeUserRepository:
@@ -46,6 +57,15 @@ class FakeUserRepository:
 
     async def get_by_id(self, *, session, user_id: int):
         return next((user for user in self.users if user.id == user_id), None)
+
+    async def get_by_phone(self, *, session, phone: str):
+        return next((user for user in self.users if user.phone == phone), None)
+
+    async def get_by_email(self, *, session, email: str):
+        return next((user for user in self.users if user.email == email), None)
+
+    async def update(self, *, session, user):
+        return user
 
     def _filter(self, *, query: AdminUserListQueryParams):
         users = [user for user in self.users if user.role == UserRole.CUSTOMER]
@@ -103,6 +123,42 @@ class FakeAddressRepository:
         offset: int = 0,
     ):
         return self.addresses[offset : offset + limit]
+
+
+class FakeCommiter:
+    def __init__(self) -> None:
+        self.committed = False
+        self.rolled_back = False
+
+    async def commit(self) -> None:
+        self.committed = True
+
+    async def rollback(self) -> None:
+        self.rolled_back = True
+
+
+class FakeAuditLogRepository:
+    def __init__(self) -> None:
+        self.logs = []
+
+    async def create(self, *, session, **data):
+        self.logs.append(data)
+        return SimpleNamespace(**data)
+
+
+class FakeUserCacheService:
+    async def delete_user_me_cache(self, *, redis_service, user_id: int) -> None:
+        await redis_service.delete(f"users:me:{user_id}")
+
+
+class FakeAuthCacheService:
+    async def delete_current_user_cache(self, *, redis_service, user_id: int) -> None:
+        await redis_service.delete(f"auth:me:user:{user_id}")
+
+
+class FakeProfileCacheService:
+    async def delete_summary(self, *, redis_service, user_id: int) -> None:
+        await redis_service.delete(f"profile:summary:{user_id}")
 
 
 def build_admin(*, role=UserRole.ADMIN):
@@ -203,6 +259,42 @@ async def get_user_detail(
         user_repository=user_repository or FakeUserRepository(users or []),
         address_repository=address_repository or FakeAddressRepository(),
         order_repository=order_repository or FakeOrderRepository(),
+    )
+
+
+async def update_user(
+    *,
+    users=None,
+    user_id: int = 1,
+    data: AdminUserUpdateRequest | None = None,
+    redis_service=None,
+    role=UserRole.ADMIN,
+    user_repository=None,
+    audit_log_repository=None,
+    commiter=None,
+):
+    redis_service = redis_service or FakeRedisService()
+    audit_log_repository = audit_log_repository or FakeAuditLogRepository()
+    commiter = commiter or FakeCommiter()
+    response = await AdminUserService().update_user(
+        session=None,
+        redis_service=redis_service,
+        user=build_admin(role=role),
+        user_id=user_id,
+        data=data or AdminUserUpdateRequest(name="Иван Петров"),
+        commiter=commiter,
+        permission_service=PermissionService(),
+        user_repository=user_repository or FakeUserRepository(users or []),
+        admin_audit_log_repository=audit_log_repository,
+        user_cache_service=FakeUserCacheService(),
+        auth_cache_service=FakeAuthCacheService(),
+        profile_cache_service=FakeProfileCacheService(),
+    )
+    return SimpleNamespace(
+        response=response,
+        redis_service=redis_service,
+        audit_log_repository=audit_log_repository,
+        commiter=commiter,
     )
 
 
@@ -393,3 +485,80 @@ async def test_admin_get_user_detail_response_is_cached() -> None:
 
     assert "admin:users:detail:1" in redis_service.values
     assert redis_service.ttls["admin:users:detail:1"] == settings.admin_users.detail_cache_ttl_seconds
+
+
+@pytest.mark.asyncio
+async def test_admin_update_user_success() -> None:
+    user = build_user(user_id=1)
+
+    result = await update_user(
+        users=[user],
+        data=AdminUserUpdateRequest(
+            name="Иван Петров",
+            phone="+79991112233",
+            email="ivan.petrov@example.com",
+            is_active=True,
+        ),
+    )
+
+    assert result.response.id == 1
+    assert result.response.name == "Иван Петров"
+    assert result.response.phone == "+79991112233"
+    assert result.response.email == "ivan.petrov@example.com"
+    assert result.commiter.committed is True
+    assert result.audit_log_repository.logs[0]["event"] == "admin_user_update"
+
+
+@pytest.mark.asyncio
+async def test_admin_update_user_phone_already_exists_error() -> None:
+    with pytest.raises(UserPhoneAlreadyExistsError):
+        await update_user(
+            users=[
+                build_user(user_id=1, phone="+79990000000"),
+                build_user(user_id=2, phone="+79991112233"),
+            ],
+            data=AdminUserUpdateRequest(phone="+79991112233"),
+        )
+
+
+@pytest.mark.asyncio
+async def test_admin_update_user_email_already_exists_error() -> None:
+    with pytest.raises(UserEmailAlreadyExistsError):
+        await update_user(
+            users=[
+                build_user(user_id=1, email="ivan@example.com"),
+                build_user(user_id=2, email="petr@example.com"),
+            ],
+            data=AdminUserUpdateRequest(email="petr@example.com"),
+        )
+
+
+def test_admin_update_user_role_is_forbidden() -> None:
+    with pytest.raises(ValidationError):
+        AdminUserUpdateRequest.model_validate({"role": "admin"})
+
+
+def test_admin_update_user_password_hash_is_forbidden() -> None:
+    with pytest.raises(ValidationError):
+        AdminUserUpdateRequest.model_validate({"password_hash": "new-hash"})
+
+
+@pytest.mark.asyncio
+async def test_admin_update_user_no_permission_error() -> None:
+    with pytest.raises(AdminAuthAccessDeniedError):
+        await update_user(
+            users=[build_user(user_id=1)],
+            role=UserRole.CONTENT_MANAGER,
+        )
+
+
+@pytest.mark.asyncio
+async def test_admin_update_user_invalidates_cache() -> None:
+    redis_service = FakeRedisService()
+
+    result = await update_user(redis_service=redis_service, users=[build_user(user_id=1)])
+
+    assert "admin:users:*" in result.redis_service.deleted_patterns
+    assert "users:me:1" in result.redis_service.deleted
+    assert "auth:me:user:1" in result.redis_service.deleted
+    assert "profile:summary:1" in result.redis_service.deleted

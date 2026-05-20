@@ -2,7 +2,7 @@ from datetime import date, datetime
 
 from decimal import Decimal
 
-from pydantic import BaseModel, EmailStr, Field, computed_field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, computed_field, field_validator, model_validator
 
 from source.db.models.choises.enum import UserRole
 from source.utils.user_profile import normalize_email, validate_phone
@@ -160,3 +160,42 @@ class AdminUserDetailResponse(BaseModel):
     addresses: list[AdminUserAddressResponse]
     recent_orders: list[AdminUserOrderShortResponse]
     created_at: datetime
+
+
+class AdminUserUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str | None = Field(default=None, min_length=2, max_length=100)
+    phone: str | None = Field(default=None, min_length=5, max_length=32)
+    email: EmailStr | None = None
+    is_active: bool | None = None
+
+    @field_validator("name", "phone", mode="before")
+    @classmethod
+    def strip_string(cls, value: str | None) -> str | None:
+        if isinstance(value, str):
+            return value.strip()
+        return value
+
+    @field_validator("phone")
+    @classmethod
+    def validate_phone(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        return validate_phone(value)
+
+    @field_validator("email")
+    @classmethod
+    def normalize_email(cls, value: EmailStr | None) -> str | None:
+        if value is None:
+            return value
+        return normalize_email(value)
+
+
+class AdminUserUpdateResponse(BaseModel):
+    id: int
+    name: str
+    phone: str
+    email: EmailStr | None
+    is_active: bool
+    updated_at: datetime

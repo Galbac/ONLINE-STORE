@@ -1,7 +1,15 @@
+from datetime import datetime
 from decimal import Decimal
 
 from source.config.settings import settings
-from source.errors.auth import AdminAuthAccessDeniedError, AdminUserNotFoundError, InactiveUserError
+from source.errors.auth import (
+    AdminAuthAccessDeniedError,
+    AdminUserNotFoundError,
+    EmptyUserProfileUpdateError,
+    InactiveUserError,
+    UserEmailAlreadyExistsError,
+    UserPhoneAlreadyExistsError,
+)
 from source.schemas.pydantic.user import (
     AdminUserAddressResponse,
     AdminUserDetailResponse,
@@ -9,6 +17,8 @@ from source.schemas.pydantic.user import (
     AdminUserListQueryParams,
     AdminUserListResponse,
     AdminUserOrderShortResponse,
+    AdminUserUpdateRequest,
+    AdminUserUpdateResponse,
 )
 from source.services.admin_auth import STAFF_ROLES
 from source.services.redis import RedisService
@@ -23,6 +33,14 @@ class AdminUserService:
         if user.role not in STAFF_ROLES:
             raise AdminAuthAccessDeniedError
         if "admin:users:read" not in permission_service.get_user_permissions(role=user.role):
+            raise AdminAuthAccessDeniedError
+
+    def _check_update_permission(self, *, user, permission_service) -> None:
+        if not user.is_active or user.is_deleted:
+            raise InactiveUserError
+        if user.role not in STAFF_ROLES:
+            raise AdminAuthAccessDeniedError
+        if "admin:users:update" not in permission_service.get_user_permissions(role=user.role):
             raise AdminAuthAccessDeniedError
 
     async def get_users(
@@ -122,6 +140,87 @@ class AdminUserService:
             ttl_seconds=settings.admin_users.detail_cache_ttl_seconds,
         )
         return response
+
+    async def update_user(
+        self,
+        *,
+        session,
+        redis_service: RedisService,
+        user,
+        user_id: int,
+        data: AdminUserUpdateRequest,
+        commiter,
+        permission_service,
+        user_repository,
+        admin_audit_log_repository,
+        user_cache_service,
+        auth_cache_service,
+        profile_cache_service,
+    ) -> AdminUserUpdateResponse:
+        self._check_update_permission(user=user, permission_service=permission_service)
+
+        update_fields = data.model_dump(exclude_unset=True)
+        if not update_fields:
+            raise EmptyUserProfileUpdateError
+
+        customer = await user_repository.get_by_id(session=session, user_id=user_id)
+        if customer is None:
+            raise AdminUserNotFoundError
+
+        if "phone" in update_fields and update_fields["phone"] != customer.phone:
+            existing_user = await user_repository.get_by_phone(session=session, phone=update_fields["phone"])
+            if existing_user is not None and existing_user.id != customer.id:
+                raise UserPhoneAlreadyExistsError
+        if "email" in update_fields and update_fields["email"] != customer.email:
+            email = update_fields["email"]
+            if email is not None:
+                existing_user = await user_repository.get_by_email(session=session, email=email)
+                if existing_user is not None and existing_user.id != customer.id:
+                    raise UserEmailAlreadyExistsError
+
+        before = {
+            field: getattr(customer, field)
+            for field in update_fields
+        }
+        for field, value in update_fields.items():
+            setattr(customer, field, value)
+        customer.updated_date = datetime.now(settings.tz)
+        updated_user = await user_repository.update(session=session, user=customer)
+
+        changes = {
+            field: {
+                "old": str(before[field]) if before[field] is not None else None,
+                "new": str(getattr(updated_user, field)) if getattr(updated_user, field) is not None else None,
+            }
+            for field in update_fields
+            if before[field] != getattr(updated_user, field)
+        }
+        await admin_audit_log_repository.create(
+            session=session,
+            user_id=user.id,
+            login=getattr(user, "email", None) or getattr(user, "phone", None) or str(user.id),
+            event="admin_user_update",
+            status="success",
+            details={
+                "target_user_id": updated_user.id,
+                "changes": changes,
+            },
+        )
+        await commiter.commit()
+
+        await redis_service.delete_by_pattern("admin:users:*")
+        await user_cache_service.delete_user_me_cache(redis_service=redis_service, user_id=updated_user.id)
+        await auth_cache_service.delete_current_user_cache(redis_service=redis_service, user_id=updated_user.id)
+        await profile_cache_service.delete_summary(redis_service=redis_service, user_id=updated_user.id)
+
+        return AdminUserUpdateResponse(
+            id=updated_user.id,
+            name=updated_user.name,
+            phone=updated_user.phone,
+            email=updated_user.email,
+            is_active=updated_user.is_active,
+            updated_at=updated_user.updated_date,
+        )
 
     def _build_user_response(self, *, customer, stats) -> AdminUserListItemResponse:
         return AdminUserListItemResponse(
