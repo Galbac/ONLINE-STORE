@@ -195,6 +195,26 @@ class CategoryRepository:
             pending_ids.extend(children_by_parent_id.get(current_id, []))
         return descendant_ids
 
+    async def get_by_ids(
+        self,
+        *,
+        session: AsyncSession,
+        category_ids: list[int],
+    ) -> list[Category]:
+        result = await session.execute(
+            select(Category).where(
+                Category.id.in_(category_ids),
+                Category.is_deleted.is_(False),
+            ),
+        )
+        return list(result.scalars().all())
+
+    async def get_all_active_for_tree(self, *, session: AsyncSession) -> list[Category]:
+        result = await session.execute(
+            select(Category).where(Category.is_deleted.is_(False)),
+        )
+        return list(result.scalars().all())
+
     async def update(
         self,
         *,
@@ -240,6 +260,21 @@ class CategoryRepository:
         await session.flush()
         await session.refresh(category)
         return category
+
+    async def bulk_update_sort(
+        self,
+        *,
+        session: AsyncSession,
+        categories_by_id: dict[int, Category],
+        updates_by_id: dict[int, dict],
+    ) -> list[Category]:
+        for category_id, update_data in updates_by_id.items():
+            category = categories_by_id[category_id]
+            category.parent_id = update_data["parent_id"]
+            category.sort_order = update_data["sort_order"]
+            session.add(category)
+        await session.flush()
+        return list(categories_by_id.values())
 
     async def get_active_all(
         self,

@@ -45,6 +45,7 @@ from source.schemas.pydantic.admin_category import (
     AdminCategoryDetailResponse,
     AdminCategoryListQueryParams,
     AdminCategoryListResponse,
+    AdminCategorySortRequest,
     AdminCategoryUpdateRequest,
     MessageResponse as AdminCategoryMessageResponse,
 )
@@ -183,6 +184,59 @@ async def create_admin_category(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Изображение не найдено") from error
     except CategorySlugAlreadyExistsError as error:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Slug уже занят") from error
+
+
+@router.patch(
+    "/categories/sort",
+    response_model=AdminCategoryMessageResponse,
+    status_code=status.HTTP_200_OK,
+)
+@inject
+async def sort_admin_categories(
+    payload: dict = Body(...),
+    token_payload: dict = Depends(verify_access_token),
+    current_user: User = Depends(get_current_user),
+    session: FromDishka[AsyncSession] = None,
+    redis_service: FromDishka[RedisService] = None,
+    commiter: FromDishka[Commiter] = None,
+    admin_category_service: FromDishka[AdminCategoryService] = None,
+    admin_category_cache_service: FromDishka[AdminCategoryCacheService] = None,
+    category_cache_service: FromDishka[CategoryCacheService] = None,
+    permission_service: FromDishka[PermissionService] = None,
+    category_tree_service: FromDishka[CategoryTreeService] = None,
+    category_repository: FromDishka[CategoryRepository] = None,
+    admin_audit_log_repository: FromDishka[AdminAuditLogRepository] = None,
+    audit_log_service: FromDishka[AuditLogService] = None,
+) -> AdminCategoryMessageResponse:
+    if token_payload.get("token_type") != "access":
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь не авторизован")
+    try:
+        return await admin_category_service.sort_categories(
+            session=session,
+            redis_service=redis_service,
+            user=current_user,
+            data=AdminCategorySortRequest.model_validate(payload),
+            commiter=commiter,
+            permission_service=permission_service,
+            category_repository=category_repository,
+            admin_audit_log_repository=admin_audit_log_repository,
+            audit_log_service=audit_log_service,
+            category_tree_service=category_tree_service,
+            category_cache_service=category_cache_service,
+            admin_category_cache_service=admin_category_cache_service,
+        )
+    except ValidationError as error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Неверные данные") from error
+    except CategoryCycleError as error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Циклическая вложенность запрещена") from error
+    except InvalidCredentialsError as error:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь не авторизован") from error
+    except AdminAuthAccessDeniedError as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Недостаточно прав") from error
+    except InactiveUserError as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Пользователь заблокирован") from error
+    except CategoryNotFoundError as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Категория не найдена") from error
 
 
 @router.get(

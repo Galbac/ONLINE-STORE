@@ -99,6 +99,16 @@ class AdminCategoryUpdateRequest(BaseModel):
         return self
 
 
+class AdminCategorySortItemRequest(BaseModel):
+    category_id: int = Field(gt=0)
+    parent_id: int | None = Field(default=None, gt=0)
+    sort_order: int = Field(ge=0)
+
+
+class AdminCategorySortRequest(BaseModel):
+    items: list[AdminCategorySortItemRequest] = Field(min_length=1)
+
+
 class AdminCategoryListItemResponse(BaseModel):
     id: int
     name: str

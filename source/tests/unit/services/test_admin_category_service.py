@@ -14,6 +14,7 @@ from source.schemas.pydantic.admin_category import (
     AdminCategoryDetailResponse,
     AdminCategoryListQueryParams,
     AdminCategoryListResponse,
+    AdminCategorySortRequest,
     AdminCategoryUpdateRequest,
 )
 from source.services.admin_auth import AuditLogService, PermissionService
@@ -43,9 +44,10 @@ class FakeRedisService:
 
 
 class FakeCategoryRepository:
-    def __init__(self, *, categories: list[SimpleNamespace]) -> None:
+    def __init__(self, *, categories: list[SimpleNamespace], fail_bulk_update: bool = False) -> None:
         self.categories = categories
         self.called = False
+        self.fail_bulk_update = fail_bulk_update
 
     async def admin_get_list(self, *, session, query: AdminCategoryListQueryParams):
         self.called = True
@@ -79,6 +81,16 @@ class FakeCategoryRepository:
             ),
             None,
         )
+
+    async def get_by_ids(self, *, session, category_ids: list[int]):
+        return [
+            category
+            for category in self.categories
+            if category.id in category_ids and not category.is_deleted
+        ]
+
+    async def get_all_active_for_tree(self, *, session):
+        return [category for category in self.categories if not category.is_deleted]
 
     async def get_children(self, *, session, parent_id: int):
         return sorted(
@@ -123,6 +135,14 @@ class FakeCategoryRepository:
         category.deleted_at = deleted_at
         category.deleted_by = deleted_by
         return category
+
+    async def bulk_update_sort(self, *, session, categories_by_id: dict[int, SimpleNamespace], updates_by_id: dict[int, dict]):
+        if self.fail_bulk_update:
+            raise RuntimeError("bulk update failed")
+        for category_id, update_data in updates_by_id.items():
+            categories_by_id[category_id].parent_id = update_data["parent_id"]
+            categories_by_id[category_id].sort_order = update_data["sort_order"]
+        return list(categories_by_id.values())
 
     async def create(self, *, session, data: AdminCategoryCreateRequest, slug: str, image_url: str | None):
         category = SimpleNamespace(
@@ -192,9 +212,13 @@ class FakeAuditLogRepository:
 class FakeCommiter:
     def __init__(self) -> None:
         self.committed = False
+        self.rolled_back = False
 
     async def commit(self) -> None:
         self.committed = True
+
+    async def rollback(self) -> None:
+        self.rolled_back = True
 
 
 def build_user(*, role=UserRole.ADMIN, is_active: bool = True, is_deleted: bool = False):
@@ -404,6 +428,38 @@ async def delete_category(
         category_cache_service=CategoryCacheService(),
         admin_category_cache_service=AdminCategoryCacheService(),
         product_cache_service=FakeProductCacheService(),
+    )
+
+
+async def sort_categories(
+    *,
+    redis_service=None,
+    user=None,
+    category_repository=None,
+    audit_log_repository=None,
+    commiter=None,
+    data=None,
+):
+    return await AdminCategoryService().sort_categories(
+        session=None,
+        redis_service=redis_service or FakeRedisService(),
+        user=user or build_user(),
+        data=data
+        or AdminCategorySortRequest(
+            items=[
+                {"category_id": 1, "parent_id": None, "sort_order": 10},
+                {"category_id": 2, "parent_id": None, "sort_order": 20},
+                {"category_id": 11, "parent_id": 1, "sort_order": 10},
+            ],
+        ),
+        commiter=commiter or FakeCommiter(),
+        permission_service=PermissionService(),
+        category_repository=category_repository or build_category_repository(),
+        admin_audit_log_repository=audit_log_repository or FakeAuditLogRepository(),
+        audit_log_service=AuditLogService(),
+        category_tree_service=CategoryTreeService(),
+        category_cache_service=CategoryCacheService(),
+        admin_category_cache_service=AdminCategoryCacheService(),
     )
 
 
@@ -827,3 +883,132 @@ async def test_admin_category_delete_audit_log_created() -> None:
     assert audit_log_repository.logs[0]["event"] == "admin_category_delete"
     assert audit_log_repository.logs[0]["status"] == "success"
     assert audit_log_repository.logs[0]["details"]["category_id"] == 2
+
+
+@pytest.mark.asyncio
+async def test_admin_categories_sort_success() -> None:
+    category_repository = build_category_repository()
+    commiter = FakeCommiter()
+
+    response = await sort_categories(
+        category_repository=category_repository,
+        commiter=commiter,
+        data=AdminCategorySortRequest(
+            items=[
+                {"category_id": 1, "parent_id": None, "sort_order": 20},
+                {"category_id": 2, "parent_id": None, "sort_order": 10},
+            ],
+        ),
+    )
+    category = await category_repository.admin_get_by_id(session=None, category_id=1)
+
+    assert response.message == "Порядок категорий обновлён"
+    assert category.sort_order == 20
+    assert commiter.committed is True
+
+
+@pytest.mark.asyncio
+async def test_admin_categories_sort_move_to_new_parent() -> None:
+    category_repository = build_category_repository()
+
+    await sort_categories(
+        category_repository=category_repository,
+        data=AdminCategorySortRequest(
+            items=[
+                {"category_id": 2, "parent_id": 1, "sort_order": 30},
+            ],
+        ),
+    )
+    category = await category_repository.admin_get_by_id(session=None, category_id=2)
+
+    assert category.parent_id == 1
+    assert category.sort_order == 30
+
+
+@pytest.mark.asyncio
+async def test_admin_categories_sort_cycle_error() -> None:
+    with pytest.raises(CategoryCycleError):
+        await sort_categories(
+            data=AdminCategorySortRequest(
+                items=[
+                    {"category_id": 1, "parent_id": 111, "sort_order": 10},
+                ],
+            ),
+        )
+
+
+@pytest.mark.asyncio
+async def test_admin_categories_sort_not_found_error() -> None:
+    with pytest.raises(CategoryNotFoundError):
+        await sort_categories(
+            data=AdminCategorySortRequest(
+                items=[
+                    {"category_id": 999, "parent_id": None, "sort_order": 10},
+                ],
+            ),
+        )
+
+
+@pytest.mark.asyncio
+async def test_admin_categories_sort_parent_not_found_error() -> None:
+    with pytest.raises(CategoryNotFoundError):
+        await sort_categories(
+            data=AdminCategorySortRequest(
+                items=[
+                    {"category_id": 2, "parent_id": 999, "sort_order": 10},
+                ],
+            ),
+        )
+
+
+def test_admin_categories_sort_empty_items_error() -> None:
+    with pytest.raises(ValueError):
+        AdminCategorySortRequest(items=[])
+
+
+@pytest.mark.asyncio
+async def test_admin_categories_sort_rollback_on_error() -> None:
+    commiter = FakeCommiter()
+    category_repository = FakeCategoryRepository(
+        categories=build_category_repository().categories,
+        fail_bulk_update=True,
+    )
+
+    with pytest.raises(RuntimeError):
+        await sort_categories(
+            category_repository=category_repository,
+            commiter=commiter,
+            data=AdminCategorySortRequest(
+                items=[
+                    {"category_id": 2, "parent_id": None, "sort_order": 50},
+                ],
+            ),
+        )
+
+    assert commiter.rolled_back is True
+    assert commiter.committed is False
+
+
+@pytest.mark.asyncio
+async def test_admin_categories_sort_invalidates_cache() -> None:
+    redis_service = FakeRedisService()
+
+    await sort_categories(redis_service=redis_service)
+
+    assert "admin:categories:*" in redis_service.deleted_patterns
+    assert "categories:list:*" in redis_service.deleted_patterns
+    assert "categories:tree:*" in redis_service.deleted_patterns
+    assert "categories:detail:*" in redis_service.deleted_patterns
+    assert "categories:slug:*" in redis_service.deleted_patterns
+
+
+@pytest.mark.asyncio
+async def test_admin_categories_sort_audit_log_created() -> None:
+    audit_log_repository = FakeAuditLogRepository()
+
+    await sort_categories(audit_log_repository=audit_log_repository)
+
+    assert len(audit_log_repository.logs) == 1
+    assert audit_log_repository.logs[0]["event"] == "admin_categories_sort"
+    assert audit_log_repository.logs[0]["status"] == "success"
+    assert audit_log_repository.logs[0]["details"]["items"][0]["category_id"] == 1

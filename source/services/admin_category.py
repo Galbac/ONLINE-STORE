@@ -19,6 +19,7 @@ from source.schemas.pydantic.admin_category import (
     AdminCategoryListResponse,
     AdminCategorySeoResponse,
     AdminCategoryShortResponse,
+    AdminCategorySortRequest,
     AdminCategoryUpdateRequest,
     MessageResponse,
 )
@@ -450,6 +451,83 @@ class AdminCategoryService:
 
         return MessageResponse(message="Категория удалена")
 
+    async def sort_categories(
+        self,
+        *,
+        session,
+        redis_service: RedisService,
+        user,
+        data: AdminCategorySortRequest,
+        commiter,
+        permission_service,
+        category_repository,
+        admin_audit_log_repository,
+        audit_log_service,
+        category_tree_service,
+        category_cache_service,
+        admin_category_cache_service,
+    ) -> MessageResponse:
+        try:
+            self._check_update_permission(user=user, permission_service=permission_service)
+
+            category_ids = [item.category_id for item in data.items]
+            categories = await category_repository.get_by_ids(session=session, category_ids=category_ids)
+            if len(categories) != len(set(category_ids)):
+                raise CategoryNotFoundError
+
+            parent_ids = {item.parent_id for item in data.items if item.parent_id is not None}
+            if parent_ids:
+                parents = await category_repository.get_by_ids(session=session, category_ids=list(parent_ids))
+                if len(parents) != len(parent_ids):
+                    raise CategoryNotFoundError
+
+            categories_by_id = {category.id: category for category in categories}
+            updates_by_id = {
+                item.category_id: {
+                    "parent_id": item.parent_id,
+                    "sort_order": item.sort_order,
+                }
+                for item in data.items
+            }
+            await category_tree_service.validate_no_cycles(
+                session=session,
+                category_repository=category_repository,
+                updates_by_id=updates_by_id,
+            )
+
+            await category_repository.bulk_update_sort(
+                session=session,
+                categories_by_id=categories_by_id,
+                updates_by_id=updates_by_id,
+            )
+            await audit_log_service.log_action(
+                session=session,
+                audit_log_repository=admin_audit_log_repository,
+                user_id=user.id,
+                login=getattr(user, "email", None) or getattr(user, "phone", None) or str(user.id),
+                event="admin_categories_sort",
+                status="success",
+                details={
+                    "items": [
+                        {
+                            "category_id": item.category_id,
+                            "parent_id": item.parent_id,
+                            "sort_order": item.sort_order,
+                        }
+                        for item in data.items
+                    ],
+                },
+            )
+            await commiter.commit()
+
+            await admin_category_cache_service.invalidate_all(redis_service=redis_service)
+            await category_cache_service.invalidate_all(redis_service=redis_service)
+
+            return MessageResponse(message="Порядок категорий обновлён")
+        except Exception:
+            await commiter.rollback()
+            raise
+
 
 class CategoryTreeService:
     async def validate_no_cycle(
@@ -468,3 +546,27 @@ class CategoryTreeService:
         )
         if parent_id in descendant_ids:
             raise CategoryCycleError
+
+    async def validate_no_cycles(
+        self,
+        *,
+        session,
+        category_repository,
+        updates_by_id: dict[int, dict],
+    ) -> None:
+        categories = await category_repository.get_all_active_for_tree(session=session)
+        parent_by_id = {
+            category.id: category.parent_id
+            for category in categories
+        }
+        for category_id, update_data in updates_by_id.items():
+            parent_by_id[category_id] = update_data["parent_id"]
+
+        for category_id in parent_by_id:
+            seen_ids: set[int] = set()
+            current_id = category_id
+            while current_id is not None:
+                if current_id in seen_ids:
+                    raise CategoryCycleError
+                seen_ids.add(current_id)
+                current_id = parent_by_id.get(current_id)
