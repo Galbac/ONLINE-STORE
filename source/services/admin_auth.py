@@ -53,6 +53,7 @@ ADMIN_PERMISSIONS_BY_ROLE = {
         "admin:orders:manage",
         "admin:orders:cancel",
         "admin:orders:confirm",
+        "admin:orders:print",
         "admin:orders:sync_1c",
         "admin:orders:update",
         "admin:orders:update_status",
@@ -74,6 +75,7 @@ ADMIN_PERMISSIONS_BY_ROLE = {
         "admin:orders:manage",
         "admin:orders:cancel",
         "admin:orders:confirm",
+        "admin:orders:print",
         "admin:orders:sync_1c",
         "admin:orders:update",
         "admin:orders:update_status",
@@ -87,7 +89,7 @@ ADMIN_PERMISSIONS_BY_ROLE = {
         "admin:products:read",
         "admin:products:manage",
     ],
-    UserRole.PICKER: ["admin:dashboard:read", "admin:orders:pick"],
+    UserRole.PICKER: ["admin:dashboard:read", "admin:orders:pick", "admin:orders:print"],
     UserRole.COURIER: ["admin:dashboard:read", "admin:orders:deliver"],
 }
 

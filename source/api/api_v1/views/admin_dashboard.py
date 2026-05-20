@@ -2,6 +2,7 @@ from dishka.integrations.fastapi import FromDishka, inject
 from datetime import date
 
 from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Path, Query, UploadFile, status
+from fastapi.responses import HTMLResponse
 from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -25,6 +26,7 @@ from source.errors.auth import (
     OrderInvalidStatusError,
     OrderItemsNotFoundError,
     OrderNotFoundError,
+    OrderPrintFormatError,
     OrderStatusTransitionError,
     OrderUpdateNotAllowedError,
     OrderUnavailableItemsError,
@@ -97,6 +99,7 @@ from source.schemas.pydantic.order import (
     AdminOrderDetailResponse,
     AdminOrderListQueryParams,
     AdminOrderListResponse,
+    AdminOrderPrintResponse,
     AdminOrderStatusResponse,
     AdminOrderStatusUpdateRequest,
     AdminOrderSync1CRequest,
@@ -111,6 +114,7 @@ from source.services.admin_category_cache import AdminCategoryCacheService
 from source.services.admin_dashboard import AdminDashboardService
 from source.services.admin_dashboard_cache import AdminDashboardCacheService
 from source.services.admin_order import AdminOrderService
+from source.services.admin_order_print import AdminOrderPrintService
 from source.services.admin_product import AdminProductService
 from source.services.admin_product_cache import AdminProductCacheService
 from source.services.admin_product_image import AdminProductImageService
@@ -605,6 +609,50 @@ async def get_admin_order_detail(
             order_status_history_repository=order_status_history_repository,
             order_cache_service=order_cache_service,
         )
+    except InvalidCredentialsError as error:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь не авторизован") from error
+    except AdminAuthAccessDeniedError as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Недостаточно прав") from error
+    except InactiveUserError as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Пользователь заблокирован") from error
+    except OrderNotFoundError as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Заказ не найден") from error
+
+
+@router.get("/orders/{order_id}/print", status_code=status.HTTP_200_OK)
+@inject
+async def get_admin_order_print(
+    token_payload: dict = Depends(verify_access_token),
+    current_user: User = Depends(get_current_user),
+    order_id: int = Path(ge=1),
+    format: str = Query(default="html"),
+    session: FromDishka[AsyncSession] = None,
+    admin_order_print_service: FromDishka[AdminOrderPrintService] = None,
+    permission_service: FromDishka[PermissionService] = None,
+    order_repository: FromDishka[OrderRepository] = None,
+    order_item_repository: FromDishka[OrderItemRepository] = None,
+    address_repository: FromDishka[AddressRepository] = None,
+    pickup_point_repository: FromDishka[PickupPointRepository] = None,
+):
+    if token_payload.get("token_type") != "access":
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь не авторизован")
+    try:
+        response_format = admin_order_print_service.validate_format(format=format)
+        print_data = await admin_order_print_service.get_print_data(
+            session=session,
+            user=current_user,
+            order_id=order_id,
+            permission_service=permission_service,
+            order_repository=order_repository,
+            order_item_repository=order_item_repository,
+            address_repository=address_repository,
+            pickup_point_repository=pickup_point_repository,
+        )
+        if response_format == "json":
+            return print_data
+        return HTMLResponse(content=admin_order_print_service.render_html(data=print_data))
+    except OrderPrintFormatError as error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Неверный format") from error
     except InvalidCredentialsError as error:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь не авторизован") from error
     except AdminAuthAccessDeniedError as error:

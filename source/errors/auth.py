@@ -118,6 +118,10 @@ class OrderAccessDeniedError(Exception):
     pass
 
 
+class OrderPrintFormatError(Exception):
+    pass
+
+
 class OrderItemsNotFoundError(Exception):
     pass
 

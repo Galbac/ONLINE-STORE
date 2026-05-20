@@ -279,6 +279,26 @@ class AdminOrderDetailResponse(BaseModel):
     created_at: datetime
 
 
+class AdminOrderPrintItemResponse(BaseModel):
+    name: str
+    quantity: Decimal
+    unit: str
+    comment: str | None = None
+
+
+class AdminOrderPrintResponse(BaseModel):
+    order_number: str
+    created_at: datetime
+    customer_name: str
+    customer_phone: str
+    customer_email: str | None = None
+    delivery_type: str
+    address: str | None = None
+    items: list[AdminOrderPrintItemResponse]
+    comment: str | None = None
+    final_price: Decimal
+
+
 class AdminOrderStatusUpdateRequest(BaseModel):
     status: str = Field(min_length=1, max_length=50)
     comment: str | None = Field(default=None, max_length=500)

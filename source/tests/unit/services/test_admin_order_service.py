@@ -13,6 +13,7 @@ from source.errors.auth import (
     OrderConfirmNotAllowedError,
     OrderFieldNotEditableError,
     OrderNotFoundError,
+    OrderPrintFormatError,
     OrderAlreadySyncedError,
     OrderStatusTransitionError,
     OrderUpdateNotAllowedError,
@@ -29,6 +30,7 @@ from source.schemas.pydantic.order import (
 )
 from source.services.admin_auth import PermissionService
 from source.services.admin_order import AdminOrderService
+from source.services.admin_order_print import AdminOrderPrintService
 from source.services.order_cache import OrderCacheService
 from source.services.order_status import OrderStatusService
 from source.services.product_cache import ProductCacheService
@@ -219,7 +221,7 @@ class FakeOrderItemRepository:
 
 class FakeAddressRepository:
     def __init__(self, address=None) -> None:
-        self.address = address or SimpleNamespace(city="Москва", street="Тверская", house="10", apartment="15")
+        self.address = address or SimpleNamespace(city="Москва", street="Тверская", house="10", building=None, apartment="15")
 
     async def get_by_id(self, *, session, address_id: int):
         return self.address
@@ -703,6 +705,20 @@ async def sync_order_1c(
         one_c_service=one_c_service,
         profile_cache_service=profile_cache_service,
         commiter=commiter,
+    )
+
+
+async def get_order_print(*, orders=None, order_id: int = 101, role=UserRole.ADMIN, repository=None):
+    repository = repository or FakeOrderRepository(orders or [build_order(order_id=order_id, order_number="ORD-000101")])
+    return await AdminOrderPrintService().get_print_data(
+        session=None,
+        user=build_user(role=role),
+        order_id=order_id,
+        permission_service=PermissionService(),
+        order_repository=repository,
+        order_item_repository=FakeOrderItemRepository([build_order_item()]),
+        address_repository=FakeAddressRepository(),
+        pickup_point_repository=FakePickupPointRepository(),
     )
 
 
@@ -1222,3 +1238,46 @@ async def test_admin_sync_order_1c_creates_integration_log(monkeypatch) -> None:
     assert log["entity_id"] == 101
     assert log["action"] == "sync_order"
     assert log["status"] == "success"
+
+
+@pytest.mark.asyncio
+async def test_admin_order_print_json_success() -> None:
+    response = await get_order_print()
+
+    assert response.order_number == "ORD-000101"
+    assert response.customer_name == "Иван Иванов"
+    assert response.delivery_type == "delivery"
+    assert response.address == "Москва, Тверская, 10, кв. 15"
+    assert response.items[0].name == "Яблоки красные"
+    assert response.items[0].quantity == Decimal("1.5")
+    assert response.items[0].unit == "kg"
+    assert response.comment == "Позвонить заранее"
+    assert response.final_price == Decimal("3250.00")
+
+
+@pytest.mark.asyncio
+async def test_admin_order_print_html_success() -> None:
+    response = await get_order_print()
+    html = AdminOrderPrintService().render_html(data=response)
+
+    assert "<!doctype html>" in html
+    assert "ORD-000101" in html
+    assert "Яблоки красные" in html
+    assert "Позвонить заранее" in html
+
+
+@pytest.mark.asyncio
+async def test_admin_order_print_not_found() -> None:
+    with pytest.raises(OrderNotFoundError):
+        await get_order_print(orders=[], repository=FakeOrderRepository([]))
+
+
+@pytest.mark.asyncio
+async def test_admin_order_print_no_permission() -> None:
+    with pytest.raises(AdminAuthAccessDeniedError):
+        await get_order_print(role=UserRole.CUSTOMER)
+
+
+def test_admin_order_print_invalid_format() -> None:
+    with pytest.raises(OrderPrintFormatError):
+        AdminOrderPrintService().validate_format(format="pdf")
