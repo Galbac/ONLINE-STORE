@@ -263,6 +263,7 @@ class OrdersSettings(BaseSettings):
     number_prefix: str = Field(default="ORD", alias="ORDER_NUMBER_PREFIX")
     default_status: str = Field(default="new", alias="ORDER_DEFAULT_STATUS")
     online_payment_status: str = Field(default="pending_payment", alias="ORDER_ONLINE_PAYMENT_STATUS")
+    admin_list_cache_ttl_seconds: int = Field(default=60, alias="ADMIN_ORDERS_LIST_CACHE_TTL_SECONDS")
     cancel_allowed_statuses_raw: str = Field(
         default="new,pending_payment,confirmed,awaiting_confirmation",
         alias="ORDER_CANCEL_ALLOWED_STATUSES",

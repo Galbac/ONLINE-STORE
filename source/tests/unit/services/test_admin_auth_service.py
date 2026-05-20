@@ -205,6 +205,7 @@ async def test_admin_login_success_admin() -> None:
         "admin:products:delete",
         "admin:products:stock:update",
         "admin:products:manage",
+        "admin:orders:read",
         "admin:orders:manage",
     ]
     assert response.token_type == "bearer"
@@ -223,6 +224,7 @@ async def test_admin_login_success_manager() -> None:
     assert "admin:products:update" in response.user.permissions
     assert "admin:products:delete" in response.user.permissions
     assert "admin:products:stock:update" in response.user.permissions
+    assert "admin:orders:read" in response.user.permissions
     assert "admin:orders:manage" in response.user.permissions
 
 

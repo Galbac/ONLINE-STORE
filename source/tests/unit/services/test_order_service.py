@@ -296,6 +296,9 @@ class FakeOrderCacheService:
     async def invalidate_my_orders(self, *, redis_service, user_id: int) -> None:
         self.invalidated = True
 
+    async def invalidate_admin_list(self, *, redis_service) -> None:
+        self.invalidated = True
+
     async def get_detail(self, *, redis_service, user_id: int, order_id: int):
         value = self.values.get(f"orders:detail:{user_id}:{order_id}")
         return None if value is None else OrderDetailResponse.model_validate_json(value)

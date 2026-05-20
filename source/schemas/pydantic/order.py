@@ -1,5 +1,6 @@
 from datetime import date, datetime
 from decimal import Decimal
+from typing import Literal
 
 from pydantic import BaseModel, EmailStr, Field, computed_field, field_validator, model_validator
 
@@ -109,6 +110,99 @@ class OrderMyListResponse(BaseModel):
     page: int
     limit: int
     pages: int
+
+    @classmethod
+    def build(cls, *, items: list[OrderShortResponse], total: int, page: int, limit: int) -> "OrderMyListResponse":
+        return cls(
+            items=items,
+            total=total,
+            page=page,
+            limit=limit,
+            pages=(total + limit - 1) // limit if total else 0,
+        )
+
+
+class AdminOrderListQueryParams(BaseModel):
+    page: int = Field(default=1, ge=1)
+    limit: int = Field(default=50, ge=1, le=100)
+    q: str | None = Field(default=None, min_length=1, max_length=100)
+    status: str | None = Field(default=None, max_length=50)
+    payment_status: str | None = Field(default=None, max_length=50)
+    payment_method: Literal["online", "on_delivery"] | None = None
+    delivery_type: Literal["delivery", "pickup"] | None = None
+    sync_status: str | None = Field(default=None, max_length=50)
+    date_from: date | None = None
+    date_to: date | None = None
+    min_amount: Decimal | None = Field(default=None, ge=0)
+    max_amount: Decimal | None = Field(default=None, ge=0)
+
+    @field_validator(
+        "q",
+        "status",
+        "payment_status",
+        "payment_method",
+        "delivery_type",
+        "sync_status",
+        mode="before",
+    )
+    @classmethod
+    def normalize_string(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        normalized_value = " ".join(value.strip().split())
+        return normalized_value or None
+
+    @model_validator(mode="after")
+    def validate_ranges(self) -> "AdminOrderListQueryParams":
+        if self.date_from is not None and self.date_to is not None and self.date_from > self.date_to:
+            raise ValueError("date_from must be less than or equal to date_to")
+        if self.min_amount is not None and self.max_amount is not None and self.min_amount > self.max_amount:
+            raise ValueError("min_amount must be less than or equal to max_amount")
+        return self
+
+    @computed_field
+    @property
+    def offset(self) -> int:
+        return (self.page - 1) * self.limit
+
+
+class AdminOrderListItemResponse(BaseModel):
+    id: int
+    order_number: str
+    status: str
+    payment_method: str | None = None
+    payment_status: str | None = None
+    delivery_type: str
+    customer_name: str
+    customer_phone: str
+    final_price: Decimal
+    sync_status: str
+    created_at: datetime
+
+
+class AdminOrderListResponse(BaseModel):
+    items: list[AdminOrderListItemResponse]
+    total: int
+    page: int
+    limit: int
+    pages: int
+
+    @classmethod
+    def build(
+        cls,
+        *,
+        items: list[AdminOrderListItemResponse],
+        total: int,
+        page: int,
+        limit: int,
+    ) -> "AdminOrderListResponse":
+        return cls(
+            items=items,
+            total=total,
+            page=page,
+            limit=limit,
+            pages=(total + limit - 1) // limit if total else 0,
+        )
 
 
 class OrderCreateResponse(BaseModel):

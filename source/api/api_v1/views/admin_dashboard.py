@@ -65,16 +65,19 @@ from source.schemas.pydantic.admin_product import (
     ProductStockResponse,
     ProductStockUpdateRequest,
 )
+from source.schemas.pydantic.order import AdminOrderListQueryParams, AdminOrderListResponse
 from source.services.category_cache import CategoryCacheService
 from source.services.admin_auth import AuditLogService, PermissionService
 from source.services.admin_category import AdminCategoryService, CategoryTreeService
 from source.services.admin_category_cache import AdminCategoryCacheService
 from source.services.admin_dashboard import AdminDashboardService
 from source.services.admin_dashboard_cache import AdminDashboardCacheService
+from source.services.admin_order import AdminOrderService
 from source.services.admin_product import AdminProductService
 from source.services.admin_product_cache import AdminProductCacheService
 from source.services.admin_product_image import AdminProductImageService
 from source.services.product_cache import ProductCacheService
+from source.services.order_cache import OrderCacheService
 from source.services.redis import RedisService
 from source.services.storage import StorageService
 from source.services.stock import StockMovementService, StockService
@@ -452,6 +455,66 @@ async def get_admin_products(
             permission_service=permission_service,
             product_repository=product_repository,
             admin_product_cache_service=admin_product_cache_service,
+        )
+    except ValidationError as error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Неверные параметры запроса") from error
+    except InvalidCredentialsError as error:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь не авторизован") from error
+    except AdminAuthAccessDeniedError as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Недостаточно прав") from error
+    except InactiveUserError as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Пользователь заблокирован") from error
+
+
+@router.get("/orders", response_model=AdminOrderListResponse, status_code=status.HTTP_200_OK)
+@inject
+async def get_admin_orders(
+    token_payload: dict = Depends(verify_access_token),
+    current_user: User = Depends(get_current_user),
+    page: str = Query(default="1"),
+    limit: str = Query(default="50"),
+    q: str | None = Query(default=None),
+    status_filter: str | None = Query(default=None, alias="status"),
+    payment_status: str | None = Query(default=None),
+    payment_method: str | None = Query(default=None),
+    delivery_type: str | None = Query(default=None),
+    sync_status: str | None = Query(default=None),
+    date_from: str | None = Query(default=None),
+    date_to: str | None = Query(default=None),
+    min_amount: str | None = Query(default=None),
+    max_amount: str | None = Query(default=None),
+    session: FromDishka[AsyncSession] = None,
+    redis_service: FromDishka[RedisService] = None,
+    admin_order_service: FromDishka[AdminOrderService] = None,
+    order_cache_service: FromDishka[OrderCacheService] = None,
+    permission_service: FromDishka[PermissionService] = None,
+    order_repository: FromDishka[OrderRepository] = None,
+) -> AdminOrderListResponse:
+    if token_payload.get("token_type") != "access":
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь не авторизован")
+    try:
+        query = AdminOrderListQueryParams(
+            page=page,
+            limit=limit,
+            q=q,
+            status=status_filter,
+            payment_status=payment_status,
+            payment_method=payment_method,
+            delivery_type=delivery_type,
+            sync_status=sync_status,
+            date_from=date_from,
+            date_to=date_to,
+            min_amount=min_amount,
+            max_amount=max_amount,
+        )
+        return await admin_order_service.get_orders(
+            session=session,
+            redis_service=redis_service,
+            user=current_user,
+            query=query,
+            permission_service=permission_service,
+            order_repository=order_repository,
+            order_cache_service=order_cache_service,
         )
     except ValidationError as error:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Неверные параметры запроса") from error

@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from source.config.settings import settings
 from source.db.models.order import Order
-from source.schemas.pydantic.order import OrderMyListQueryParams, OrderShortResponse
+from source.schemas.pydantic.order import AdminOrderListItemResponse, AdminOrderListQueryParams, OrderMyListQueryParams, OrderShortResponse
 from source.schemas.pydantic.admin_dashboard import AdminRecentOrderResponse, AdminSalesQueryParams, AdminSalesResponse, AdminSalesSeriesItem
 from source.schemas.pydantic.profile import ProfileOrderListQueryParams, ProfileOrderShortResponse
 
@@ -160,6 +160,23 @@ class OrderRepository:
         result = await session.execute(statement)
         return int(result.scalar_one())
 
+    async def admin_get_list(
+        self,
+        *,
+        session: AsyncSession,
+        query: AdminOrderListQueryParams,
+    ) -> list[AdminOrderListItemResponse]:
+        statement = self._apply_admin_filters(select(Order), query=query)
+        result = await session.execute(
+            statement.order_by(desc(Order.created_date)).limit(query.limit).offset(query.offset),
+        )
+        return [self._build_admin_order_response(order) for order in result.scalars().all()]
+
+    async def admin_count(self, *, session: AsyncSession, query: AdminOrderListQueryParams) -> int:
+        statement = self._apply_admin_filters(select(Order.id), query=query).subquery()
+        result = await session.execute(select(func.count()).select_from(statement))
+        return int(result.scalar_one())
+
     async def get_by_user_id(
         self,
         *,
@@ -260,6 +277,37 @@ class OrderRepository:
             statement = statement.where(Order.created_date <= datetime.combine(query.date_to, time.max))
         return statement
 
+    def _apply_admin_filters(self, statement, *, query: AdminOrderListQueryParams):
+        if query.q is not None:
+            search = f"%{query.q}%"
+            statement = statement.where(
+                or_(
+                    Order.order_number.ilike(search),
+                    Order.customer_phone.ilike(search),
+                    Order.customer_email.ilike(search),
+                    Order.customer_name.ilike(search),
+                ),
+            )
+        if query.status is not None:
+            statement = statement.where(Order.status == query.status)
+        if query.payment_status is not None:
+            statement = statement.where(Order.payment_status == query.payment_status)
+        if query.payment_method is not None:
+            statement = statement.where(Order.payment_method == query.payment_method)
+        if query.delivery_type is not None:
+            statement = statement.where(Order.delivery_type == query.delivery_type)
+        if query.sync_status is not None:
+            statement = statement.where(Order.sync_status == query.sync_status)
+        if query.date_from is not None:
+            statement = statement.where(Order.created_date >= datetime.combine(query.date_from, time.min))
+        if query.date_to is not None:
+            statement = statement.where(Order.created_date <= datetime.combine(query.date_to, time.max))
+        if query.min_amount is not None:
+            statement = statement.where(Order.final_price >= query.min_amount)
+        if query.max_amount is not None:
+            statement = statement.where(Order.final_price <= query.max_amount)
+        return statement
+
     def _build_order_response(self, order: Order) -> ProfileOrderShortResponse:
         return ProfileOrderShortResponse(
             id=order.id,
@@ -283,5 +331,20 @@ class OrderRepository:
             delivery_type=order.delivery_type,
             final_price=order.final_price,
             items_count=order.items_count,
+            created_at=order.created_date,
+        )
+
+    def _build_admin_order_response(self, order: Order) -> AdminOrderListItemResponse:
+        return AdminOrderListItemResponse(
+            id=order.id,
+            order_number=order.order_number,
+            status=order.status,
+            payment_method=order.payment_method,
+            payment_status=order.payment_status,
+            delivery_type=order.delivery_type,
+            customer_name=order.customer_name,
+            customer_phone=order.customer_phone,
+            final_price=order.final_price,
+            sync_status=order.sync_status,
             created_at=order.created_date,
         )
