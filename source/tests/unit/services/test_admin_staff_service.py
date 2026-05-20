@@ -8,12 +8,15 @@ from source.config.settings import settings
 from source.db.models.choises.enum import UserRole
 from source.errors.auth import (
     AdminAuthAccessDeniedError,
+    AdminRoleNotFoundError,
     AdminStaffSelfDeleteError,
+    AdminStaffSelfRoleChangeError,
     AdminStaffInvalidRoleError,
     AdminStaffNotFoundError,
     EmptyAdminStaffUpdateError,
     LastActiveAdminDeleteError,
     LastActiveAdminDeactivationError,
+    LastActiveAdminRoleChangeError,
     UserEmailAlreadyExistsError,
     UserPhoneAlreadyExistsError,
 )
@@ -21,8 +24,10 @@ from source.schemas.pydantic.admin_staff import (
     AdminStaffCreateRequest,
     AdminStaffListQueryParams,
     AdminStaffListResponse,
+    AdminStaffRoleUpdateRequest,
     AdminStaffUpdateRequest,
 )
+from source.repositories.role import RoleRepository
 from source.services.admin_auth import AuditLogService, PermissionService
 from source.services.admin_auth_cache import AdminAuthCacheService
 from source.services.admin_staff import AdminStaffService
@@ -226,6 +231,16 @@ class FakeRefreshTokenRepository:
         return 2
 
 
+class FakeRoleRepository(RoleRepository):
+    pass
+
+
+class FakeUserRoleRepository:
+    async def update_role(self, *, session, user, role: UserRole):
+        user.role = role
+        return user
+
+
 async def create_staff(
     *,
     users=None,
@@ -337,6 +352,54 @@ async def delete_staff(
         commiter=commiter,
         permission_service=PermissionService(),
         user_repository=repository,
+        refresh_token_repository=refresh_token_repository,
+        refresh_token_service=RefreshTokenService(),
+        audit_log_service=AuditLogService(),
+        admin_audit_log_repository=audit_log_repository,
+        admin_staff_cache_service=AdminStaffCacheService(),
+        admin_auth_cache_service=AdminAuthCacheService(),
+    )
+    return SimpleNamespace(
+        response=response,
+        redis_service=redis_service,
+        repository=repository,
+        audit_log_repository=audit_log_repository,
+        commiter=commiter,
+        refresh_token_repository=refresh_token_repository,
+    )
+
+
+async def change_staff_role(
+    *,
+    users=None,
+    staff_id: int = 1,
+    data: AdminStaffRoleUpdateRequest | None = None,
+    redis_service=None,
+    role=UserRole.ADMIN,
+    current_user_id: int = 100,
+    repository=None,
+    audit_log_repository=None,
+    commiter=None,
+    refresh_token_repository=None,
+    role_repository=None,
+    user_role_repository=None,
+):
+    redis_service = redis_service or FakeRedisService()
+    audit_log_repository = audit_log_repository or FakeAuditLogRepository()
+    commiter = commiter or FakeCommiter()
+    repository = repository or FakeUserRepository(users or [])
+    refresh_token_repository = refresh_token_repository or FakeRefreshTokenRepository()
+    response = await AdminStaffService().change_role(
+        session=None,
+        redis_service=redis_service,
+        user=build_current_user(user_id=current_user_id, role=role),
+        staff_id=staff_id,
+        data=data or AdminStaffRoleUpdateRequest(role="content_manager"),
+        commiter=commiter,
+        permission_service=PermissionService(),
+        user_repository=repository,
+        role_repository=role_repository or FakeRoleRepository(),
+        user_role_repository=user_role_repository or FakeUserRoleRepository(),
         refresh_token_repository=refresh_token_repository,
         refresh_token_service=RefreshTokenService(),
         audit_log_service=AuditLogService(),
@@ -784,5 +847,90 @@ async def test_admin_delete_staff_audit_log_created() -> None:
     assert log["details"] == {
         "target_user_id": 1,
         "role": "manager",
+        "revoked_tokens_count": 2,
+    }
+
+
+@pytest.mark.asyncio
+async def test_admin_change_staff_role_success() -> None:
+    staff = build_user(user_id=1, role=UserRole.MANAGER)
+
+    result = await change_staff_role(users=[staff])
+
+    assert result.response.id == 1
+    assert result.response.role == UserRole.CONTENT_MANAGER
+    assert "admin:products:manage" in result.response.permissions
+    assert staff.role == UserRole.CONTENT_MANAGER
+    assert result.commiter.committed is True
+
+
+@pytest.mark.asyncio
+async def test_admin_change_staff_role_not_found_error() -> None:
+    with pytest.raises(AdminRoleNotFoundError):
+        await change_staff_role(
+            users=[build_user(user_id=1)],
+            data=AdminStaffRoleUpdateRequest(role="unknown_role"),
+        )
+
+
+@pytest.mark.asyncio
+async def test_admin_change_staff_role_customer_invalid_error() -> None:
+    with pytest.raises(AdminStaffInvalidRoleError):
+        await change_staff_role(
+            users=[build_user(user_id=1)],
+            data=AdminStaffRoleUpdateRequest(role="customer"),
+        )
+
+
+@pytest.mark.asyncio
+async def test_admin_change_staff_role_self_change_error() -> None:
+    with pytest.raises(AdminStaffSelfRoleChangeError):
+        await change_staff_role(users=[build_user(user_id=1)], staff_id=1, current_user_id=1)
+
+
+@pytest.mark.asyncio
+async def test_admin_change_staff_role_last_active_admin_error() -> None:
+    with pytest.raises(LastActiveAdminRoleChangeError):
+        await change_staff_role(
+            users=[build_user(user_id=1, role=UserRole.ADMIN)],
+            staff_id=1,
+            data=AdminStaffRoleUpdateRequest(role="manager"),
+        )
+
+
+@pytest.mark.asyncio
+async def test_admin_change_staff_role_revokes_refresh_tokens() -> None:
+    refresh_token_repository = FakeRefreshTokenRepository()
+
+    await change_staff_role(
+        users=[build_user(user_id=1)],
+        refresh_token_repository=refresh_token_repository,
+    )
+
+    assert refresh_token_repository.revoked_user_ids == [1]
+
+
+@pytest.mark.asyncio
+async def test_admin_change_staff_role_invalidates_cache() -> None:
+    redis_service = FakeRedisService()
+    redis_service.values["admin:auth:me:1"] = "cached"
+
+    result = await change_staff_role(users=[build_user(user_id=1)], redis_service=redis_service)
+
+    assert "admin:staff:*" in result.redis_service.deleted_patterns
+    assert "admin:auth:me:1" in result.redis_service.deleted_patterns
+    assert "admin:auth:me:1" not in result.redis_service.values
+
+
+@pytest.mark.asyncio
+async def test_admin_change_staff_role_audit_log_created() -> None:
+    result = await change_staff_role(users=[build_user(user_id=1, role=UserRole.MANAGER)])
+
+    log = result.audit_log_repository.logs[0]
+    assert log["event"] == "admin_staff_change_role"
+    assert log["details"] == {
+        "target_user_id": 1,
+        "old_role": "manager",
+        "new_role": "content_manager",
         "revoked_tokens_count": 2,
     }

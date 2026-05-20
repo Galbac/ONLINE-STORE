@@ -118,6 +118,18 @@ class LastActiveAdminDeleteError(Exception):
     pass
 
 
+class AdminStaffSelfRoleChangeError(Exception):
+    pass
+
+
+class LastActiveAdminRoleChangeError(Exception):
+    pass
+
+
+class AdminRoleNotFoundError(Exception):
+    pass
+
+
 class EmptyUserProfileUpdateError(Exception):
     pass
 

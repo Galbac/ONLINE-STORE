@@ -31,6 +31,21 @@ class RoleRepository:
             if role in STAFF_ROLES
         ]
 
+    async def get_by_code(self, *, session=None, code: str) -> UserRole | None:
+        try:
+            return UserRole(code)
+        except ValueError:
+            return None
+
+
+class UserRoleRepository:
+    async def update_role(self, *, session, user, role: UserRole):
+        user.role = role
+        session.add(user)
+        await session.flush()
+        await session.refresh(user)
+        return user
+
 
 class PermissionRepository:
     async def get_by_role_codes(self, *, session=None, role_codes: list[str]) -> dict[str, list[str]]:

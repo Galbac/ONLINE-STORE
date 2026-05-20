@@ -64,6 +64,7 @@ ADMIN_PERMISSIONS_BY_ROLE = {
         "admin:staff:create",
         "admin:staff:update",
         "admin:staff:delete",
+        "admin:staff:change_role",
         "admin:roles:read",
     ],
     UserRole.MANAGER: [

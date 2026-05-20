@@ -35,7 +35,7 @@ from source.repositories.payment import PaymentRepository
 from source.repositories.payment_webhook_log import PaymentWebhookLogRepository
 from source.repositories.refund import RefundRepository
 from source.repositories.refresh_token import RefreshTokenRepository
-from source.repositories.role import PermissionRepository, RoleRepository
+from source.repositories.role import PermissionRepository, RoleRepository, UserRoleRepository
 from source.repositories.pickup_point import PickupPointRepository
 from source.repositories.product import ProductRepository
 from source.repositories.product_availability_log import ProductAvailabilityLogRepository
@@ -195,6 +195,10 @@ class AppProvider(Provider):
     )
     permission_repository = provide(
         PermissionRepository,
+        scope=Scope.REQUEST,
+    )
+    user_role_repository = provide(
+        UserRoleRepository,
         scope=Scope.REQUEST,
     )
     admin_audit_log_repository = provide(

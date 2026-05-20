@@ -129,6 +129,19 @@ class AdminStaffUpdateRequest(BaseModel):
         return normalize_email(value)
 
 
+class AdminStaffRoleUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    role: str = Field(min_length=1, max_length=50)
+
+    @field_validator("role", mode="before")
+    @classmethod
+    def normalize_role(cls, value: str) -> str:
+        if isinstance(value, str):
+            return value.strip()
+        return value
+
+
 class AdminStaffDetailResponse(BaseModel):
     id: int
     name: str

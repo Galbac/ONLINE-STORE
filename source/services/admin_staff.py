@@ -4,13 +4,16 @@ from source.config.settings import settings
 from source.db.models.choises.enum import UserRole
 from source.errors.auth import (
     AdminAuthAccessDeniedError,
+    AdminRoleNotFoundError,
     AdminStaffSelfDeleteError,
+    AdminStaffSelfRoleChangeError,
     AdminStaffInvalidRoleError,
     AdminStaffNotFoundError,
     EmptyAdminStaffUpdateError,
     InactiveUserError,
     LastActiveAdminDeleteError,
     LastActiveAdminDeactivationError,
+    LastActiveAdminRoleChangeError,
     UserEmailAlreadyExistsError,
     UserPhoneAlreadyExistsError,
 )
@@ -20,6 +23,7 @@ from source.schemas.pydantic.admin_staff import (
     AdminStaffListItemResponse,
     AdminStaffListQueryParams,
     AdminStaffListResponse,
+    AdminStaffRoleUpdateRequest,
     AdminStaffUpdateRequest,
     MessageResponse,
 )
@@ -60,6 +64,14 @@ class AdminStaffService:
         if user.role not in STAFF_ROLES:
             raise AdminAuthAccessDeniedError
         if "admin:staff:delete" not in permission_service.get_user_permissions(role=user.role):
+            raise AdminAuthAccessDeniedError
+
+    def _check_change_role_permission(self, *, user, permission_service) -> None:
+        if not user.is_active or user.is_deleted or user.is_blocked:
+            raise InactiveUserError
+        if user.role not in STAFF_ROLES:
+            raise AdminAuthAccessDeniedError
+        if "admin:staff:change_role" not in permission_service.get_user_permissions(role=user.role):
             raise AdminAuthAccessDeniedError
 
     async def get_staff_list(
@@ -361,6 +373,82 @@ class AdminStaffService:
         await admin_auth_cache_service.invalidate_me(redis_service=redis_service, user_id=deleted_staff.id)
 
         return MessageResponse(message="Сотрудник удалён")
+
+    async def change_role(
+        self,
+        *,
+        session,
+        redis_service: RedisService,
+        user,
+        staff_id: int,
+        data: AdminStaffRoleUpdateRequest,
+        commiter,
+        permission_service,
+        user_repository,
+        role_repository,
+        user_role_repository,
+        refresh_token_repository,
+        refresh_token_service,
+        audit_log_service,
+        admin_audit_log_repository,
+        admin_staff_cache_service,
+        admin_auth_cache_service,
+        ip_address: str | None = None,
+        user_agent: str | None = None,
+    ) -> AdminStaffDetailResponse:
+        self._check_change_role_permission(user=user, permission_service=permission_service)
+
+        staff = await user_repository.get_by_id(session=session, user_id=staff_id)
+        if staff is None or staff.role not in STAFF_ROLES or staff.is_deleted:
+            raise AdminStaffNotFoundError
+        if staff.id == user.id:
+            raise AdminStaffSelfRoleChangeError
+
+        new_role = await role_repository.get_by_code(session=session, code=data.role)
+        if new_role is None:
+            raise AdminRoleNotFoundError
+        if new_role not in STAFF_ROLES:
+            raise AdminStaffInvalidRoleError
+        if not permission_service.validate_role_assignable(actor_role=user.role, target_role=new_role):
+            raise AdminStaffInvalidRoleError
+        if staff.role == UserRole.ADMIN and new_role != UserRole.ADMIN and staff.is_active:
+            active_admins = await user_repository.count_active_admins(session=session)
+            if active_admins <= 1:
+                raise LastActiveAdminRoleChangeError
+
+        old_role = staff.role
+        staff.updated_date = datetime.now(settings.tz)
+        updated_staff = await user_role_repository.update_role(session=session, user=staff, role=new_role)
+        revoked_tokens_count = await refresh_token_service.revoke_all_user_tokens(
+            session=session,
+            refresh_token_repository=refresh_token_repository,
+            user_id=updated_staff.id,
+        )
+        await audit_log_service.log_action(
+            session=session,
+            audit_log_repository=admin_audit_log_repository,
+            user_id=user.id,
+            login=getattr(user, "email", None) or getattr(user, "phone", None) or str(user.id),
+            event="admin_staff_change_role",
+            status="success",
+            ip_address=ip_address,
+            user_agent=user_agent,
+            details={
+                "target_user_id": updated_staff.id,
+                "old_role": old_role.value,
+                "new_role": updated_staff.role.value,
+                "revoked_tokens_count": revoked_tokens_count,
+            },
+        )
+        await commiter.commit()
+
+        await admin_staff_cache_service.invalidate_all(redis_service=redis_service)
+        await admin_auth_cache_service.invalidate_me(redis_service=redis_service, user_id=updated_staff.id)
+
+        return self._build_staff_detail_response(
+            user=updated_staff,
+            permissions=permission_service.get_user_permissions(role=updated_staff.role),
+        )
 
     def _build_staff_response(self, *, user) -> AdminStaffListItemResponse:
         return AdminStaffListItemResponse(

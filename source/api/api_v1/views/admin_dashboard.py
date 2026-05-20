@@ -13,7 +13,9 @@ from source.errors.category import CategoryCycleError, CategoryNotFoundError, Ca
 from source.errors.category import CategoryHasActiveChildrenError, CategoryHasActiveProductsError
 from source.errors.auth import (
     AdminAuthAccessDeniedError,
+    AdminRoleNotFoundError,
     AdminStaffSelfDeleteError,
+    AdminStaffSelfRoleChangeError,
     AdminStaffInvalidRoleError,
     AdminStaffNotFoundError,
     EmptyAdminStaffUpdateError,
@@ -26,6 +28,7 @@ from source.errors.auth import (
     InvalidCredentialsError,
     LastActiveAdminDeleteError,
     LastActiveAdminDeactivationError,
+    LastActiveAdminRoleChangeError,
     OneCIntegrationDisabledError,
     OneCSyncError,
     OrderAlreadyCancelledError,
@@ -69,7 +72,7 @@ from source.repositories.product_availability_log import ProductAvailabilityLogR
 from source.repositories.product_image import ProductImageRepository
 from source.repositories.promo_code import PromoCodeUsageRepository
 from source.repositories.refresh_token import RefreshTokenRepository
-from source.repositories.role import PermissionRepository, RoleRepository
+from source.repositories.role import PermissionRepository, RoleRepository, UserRoleRepository
 from source.repositories.stock_movement import StockMovementRepository
 from source.repositories.upload import UploadRepository
 from source.repositories.user import UserRepository
@@ -112,6 +115,7 @@ from source.schemas.pydantic.admin_staff import (
     AdminStaffDetailResponse,
     AdminStaffListQueryParams,
     AdminStaffListResponse,
+    AdminStaffRoleUpdateRequest,
     AdminStaffUpdateRequest,
     MessageResponse as AdminStaffMessageResponse,
 )
@@ -419,6 +423,91 @@ async def update_admin_staff(
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Нельзя деактивировать последнего администратора",
+        ) from error
+    except Exception:
+        await commiter.rollback()
+        raise
+
+
+@router.patch(
+    "/staff/{staff_id}/role",
+    response_model=AdminStaffDetailResponse,
+    response_model_exclude={"email", "phone", "is_active", "is_blocked", "last_login_at", "created_at"},
+    status_code=status.HTTP_200_OK,
+)
+@inject
+async def change_admin_staff_role(
+    request: Request,
+    payload: dict = Body(...),
+    staff_id: int = Path(..., gt=0),
+    token_payload: dict = Depends(verify_access_token),
+    current_user: User = Depends(get_current_user),
+    session: FromDishka[AsyncSession] = None,
+    commiter: FromDishka[Commiter] = None,
+    redis_service: FromDishka[RedisService] = None,
+    admin_staff_service: FromDishka[AdminStaffService] = None,
+    admin_staff_cache_service: FromDishka[AdminStaffCacheService] = None,
+    admin_auth_cache_service: FromDishka[AdminAuthCacheService] = None,
+    permission_service: FromDishka[PermissionService] = None,
+    user_repository: FromDishka[UserRepository] = None,
+    role_repository: FromDishka[RoleRepository] = None,
+    user_role_repository: FromDishka[UserRoleRepository] = None,
+    refresh_token_repository: FromDishka[RefreshTokenRepository] = None,
+    refresh_token_service: FromDishka[RefreshTokenService] = None,
+    audit_log_service: FromDishka[AuditLogService] = None,
+    admin_audit_log_repository: FromDishka[AdminAuditLogRepository] = None,
+) -> AdminStaffDetailResponse:
+    if token_payload.get("token_type") != "access":
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь не авторизован")
+    try:
+        return await admin_staff_service.change_role(
+            session=session,
+            redis_service=redis_service,
+            user=current_user,
+            staff_id=staff_id,
+            data=AdminStaffRoleUpdateRequest.model_validate(payload),
+            commiter=commiter,
+            permission_service=permission_service,
+            user_repository=user_repository,
+            role_repository=role_repository,
+            user_role_repository=user_role_repository,
+            refresh_token_repository=refresh_token_repository,
+            refresh_token_service=refresh_token_service,
+            audit_log_service=audit_log_service,
+            admin_audit_log_repository=admin_audit_log_repository,
+            admin_staff_cache_service=admin_staff_cache_service,
+            admin_auth_cache_service=admin_auth_cache_service,
+            ip_address=request.client.host if request.client else None,
+            user_agent=request.headers.get("user-agent"),
+        )
+    except ValidationError as error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Неверные данные роли") from error
+    except InvalidCredentialsError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь не авторизован") from error
+    except AdminAuthAccessDeniedError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Недостаточно прав") from error
+    except InactiveUserError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Пользователь заблокирован") from error
+    except AdminStaffNotFoundError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Сотрудник не найден") from error
+    except AdminRoleNotFoundError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Роль не найдена") from error
+    except AdminStaffInvalidRoleError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Недопустимая роль") from error
+    except AdminStaffSelfRoleChangeError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Нельзя менять свою роль") from error
+    except LastActiveAdminRoleChangeError as error:
+        await commiter.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Нельзя изменить роль последнего администратора",
         ) from error
     except Exception:
         await commiter.rollback()
