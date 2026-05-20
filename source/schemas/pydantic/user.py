@@ -217,3 +217,14 @@ class AdminUserBlockResponse(BaseModel):
     message: str
     user_id: int
     is_blocked: bool
+
+
+class AdminUserUnblockRequest(BaseModel):
+    reason: str = Field(min_length=1, max_length=500)
+
+    @field_validator("reason", mode="before")
+    @classmethod
+    def normalize_reason(cls, value: str) -> str:
+        if not isinstance(value, str):
+            return value
+        return " ".join(value.strip().split())

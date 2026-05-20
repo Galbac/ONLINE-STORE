@@ -15,6 +15,7 @@ from source.errors.auth import (
     AdminAuthAccessDeniedError,
     AdminUserAlreadyBlockedError,
     AdminUserNotFoundError,
+    AdminUserNotBlockedError,
     EmptyUserProfileUpdateError,
     EmptyOrderUpdateError,
     InactiveUserError,
@@ -119,6 +120,7 @@ from source.schemas.pydantic.user import (
     AdminUserDetailResponse,
     AdminUserListQueryParams,
     AdminUserListResponse,
+    AdminUserUnblockRequest,
     AdminUserUpdateRequest,
     AdminUserUpdateResponse,
 )
@@ -801,6 +803,63 @@ async def block_admin_user(
     except AdminUserAlreadyBlockedError as error:
         await commiter.rollback()
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Пользователь уже заблокирован") from error
+    except Exception:
+        await commiter.rollback()
+        raise
+
+
+@router.patch("/users/{user_id}/unblock", response_model=AdminUserBlockResponse, status_code=status.HTTP_200_OK)
+@inject
+async def unblock_admin_user(
+    payload: dict = Body(...),
+    user_id: int = Path(..., gt=0),
+    token_payload: dict = Depends(verify_access_token),
+    current_user: User = Depends(get_current_user),
+    session: FromDishka[AsyncSession] = None,
+    commiter: FromDishka[Commiter] = None,
+    redis_service: FromDishka[RedisService] = None,
+    admin_user_service: FromDishka[AdminUserService] = None,
+    permission_service: FromDishka[PermissionService] = None,
+    user_repository: FromDishka[UserRepository] = None,
+    admin_audit_log_repository: FromDishka[AdminAuditLogRepository] = None,
+    user_cache_service: FromDishka[UserCacheService] = None,
+    auth_cache_service: FromDishka[AuthCacheService] = None,
+    profile_cache_service: FromDishka[ProfileCacheService] = None,
+) -> AdminUserBlockResponse:
+    if token_payload.get("token_type") != "access":
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь не авторизован")
+    try:
+        return await admin_user_service.unblock_user(
+            session=session,
+            redis_service=redis_service,
+            user=current_user,
+            user_id=user_id,
+            data=AdminUserUnblockRequest.model_validate(payload),
+            commiter=commiter,
+            permission_service=permission_service,
+            user_repository=user_repository,
+            admin_audit_log_repository=admin_audit_log_repository,
+            user_cache_service=user_cache_service,
+            auth_cache_service=auth_cache_service,
+            profile_cache_service=profile_cache_service,
+        )
+    except ValidationError as error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Неверные данные разблокировки") from error
+    except InvalidCredentialsError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь не авторизован") from error
+    except AdminAuthAccessDeniedError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Недостаточно прав") from error
+    except InactiveUserError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Пользователь заблокирован") from error
+    except AdminUserNotFoundError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Пользователь не найден") from error
+    except AdminUserNotBlockedError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Пользователь не заблокирован") from error
     except Exception:
         await commiter.rollback()
         raise

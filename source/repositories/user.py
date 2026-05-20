@@ -97,6 +97,25 @@ class UserRepository:
         await session.refresh(user)
         return user
 
+    async def unblock(
+        self,
+        *,
+        session: AsyncSession,
+        user: User,
+        unblocked_at: datetime,
+        unblocked_by: int,
+        unblock_reason: str,
+    ) -> User:
+        user.is_blocked = False
+        user.unblocked_at = unblocked_at
+        user.unblocked_by = unblocked_by
+        user.unblock_reason = unblock_reason
+        user.updated_date = unblocked_at
+        session.add(user)
+        await session.flush()
+        await session.refresh(user)
+        return user
+
     def _apply_admin_customer_filters(self, statement, *, query: AdminUserListQueryParams):
         statement = statement.where(User.role == UserRole.CUSTOMER)
         if query.q is not None:

@@ -12,6 +12,7 @@ from source.errors.auth import (
     AdminAuthAccessDeniedError,
     AdminUserAlreadyBlockedError,
     AdminUserNotFoundError,
+    AdminUserNotBlockedError,
     UserEmailAlreadyExistsError,
     UserPhoneAlreadyExistsError,
 )
@@ -20,6 +21,7 @@ from source.schemas.pydantic.user import (
     AdminUserDetailResponse,
     AdminUserListQueryParams,
     AdminUserListResponse,
+    AdminUserUnblockRequest,
     AdminUserUpdateRequest,
 )
 from source.services.admin_auth import PermissionService
@@ -86,6 +88,14 @@ class FakeUserRepository:
         user.blocked_by = blocked_by
         user.block_reason = block_reason
         user.updated_date = blocked_at
+        return user
+
+    async def unblock(self, *, session, user, unblocked_at: datetime, unblocked_by: int, unblock_reason: str):
+        user.is_blocked = False
+        user.unblocked_at = unblocked_at
+        user.unblocked_by = unblocked_by
+        user.unblock_reason = unblock_reason
+        user.updated_date = unblocked_at
         return user
 
     def _filter(self, *, query: AdminUserListQueryParams):
@@ -219,6 +229,9 @@ def build_user(
         blocked_at=None,
         blocked_by=None,
         block_reason=None,
+        unblocked_at=None,
+        unblocked_by=None,
+        unblock_reason=None,
         created_date=datetime(2026, 5, 12, 10, 0, 0) + timedelta(minutes=user_id),
         updated_date=datetime(2026, 5, 12, 10, 30, 0),
     )
@@ -370,6 +383,42 @@ async def block_user(
         response=response,
         redis_service=redis_service,
         refresh_token_repository=refresh_token_repository,
+        audit_log_repository=audit_log_repository,
+        commiter=commiter,
+    )
+
+
+async def unblock_user(
+    *,
+    users=None,
+    user_id: int = 1,
+    data: AdminUserUnblockRequest | None = None,
+    redis_service=None,
+    role=UserRole.ADMIN,
+    user_repository=None,
+    audit_log_repository=None,
+    commiter=None,
+):
+    redis_service = redis_service or FakeRedisService()
+    audit_log_repository = audit_log_repository or FakeAuditLogRepository()
+    commiter = commiter or FakeCommiter()
+    response = await AdminUserService().unblock_user(
+        session=None,
+        redis_service=redis_service,
+        user=build_admin(role=role),
+        user_id=user_id,
+        data=data or AdminUserUnblockRequest(reason="Проверка завершена"),
+        commiter=commiter,
+        permission_service=PermissionService(),
+        user_repository=user_repository or FakeUserRepository(users or []),
+        admin_audit_log_repository=audit_log_repository,
+        user_cache_service=FakeUserCacheService(),
+        auth_cache_service=FakeAuthCacheService(),
+        profile_cache_service=FakeProfileCacheService(),
+    )
+    return SimpleNamespace(
+        response=response,
+        redis_service=redis_service,
         audit_log_repository=audit_log_repository,
         commiter=commiter,
     )
@@ -703,3 +752,51 @@ async def test_admin_block_user_invalidates_cache() -> None:
     assert "users:me:1" in result.redis_service.deleted
     assert "auth:me:user:1" in result.redis_service.deleted
     assert "profile:summary:1" in result.redis_service.deleted
+
+
+@pytest.mark.asyncio
+async def test_admin_unblock_user_success() -> None:
+    user = build_user(user_id=1, is_blocked=True)
+
+    result = await unblock_user(users=[user])
+
+    assert result.response.message == "Пользователь разблокирован"
+    assert result.response.user_id == 1
+    assert result.response.is_blocked is False
+    assert user.is_blocked is False
+    assert user.unblocked_by == 100
+    assert user.unblock_reason == "Проверка завершена"
+    assert result.commiter.committed is True
+
+
+@pytest.mark.asyncio
+async def test_admin_unblock_user_not_blocked_error() -> None:
+    with pytest.raises(AdminUserNotBlockedError):
+        await unblock_user(users=[build_user(user_id=1, is_blocked=False)])
+
+
+@pytest.mark.asyncio
+async def test_admin_unblock_user_not_found_error() -> None:
+    with pytest.raises(AdminUserNotFoundError):
+        await unblock_user(users=[], user_id=404)
+
+
+@pytest.mark.asyncio
+async def test_admin_unblock_user_invalidates_cache() -> None:
+    result = await unblock_user(users=[build_user(user_id=1, is_blocked=True)])
+
+    assert "admin:users:*" in result.redis_service.deleted_patterns
+    assert "users:me:1" in result.redis_service.deleted
+    assert "auth:me:user:1" in result.redis_service.deleted
+    assert "profile:summary:1" in result.redis_service.deleted
+
+
+@pytest.mark.asyncio
+async def test_admin_unblock_user_creates_audit_log() -> None:
+    result = await unblock_user(users=[build_user(user_id=1, is_blocked=True)])
+
+    assert result.audit_log_repository.logs[0]["event"] == "admin_user_unblock"
+    assert result.audit_log_repository.logs[0]["details"] == {
+        "target_user_id": 1,
+        "reason": "Проверка завершена",
+    }

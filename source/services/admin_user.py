@@ -6,6 +6,7 @@ from source.errors.auth import (
     AdminAuthAccessDeniedError,
     AdminUserAlreadyBlockedError,
     AdminUserNotFoundError,
+    AdminUserNotBlockedError,
     EmptyUserProfileUpdateError,
     InactiveUserError,
     UserEmailAlreadyExistsError,
@@ -20,6 +21,7 @@ from source.schemas.pydantic.user import (
     AdminUserListQueryParams,
     AdminUserListResponse,
     AdminUserOrderShortResponse,
+    AdminUserUnblockRequest,
     AdminUserUpdateRequest,
     AdminUserUpdateResponse,
 )
@@ -304,6 +306,64 @@ class AdminUserService:
             message="Пользователь заблокирован",
             user_id=blocked_user.id,
             is_blocked=blocked_user.is_blocked,
+        )
+
+    async def unblock_user(
+        self,
+        *,
+        session,
+        redis_service: RedisService,
+        user,
+        user_id: int,
+        data: AdminUserUnblockRequest,
+        commiter,
+        permission_service,
+        user_repository,
+        admin_audit_log_repository,
+        user_cache_service,
+        auth_cache_service,
+        profile_cache_service,
+    ) -> AdminUserBlockResponse:
+        self._check_block_permission(user=user, permission_service=permission_service)
+
+        customer = await user_repository.get_by_id(session=session, user_id=user_id)
+        if customer is None:
+            raise AdminUserNotFoundError
+        if not customer.is_blocked:
+            raise AdminUserNotBlockedError
+
+        unblocked_user = await user_repository.unblock(
+            session=session,
+            user=customer,
+            unblocked_at=datetime.now(settings.tz),
+            unblocked_by=user.id,
+            unblock_reason=data.reason,
+        )
+        await admin_audit_log_repository.create(
+            session=session,
+            user_id=user.id,
+            login=getattr(user, "email", None) or getattr(user, "phone", None) or str(user.id),
+            event="admin_user_unblock",
+            status="success",
+            details={
+                "target_user_id": unblocked_user.id,
+                "reason": data.reason,
+            },
+        )
+        await commiter.commit()
+
+        await self._invalidate_user_cache(
+            redis_service=redis_service,
+            user_id=unblocked_user.id,
+            user_cache_service=user_cache_service,
+            auth_cache_service=auth_cache_service,
+            profile_cache_service=profile_cache_service,
+        )
+
+        return AdminUserBlockResponse(
+            message="Пользователь разблокирован",
+            user_id=unblocked_user.id,
+            is_blocked=unblocked_user.is_blocked,
         )
 
     def _build_user_response(self, *, customer, stats) -> AdminUserListItemResponse:

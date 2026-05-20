@@ -90,6 +90,10 @@ class AdminUserAlreadyBlockedError(Exception):
     pass
 
 
+class AdminUserNotBlockedError(Exception):
+    pass
+
+
 class EmptyUserProfileUpdateError(Exception):
     pass
 

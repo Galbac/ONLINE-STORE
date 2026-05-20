@@ -46,3 +46,6 @@ class User(IdBigIntPkMixin, CreateUpdateMixin, Base):
     blocked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     blocked_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), index=True)
     block_reason: Mapped[str | None] = mapped_column(Text)
+    unblocked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    unblocked_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), index=True)
+    unblock_reason: Mapped[str | None] = mapped_column(Text)
