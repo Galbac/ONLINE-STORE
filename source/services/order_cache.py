@@ -168,6 +168,7 @@ class OrderCacheService:
         await self.invalidate_detail(redis_service=redis_service, user_id=user_id, order_id=order_id)
         await self.invalidate_status(redis_service=redis_service, user_id=user_id, order_id=order_id)
         await self.invalidate_my_orders(redis_service=redis_service, user_id=user_id)
+        await redis_service.delete_by_pattern(f"admin:users:{user_id}:orders:*")
         await self.invalidate_admin_list(redis_service=redis_service)
         await self.invalidate_admin_detail(redis_service=redis_service, order_id=order_id)
 

@@ -21,6 +21,8 @@ from source.schemas.pydantic.user import (
     AdminUserListQueryParams,
     AdminUserListResponse,
     AdminUserOrderShortResponse,
+    AdminUserOrdersQueryParams,
+    AdminUserOrdersResponse,
     AdminUserUnblockRequest,
     AdminUserUpdateRequest,
     AdminUserUpdateResponse,
@@ -54,6 +56,15 @@ class AdminUserService:
         if user.role not in STAFF_ROLES:
             raise AdminAuthAccessDeniedError
         if "admin:users:block" not in permission_service.get_user_permissions(role=user.role):
+            raise AdminAuthAccessDeniedError
+
+    def _check_user_orders_read_permission(self, *, user, permission_service) -> None:
+        if not user.is_active or user.is_deleted or user.is_blocked:
+            raise InactiveUserError
+        if user.role not in STAFF_ROLES:
+            raise AdminAuthAccessDeniedError
+        permissions = permission_service.get_user_permissions(role=user.role)
+        if "admin:users:read" not in permissions and "admin:orders:read" not in permissions:
             raise AdminAuthAccessDeniedError
 
     async def get_users(
@@ -146,6 +157,47 @@ class AdminUserService:
             addresses=addresses,
             stats=stats,
             recent_orders=recent_orders,
+        )
+        await redis_service.set(
+            cache_key,
+            response.model_dump_json(),
+            ttl_seconds=settings.admin_users.detail_cache_ttl_seconds,
+        )
+        return response
+
+    async def get_user_orders(
+        self,
+        *,
+        session,
+        redis_service: RedisService,
+        user,
+        user_id: int,
+        query: AdminUserOrdersQueryParams,
+        permission_service,
+        user_repository,
+        order_repository,
+    ) -> AdminUserOrdersResponse:
+        self._check_user_orders_read_permission(user=user, permission_service=permission_service)
+
+        customer = await user_repository.get_by_id(session=session, user_id=user_id)
+        if customer is None:
+            raise AdminUserNotFoundError
+
+        query_hash = build_query_hash(query.model_dump())
+        cache_key = f"admin:users:{user_id}:orders:{query_hash}"
+        cached_orders = await redis_service.get(cache_key)
+        if cached_orders is not None:
+            if isinstance(cached_orders, bytes):
+                cached_orders = cached_orders.decode("utf-8")
+            return AdminUserOrdersResponse.model_validate_json(cached_orders)
+
+        orders = await order_repository.get_by_user_id(session=session, user_id=user_id, query=query)
+        total = await order_repository.count_by_user_id(session=session, user_id=user_id, query=query)
+        response = AdminUserOrdersResponse.build(
+            items=[self._build_order_response(order=order) for order in orders],
+            total=total,
+            page=query.page,
+            limit=query.limit,
         )
         await redis_service.set(
             cache_key,
@@ -417,7 +469,6 @@ class AdminUserService:
             id=order.id,
             order_number=order.order_number,
             status=order.status,
-            payment_method=order.payment_method,
             payment_status=order.payment_status,
             delivery_type=order.delivery_type,
             final_price=order.final_price,

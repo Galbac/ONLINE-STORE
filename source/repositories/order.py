@@ -10,6 +10,7 @@ from source.db.models.order import Order
 from source.schemas.pydantic.order import AdminOrderListItemResponse, AdminOrderListQueryParams, OrderMyListQueryParams, OrderShortResponse
 from source.schemas.pydantic.admin_dashboard import AdminRecentOrderResponse, AdminSalesQueryParams, AdminSalesResponse, AdminSalesSeriesItem
 from source.schemas.pydantic.profile import ProfileOrderListQueryParams, ProfileOrderShortResponse
+from source.schemas.pydantic.user import AdminUserOrdersQueryParams
 
 
 ACTIVE_ORDER_STATUSES = ("new", "paid", "assembling", "delivering", "in_progress")
@@ -190,7 +191,7 @@ class OrderRepository:
         *,
         session: AsyncSession,
         user_id: int,
-        query: ProfileOrderListQueryParams | OrderMyListQueryParams | None = None,
+        query: ProfileOrderListQueryParams | OrderMyListQueryParams | AdminUserOrdersQueryParams | None = None,
     ) -> int:
         statement = select(func.count(Order.id)).where(Order.user_id == user_id)
         statement = self._apply_filters(statement, query=query)
@@ -280,7 +281,7 @@ class OrderRepository:
         *,
         session: AsyncSession,
         user_id: int,
-        query: ProfileOrderListQueryParams | OrderMyListQueryParams,
+        query: ProfileOrderListQueryParams | OrderMyListQueryParams | AdminUserOrdersQueryParams,
     ) -> list[ProfileOrderShortResponse | OrderShortResponse]:
         statement = select(Order).where(Order.user_id == user_id)
         statement = self._apply_filters(statement, query=query)
@@ -360,15 +361,16 @@ class OrderRepository:
         result = await session.execute(statement)
         return int(result.scalar_one())
 
-    def _apply_filters(self, statement, *, query: ProfileOrderListQueryParams | OrderMyListQueryParams | None):
+    def _apply_filters(self, statement, *, query: ProfileOrderListQueryParams | OrderMyListQueryParams | AdminUserOrdersQueryParams | None):
         if query is None:
             return statement
         if query.status is not None:
             statement = statement.where(Order.status == query.status)
         if query.payment_status is not None:
             statement = statement.where(Order.payment_status == query.payment_status)
-        if query.delivery_type is not None:
-            statement = statement.where(Order.delivery_type == query.delivery_type)
+        delivery_type = getattr(query, "delivery_type", None)
+        if delivery_type is not None:
+            statement = statement.where(Order.delivery_type == delivery_type)
         if query.date_from is not None:
             statement = statement.where(Order.created_date >= datetime.combine(query.date_from, time.min))
         if query.date_to is not None:

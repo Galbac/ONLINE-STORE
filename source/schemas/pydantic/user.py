@@ -139,7 +139,6 @@ class AdminUserOrderShortResponse(BaseModel):
     id: int
     order_number: str
     status: str
-    payment_method: str | None = None
     payment_status: str | None = None
     delivery_type: str | None = None
     final_price: Decimal
@@ -228,3 +227,56 @@ class AdminUserUnblockRequest(BaseModel):
         if not isinstance(value, str):
             return value
         return " ".join(value.strip().split())
+
+
+class AdminUserOrdersQueryParams(BaseModel):
+    page: int = Field(default=1, ge=1)
+    limit: int = Field(default=20, ge=1, le=100)
+    status: str | None = Field(default=None, max_length=50)
+    payment_status: str | None = Field(default=None, max_length=50)
+    date_from: date | None = None
+    date_to: date | None = None
+
+    @field_validator("status", "payment_status", mode="before")
+    @classmethod
+    def normalize_string(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        normalized_value = value.strip()
+        return normalized_value or None
+
+    @model_validator(mode="after")
+    def validate_dates(self) -> "AdminUserOrdersQueryParams":
+        if self.date_from is not None and self.date_to is not None and self.date_from > self.date_to:
+            raise ValueError("date_from must be less than or equal to date_to")
+        return self
+
+    @computed_field
+    @property
+    def offset(self) -> int:
+        return (self.page - 1) * self.limit
+
+
+class AdminUserOrdersResponse(BaseModel):
+    items: list[AdminUserOrderShortResponse]
+    total: int
+    page: int
+    limit: int
+    pages: int
+
+    @classmethod
+    def build(
+        cls,
+        *,
+        items: list[AdminUserOrderShortResponse],
+        total: int,
+        page: int,
+        limit: int,
+    ) -> "AdminUserOrdersResponse":
+        return cls(
+            items=items,
+            total=total,
+            page=page,
+            limit=limit,
+            pages=(total + limit - 1) // limit if total else 0,
+        )

@@ -21,6 +21,8 @@ from source.schemas.pydantic.user import (
     AdminUserDetailResponse,
     AdminUserListQueryParams,
     AdminUserListResponse,
+    AdminUserOrdersQueryParams,
+    AdminUserOrdersResponse,
     AdminUserUnblockRequest,
     AdminUserUpdateRequest,
 )
@@ -138,6 +140,22 @@ class FakeOrderRepository:
 
     async def get_recent_by_user_id(self, *, session, user_id: int, limit: int = 5):
         return self.recent_orders[:limit]
+
+    async def get_by_user_id(self, *, session, user_id: int, query: AdminUserOrdersQueryParams):
+        orders = self._filter(query=query)
+        orders.sort(key=lambda order: order.created_at, reverse=True)
+        return orders[query.offset : query.offset + query.limit]
+
+    async def count_by_user_id(self, *, session, user_id: int, query: AdminUserOrdersQueryParams):
+        return len(self._filter(query=query))
+
+    def _filter(self, *, query: AdminUserOrdersQueryParams):
+        orders = list(self.recent_orders)
+        if query.status is not None:
+            orders = [order for order in orders if order.status == query.status]
+        if query.payment_status is not None:
+            orders = [order for order in orders if order.payment_status == query.payment_status]
+        return orders
 
 
 class FakeAddressRepository:
@@ -258,14 +276,14 @@ def build_address(*, address_id: int = 10):
 def build_order(*, order_id: int = 100):
     return SimpleNamespace(
         id=order_id,
-        order_number="ORD-000100",
+        order_number=f"ORD-{order_id:06d}",
         status="completed",
         payment_method="online",
         payment_status="paid",
         delivery_type="delivery",
         final_price=Decimal("1500.00"),
         items_count=3,
-        created_at=datetime(2026, 5, 13, 10, 0, 0),
+        created_at=datetime(2026, 5, 13, 10, 0, 0) + timedelta(minutes=order_id),
     )
 
 
@@ -307,6 +325,28 @@ async def get_user_detail(
         permission_service=PermissionService(),
         user_repository=user_repository or FakeUserRepository(users or []),
         address_repository=address_repository or FakeAddressRepository(),
+        order_repository=order_repository or FakeOrderRepository(),
+    )
+
+
+async def get_user_orders(
+    *,
+    users=None,
+    user_id: int = 1,
+    query=None,
+    redis_service=None,
+    role=UserRole.ADMIN,
+    user_repository=None,
+    order_repository=None,
+):
+    return await AdminUserService().get_user_orders(
+        session=None,
+        redis_service=redis_service or FakeRedisService(),
+        user=build_admin(role=role),
+        user_id=user_id,
+        query=query or AdminUserOrdersQueryParams(),
+        permission_service=PermissionService(),
+        user_repository=user_repository or FakeUserRepository(users or []),
         order_repository=order_repository or FakeOrderRepository(),
     )
 
@@ -611,6 +651,138 @@ async def test_admin_get_user_detail_response_is_cached() -> None:
 
     assert "admin:users:detail:1" in redis_service.values
     assert redis_service.ttls["admin:users:detail:1"] == settings.admin_users.detail_cache_ttl_seconds
+
+
+@pytest.mark.asyncio
+async def test_admin_get_user_orders_success() -> None:
+    order_repository = FakeOrderRepository()
+    order_repository.recent_orders = [build_order(order_id=101)]
+
+    response = await get_user_orders(
+        users=[build_user(user_id=1)],
+        order_repository=order_repository,
+    )
+
+    assert response.total == 1
+    assert response.page == 1
+    assert response.limit == 20
+    assert response.pages == 1
+    assert response.items[0].order_number == "ORD-000101"
+    assert "payment_method" not in response.items[0].model_dump()
+
+
+@pytest.mark.asyncio
+async def test_admin_get_user_orders_user_not_found_error() -> None:
+    with pytest.raises(AdminUserNotFoundError):
+        await get_user_orders(users=[], user_id=404)
+
+
+@pytest.mark.asyncio
+async def test_admin_get_user_orders_filters_by_status() -> None:
+    order_repository = FakeOrderRepository()
+    completed = build_order(order_id=101)
+    cancelled = build_order(order_id=102)
+    cancelled.status = "cancelled"
+    order_repository.recent_orders = [completed, cancelled]
+
+    response = await get_user_orders(
+        users=[build_user(user_id=1)],
+        order_repository=order_repository,
+        query=AdminUserOrdersQueryParams(status="cancelled"),
+    )
+
+    assert response.total == 1
+    assert response.items[0].status == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_admin_get_user_orders_filters_by_payment_status() -> None:
+    order_repository = FakeOrderRepository()
+    paid = build_order(order_id=101)
+    unpaid = build_order(order_id=102)
+    unpaid.payment_status = "unpaid"
+    order_repository.recent_orders = [paid, unpaid]
+
+    response = await get_user_orders(
+        users=[build_user(user_id=1)],
+        order_repository=order_repository,
+        query=AdminUserOrdersQueryParams(payment_status="unpaid"),
+    )
+
+    assert response.total == 1
+    assert response.items[0].payment_status == "unpaid"
+
+
+@pytest.mark.asyncio
+async def test_admin_get_user_orders_pagination() -> None:
+    order_repository = FakeOrderRepository()
+    order_repository.recent_orders = [
+        build_order(order_id=101),
+        build_order(order_id=102),
+        build_order(order_id=103),
+    ]
+
+    response = await get_user_orders(
+        users=[build_user(user_id=1)],
+        order_repository=order_repository,
+        query=AdminUserOrdersQueryParams(page=2, limit=2),
+    )
+
+    assert response.total == 3
+    assert response.pages == 2
+    assert len(response.items) == 1
+    assert response.items[0].id == 101
+
+
+@pytest.mark.asyncio
+async def test_admin_get_user_orders_no_permission_error() -> None:
+    with pytest.raises(AdminAuthAccessDeniedError):
+        await get_user_orders(
+            users=[build_user(user_id=1)],
+            role=UserRole.CONTENT_MANAGER,
+        )
+
+
+@pytest.mark.asyncio
+async def test_admin_get_user_orders_returns_cached_response() -> None:
+    redis_service = FakeRedisService()
+    query = AdminUserOrdersQueryParams(status="completed")
+    cached_response = AdminUserOrdersResponse.build(
+        items=[],
+        total=0,
+        page=query.page,
+        limit=query.limit,
+    )
+    redis_service.values[
+        f"admin:users:1:orders:{build_query_hash(query.model_dump())}"
+    ] = cached_response.model_dump_json()
+
+    response = await get_user_orders(
+        redis_service=redis_service,
+        users=[build_user(user_id=1)],
+        query=query,
+    )
+
+    assert response == cached_response
+
+
+@pytest.mark.asyncio
+async def test_admin_get_user_orders_response_is_cached() -> None:
+    redis_service = FakeRedisService()
+    query = AdminUserOrdersQueryParams(payment_status="paid")
+    order_repository = FakeOrderRepository()
+    order_repository.recent_orders = [build_order(order_id=101)]
+
+    await get_user_orders(
+        redis_service=redis_service,
+        users=[build_user(user_id=1)],
+        order_repository=order_repository,
+        query=query,
+    )
+
+    cache_key = f"admin:users:1:orders:{build_query_hash(query.model_dump())}"
+    assert cache_key in redis_service.values
+    assert redis_service.ttls[cache_key] == settings.admin_users.detail_cache_ttl_seconds
 
 
 @pytest.mark.asyncio
