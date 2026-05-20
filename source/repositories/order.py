@@ -214,6 +214,40 @@ class OrderRepository:
         result = await session.execute(select(func.count()).select_from(statement))
         return int(result.scalar_one())
 
+    async def get_user_stats_grouped(
+        self,
+        *,
+        session: AsyncSession,
+        user_ids: list[int],
+    ) -> dict[int, SimpleNamespace]:
+        if not user_ids:
+            return {}
+        result = await session.execute(
+            select(
+                Order.user_id,
+                func.count(Order.id).filter(Order.status != "cancelled"),
+                func.coalesce(
+                    func.sum(Order.final_price).filter(
+                        Order.status != "cancelled",
+                        or_(
+                            Order.payment_status == "paid",
+                            Order.status == "completed",
+                        ),
+                    ),
+                    0,
+                ),
+            )
+            .where(Order.user_id.in_(user_ids))
+            .group_by(Order.user_id),
+        )
+        return {
+            int(user_id): SimpleNamespace(
+                orders_count=int(orders_count),
+                total_spent=Decimal(str(total_spent)),
+            )
+            for user_id, orders_count, total_spent in result.all()
+        }
+
     async def get_by_user_id(
         self,
         *,

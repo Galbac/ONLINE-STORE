@@ -219,6 +219,12 @@ class AdminDashboardSettings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 
+class AdminUsersSettings(BaseSettings):
+    list_cache_ttl_seconds: int = Field(default=60, alias="ADMIN_USERS_LIST_CACHE_TTL_SECONDS")
+
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+
 class UserMeSettings(BaseSettings):
     cache_ttl_seconds: int = Field(default=120, alias="USER_ME_CACHE_TTL_SECONDS")
 
@@ -454,6 +460,7 @@ class Settings(BaseSettings):
     auth_me: AuthMeSettings = AuthMeSettings()
     admin_auth: AdminAuthSettings = AdminAuthSettings()
     admin_dashboard: AdminDashboardSettings = AdminDashboardSettings()
+    admin_users: AdminUsersSettings = AdminUsersSettings()
     user_me: UserMeSettings = UserMeSettings()
     user_delete: UserDeleteSettings = UserDeleteSettings()
     profile_summary: ProfileSummarySettings = ProfileSummarySettings()
