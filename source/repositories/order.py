@@ -248,6 +248,33 @@ class OrderRepository:
             for user_id, orders_count, total_spent in result.all()
         }
 
+    async def get_user_stats(
+        self,
+        *,
+        session: AsyncSession,
+        user_id: int,
+    ) -> SimpleNamespace:
+        result = await session.execute(
+            select(
+                func.count(Order.id).filter(Order.status != "cancelled"),
+                func.coalesce(
+                    func.sum(Order.final_price).filter(
+                        Order.status != "cancelled",
+                        or_(
+                            Order.payment_status == "paid",
+                            Order.status == "completed",
+                        ),
+                    ),
+                    0,
+                ),
+            ).where(Order.user_id == user_id),
+        )
+        orders_count, total_spent = result.one()
+        return SimpleNamespace(
+            orders_count=int(orders_count),
+            total_spent=Decimal(str(total_spent)),
+        )
+
     async def get_by_user_id(
         self,
         *,

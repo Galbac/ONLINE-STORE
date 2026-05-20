@@ -13,6 +13,7 @@ from source.errors.category import CategoryCycleError, CategoryNotFoundError, Ca
 from source.errors.category import CategoryHasActiveChildrenError, CategoryHasActiveProductsError
 from source.errors.auth import (
     AdminAuthAccessDeniedError,
+    AdminUserNotFoundError,
     EmptyOrderUpdateError,
     InactiveUserError,
     InvalidCredentialsError,
@@ -107,7 +108,7 @@ from source.schemas.pydantic.order import (
     AdminOrderUpdateRequest,
     AdminOrderUpdateResponse,
 )
-from source.schemas.pydantic.user import AdminUserListQueryParams, AdminUserListResponse
+from source.schemas.pydantic.user import AdminUserDetailResponse, AdminUserListQueryParams, AdminUserListResponse
 from source.services.category_cache import CategoryCacheService
 from source.services.admin_auth import AuditLogService, PermissionService
 from source.services.admin_category import AdminCategoryService, CategoryTreeService
@@ -626,6 +627,43 @@ async def get_admin_users(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Недостаточно прав") from error
     except InactiveUserError as error:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Пользователь заблокирован") from error
+
+
+@router.get("/users/{user_id}", response_model=AdminUserDetailResponse, status_code=status.HTTP_200_OK)
+@inject
+async def get_admin_user_detail(
+    user_id: int = Path(..., gt=0),
+    token_payload: dict = Depends(verify_access_token),
+    current_user: User = Depends(get_current_user),
+    session: FromDishka[AsyncSession] = None,
+    redis_service: FromDishka[RedisService] = None,
+    admin_user_service: FromDishka[AdminUserService] = None,
+    permission_service: FromDishka[PermissionService] = None,
+    user_repository: FromDishka[UserRepository] = None,
+    address_repository: FromDishka[AddressRepository] = None,
+    order_repository: FromDishka[OrderRepository] = None,
+) -> AdminUserDetailResponse:
+    if token_payload.get("token_type") != "access":
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь не авторизован")
+    try:
+        return await admin_user_service.get_user_detail(
+            session=session,
+            redis_service=redis_service,
+            user=current_user,
+            user_id=user_id,
+            permission_service=permission_service,
+            user_repository=user_repository,
+            address_repository=address_repository,
+            order_repository=order_repository,
+        )
+    except InvalidCredentialsError as error:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь не авторизован") from error
+    except AdminAuthAccessDeniedError as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Недостаточно прав") from error
+    except InactiveUserError as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Пользователь заблокирован") from error
+    except AdminUserNotFoundError as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Пользователь не найден") from error
 
 
 @router.get("/orders/{order_id}", response_model=AdminOrderDetailResponse, status_code=status.HTTP_200_OK)

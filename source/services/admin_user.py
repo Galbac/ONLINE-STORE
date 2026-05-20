@@ -1,8 +1,15 @@
 from decimal import Decimal
 
 from source.config.settings import settings
-from source.errors.auth import AdminAuthAccessDeniedError, InactiveUserError
-from source.schemas.pydantic.user import AdminUserListItemResponse, AdminUserListQueryParams, AdminUserListResponse
+from source.errors.auth import AdminAuthAccessDeniedError, AdminUserNotFoundError, InactiveUserError
+from source.schemas.pydantic.user import (
+    AdminUserAddressResponse,
+    AdminUserDetailResponse,
+    AdminUserListItemResponse,
+    AdminUserListQueryParams,
+    AdminUserListResponse,
+    AdminUserOrderShortResponse,
+)
 from source.services.admin_auth import STAFF_ROLES
 from source.services.redis import RedisService
 from source.utils.query_hash import build_query_hash
@@ -65,6 +72,57 @@ class AdminUserService:
         )
         return response
 
+    async def get_user_detail(
+        self,
+        *,
+        session,
+        redis_service: RedisService,
+        user,
+        user_id: int,
+        permission_service,
+        user_repository,
+        address_repository,
+        order_repository,
+    ) -> AdminUserDetailResponse:
+        self._check_read_permission(user=user, permission_service=permission_service)
+
+        cache_key = f"admin:users:detail:{user_id}"
+        cached_user = await redis_service.get(cache_key)
+        if cached_user is not None:
+            if isinstance(cached_user, bytes):
+                cached_user = cached_user.decode("utf-8")
+            return AdminUserDetailResponse.model_validate_json(cached_user)
+
+        customer = await user_repository.get_by_id(session=session, user_id=user_id)
+        if customer is None:
+            raise AdminUserNotFoundError
+
+        addresses = await address_repository.get_by_user_id(
+            session=session,
+            user_id=customer.id,
+            include_deleted=False,
+            limit=50,
+            offset=0,
+        )
+        stats = await order_repository.get_user_stats(session=session, user_id=customer.id)
+        recent_orders = await order_repository.get_recent_by_user_id(
+            session=session,
+            user_id=customer.id,
+            limit=5,
+        )
+        response = self._build_user_detail_response(
+            customer=customer,
+            addresses=addresses,
+            stats=stats,
+            recent_orders=recent_orders,
+        )
+        await redis_service.set(
+            cache_key,
+            response.model_dump_json(),
+            ttl_seconds=settings.admin_users.detail_cache_ttl_seconds,
+        )
+        return response
+
     def _build_user_response(self, *, customer, stats) -> AdminUserListItemResponse:
         return AdminUserListItemResponse(
             id=customer.id,
@@ -76,4 +134,50 @@ class AdminUserService:
             orders_count=stats.orders_count if stats is not None else 0,
             total_spent=stats.total_spent if stats is not None else Decimal("0.00"),
             created_at=customer.created_date,
+        )
+
+    def _build_user_detail_response(self, *, customer, addresses, stats, recent_orders) -> AdminUserDetailResponse:
+        return AdminUserDetailResponse(
+            id=customer.id,
+            name=customer.name,
+            phone=customer.phone,
+            email=customer.email,
+            is_active=customer.is_active,
+            is_blocked=not customer.is_active,
+            is_deleted=customer.is_deleted,
+            orders_count=stats.orders_count,
+            total_spent=stats.total_spent,
+            addresses=[self._build_address_response(address=address) for address in addresses],
+            recent_orders=[self._build_order_response(order=order) for order in recent_orders],
+            created_at=customer.created_date,
+        )
+
+    def _build_address_response(self, *, address) -> AdminUserAddressResponse:
+        return AdminUserAddressResponse(
+            id=address.id,
+            title=address.title,
+            city=address.city,
+            street=address.street,
+            house=address.house,
+            building=address.building,
+            apartment=address.apartment,
+            entrance=address.entrance,
+            floor=address.floor,
+            intercom=address.intercom,
+            comment=address.comment,
+            is_default=address.is_default,
+            created_at=address.created_at,
+        )
+
+    def _build_order_response(self, *, order) -> AdminUserOrderShortResponse:
+        return AdminUserOrderShortResponse(
+            id=order.id,
+            order_number=order.order_number,
+            status=order.status,
+            payment_method=order.payment_method,
+            payment_status=order.payment_status,
+            delivery_type=order.delivery_type,
+            final_price=order.final_price,
+            items_count=order.items_count,
+            created_at=order.created_at,
         )

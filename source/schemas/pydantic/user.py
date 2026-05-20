@@ -117,3 +117,46 @@ class AdminUserListResponse(BaseModel):
             limit=limit,
             pages=(total + limit - 1) // limit if total else 0,
         )
+
+
+class AdminUserAddressResponse(BaseModel):
+    id: int
+    title: str | None = None
+    city: str
+    street: str
+    house: str
+    building: str | None = None
+    apartment: str | None = None
+    entrance: str | None = None
+    floor: str | None = None
+    intercom: str | None = None
+    comment: str | None = None
+    is_default: bool
+    created_at: datetime
+
+
+class AdminUserOrderShortResponse(BaseModel):
+    id: int
+    order_number: str
+    status: str
+    payment_method: str | None = None
+    payment_status: str | None = None
+    delivery_type: str | None = None
+    final_price: Decimal
+    items_count: int = 0
+    created_at: datetime
+
+
+class AdminUserDetailResponse(BaseModel):
+    id: int
+    name: str
+    phone: str
+    email: EmailStr | None
+    is_active: bool
+    is_blocked: bool
+    is_deleted: bool
+    orders_count: int
+    total_spent: Decimal
+    addresses: list[AdminUserAddressResponse]
+    recent_orders: list[AdminUserOrderShortResponse]
+    created_at: datetime
