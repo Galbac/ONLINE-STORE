@@ -8,3 +8,11 @@ class CategorySlugAlreadyExistsError(Exception):
 
 class CategoryCycleError(Exception):
     pass
+
+
+class CategoryHasActiveChildrenError(Exception):
+    pass
+
+
+class CategoryHasActiveProductsError(Exception):
+    pass

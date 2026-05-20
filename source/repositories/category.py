@@ -209,6 +209,38 @@ class CategoryRepository:
         await session.refresh(category)
         return category
 
+    async def has_active_children(
+        self,
+        *,
+        session: AsyncSession,
+        parent_id: int,
+    ) -> bool:
+        result = await session.execute(
+            select(Category.id).where(
+                Category.parent_id == parent_id,
+                Category.is_active.is_(True),
+                Category.is_deleted.is_(False),
+            ),
+        )
+        return result.scalar_one_or_none() is not None
+
+    async def soft_delete(
+        self,
+        *,
+        session: AsyncSession,
+        category: Category,
+        deleted_at,
+        deleted_by: int,
+    ) -> Category:
+        category.is_deleted = True
+        category.is_active = False
+        category.deleted_at = deleted_at
+        category.deleted_by = deleted_by
+        session.add(category)
+        await session.flush()
+        await session.refresh(category)
+        return category
+
     async def get_active_all(
         self,
         *,

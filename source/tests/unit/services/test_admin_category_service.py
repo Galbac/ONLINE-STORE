@@ -7,6 +7,7 @@ from source.config.settings import settings
 from source.db.models.choises.enum import UserRole
 from source.errors.auth import AdminAuthAccessDeniedError
 from source.errors.category import CategoryCycleError, CategoryNotFoundError, CategorySlugAlreadyExistsError
+from source.errors.category import CategoryHasActiveChildrenError, CategoryHasActiveProductsError
 from source.errors.upload import UploadNotFoundError
 from source.schemas.pydantic.admin_category import (
     AdminCategoryCreateRequest,
@@ -110,6 +111,19 @@ class FakeCategoryRepository:
         category.updated_date = datetime(2026, 5, 12, 11)
         return category
 
+    async def has_active_children(self, *, session, parent_id: int):
+        return any(
+            category.parent_id == parent_id and category.is_active and not category.is_deleted
+            for category in self.categories
+        )
+
+    async def soft_delete(self, *, session, category, deleted_at, deleted_by: int):
+        category.is_deleted = True
+        category.is_active = False
+        category.deleted_at = deleted_at
+        category.deleted_by = deleted_by
+        return category
+
     async def create(self, *, session, data: AdminCategoryCreateRequest, slug: str, image_url: str | None):
         category = SimpleNamespace(
             id=100,
@@ -151,6 +165,9 @@ class FakeProductRepository:
 
     async def count_by_category_id(self, *, session, category_id: int) -> int:
         return self.counts_by_category_id.get(category_id, 0)
+
+    async def exists_by_category_id(self, *, session, category_id: int) -> bool:
+        return self.counts_by_category_id.get(category_id, 0) > 0
 
 
 class FakeUploadRepository:
@@ -212,6 +229,8 @@ def build_category(
         sort_order=sort_order,
         is_active=is_active,
         is_deleted=is_deleted,
+        deleted_at=None,
+        deleted_by=None,
         meta_title=f"{name} купить онлайн",
         meta_description=f"{name} с доставкой",
         created_date=datetime(2026, 5, 12, 10),
@@ -355,6 +374,33 @@ async def update_category(
         admin_audit_log_repository=audit_log_repository or FakeAuditLogRepository(),
         audit_log_service=AuditLogService(),
         category_tree_service=CategoryTreeService(),
+        category_cache_service=CategoryCacheService(),
+        admin_category_cache_service=AdminCategoryCacheService(),
+        product_cache_service=FakeProductCacheService(),
+    )
+
+
+async def delete_category(
+    *,
+    redis_service=None,
+    user=None,
+    category_repository=None,
+    product_repository=None,
+    audit_log_repository=None,
+    commiter=None,
+    category_id: int = 2,
+):
+    return await AdminCategoryService().delete_category(
+        session=None,
+        redis_service=redis_service or FakeRedisService(),
+        user=user or build_user(),
+        category_id=category_id,
+        commiter=commiter or FakeCommiter(),
+        permission_service=PermissionService(),
+        category_repository=category_repository or build_category_repository(),
+        product_repository=product_repository or FakeProductRepository(),
+        admin_audit_log_repository=audit_log_repository or FakeAuditLogRepository(),
+        audit_log_service=AuditLogService(),
         category_cache_service=CategoryCacheService(),
         admin_category_cache_service=AdminCategoryCacheService(),
         product_cache_service=FakeProductCacheService(),
@@ -698,3 +744,86 @@ async def test_admin_category_update_audit_log_created() -> None:
         "old": "Фрукты",
         "new": "Фрукты и ягоды",
     }
+
+
+@pytest.mark.asyncio
+async def test_admin_category_delete_success() -> None:
+    category_repository = build_category_repository()
+    commiter = FakeCommiter()
+
+    response = await delete_category(
+        category_repository=category_repository,
+        commiter=commiter,
+        category_id=2,
+    )
+    deleted_category = await category_repository.admin_get_by_id(session=None, category_id=2)
+
+    assert response.message == "Категория удалена"
+    assert deleted_category is None
+    assert commiter.committed is True
+
+
+@pytest.mark.asyncio
+async def test_admin_category_delete_soft_deleted() -> None:
+    category_repository = build_category_repository()
+    category = await category_repository.admin_get_by_id(session=None, category_id=2)
+
+    await delete_category(category_repository=category_repository, category_id=2)
+
+    assert category.is_deleted is True
+    assert category.is_active is False
+    assert category.deleted_by == 1
+    assert category.deleted_at is not None
+
+
+@pytest.mark.asyncio
+async def test_admin_category_delete_products_error() -> None:
+    with pytest.raises(CategoryHasActiveProductsError):
+        await delete_category(
+            category_id=2,
+            product_repository=FakeProductRepository(counts_by_category_id={2: 3}),
+        )
+
+
+@pytest.mark.asyncio
+async def test_admin_category_delete_children_error() -> None:
+    with pytest.raises(CategoryHasActiveChildrenError):
+        await delete_category(category_id=1)
+
+
+@pytest.mark.asyncio
+async def test_admin_category_delete_not_found_error() -> None:
+    with pytest.raises(CategoryNotFoundError):
+        await delete_category(category_id=999)
+
+
+@pytest.mark.asyncio
+async def test_admin_category_delete_no_permission_error() -> None:
+    with pytest.raises(AdminAuthAccessDeniedError):
+        await delete_category(user=build_user(role=UserRole.PICKER))
+
+
+@pytest.mark.asyncio
+async def test_admin_category_delete_invalidates_cache() -> None:
+    redis_service = FakeRedisService()
+
+    await delete_category(redis_service=redis_service, category_id=2)
+
+    assert "admin:categories:*" in redis_service.deleted_patterns
+    assert "categories:list:*" in redis_service.deleted_patterns
+    assert "categories:tree:*" in redis_service.deleted_patterns
+    assert "categories:detail:2:*" in redis_service.deleted_patterns
+    assert "categories:slug:ovoshchi:*" in redis_service.deleted_patterns
+    assert "products:list:*" in redis_service.deleted_patterns
+
+
+@pytest.mark.asyncio
+async def test_admin_category_delete_audit_log_created() -> None:
+    audit_log_repository = FakeAuditLogRepository()
+
+    await delete_category(audit_log_repository=audit_log_repository, category_id=2)
+
+    assert len(audit_log_repository.logs) == 1
+    assert audit_log_repository.logs[0]["event"] == "admin_category_delete"
+    assert audit_log_repository.logs[0]["status"] == "success"
+    assert audit_log_repository.logs[0]["details"]["category_id"] == 2

@@ -841,6 +841,21 @@ class ProductRepository:
         )
         return int(result.scalar_one())
 
+    async def exists_by_category_id(
+        self,
+        *,
+        session: AsyncSession,
+        category_id: int,
+    ) -> bool:
+        result = await session.execute(
+            select(Product.id).where(
+                Product.category_id == category_id,
+                Product.is_active.is_(True),
+                Product.is_deleted.is_(False),
+            ),
+        )
+        return result.scalar_one_or_none() is not None
+
     async def count_active_grouped_by_category(self, *, session: AsyncSession) -> dict[int, int]:
         result = await session.execute(
             select(Product.category_id, func.count(Product.id))

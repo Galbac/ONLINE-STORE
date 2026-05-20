@@ -198,6 +198,7 @@ async def test_admin_login_success_admin() -> None:
         "admin:categories:read",
         "admin:categories:create",
         "admin:categories:update",
+        "admin:categories:delete",
         "admin:products:read",
         "admin:products:create",
         "admin:products:update",

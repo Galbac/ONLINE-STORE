@@ -1,5 +1,13 @@
+from datetime import datetime
+
 from source.config.settings import settings
-from source.errors.category import CategoryCycleError, CategoryNotFoundError, CategorySlugAlreadyExistsError
+from source.errors.category import (
+    CategoryCycleError,
+    CategoryHasActiveChildrenError,
+    CategoryHasActiveProductsError,
+    CategoryNotFoundError,
+    CategorySlugAlreadyExistsError,
+)
 from source.errors.auth import AdminAuthAccessDeniedError, InactiveUserError
 from source.errors.upload import UploadNotFoundError
 from source.schemas.pydantic.admin_category import (
@@ -12,6 +20,7 @@ from source.schemas.pydantic.admin_category import (
     AdminCategorySeoResponse,
     AdminCategoryShortResponse,
     AdminCategoryUpdateRequest,
+    MessageResponse,
 )
 from source.services.admin_auth import STAFF_ROLES
 from source.services.redis import RedisService
@@ -43,6 +52,14 @@ class AdminCategoryService:
         if user.role not in STAFF_ROLES:
             raise AdminAuthAccessDeniedError
         if "admin:categories:update" not in permission_service.get_user_permissions(role=user.role):
+            raise AdminAuthAccessDeniedError
+
+    def _check_delete_permission(self, *, user, permission_service) -> None:
+        if not user.is_active or user.is_deleted:
+            raise InactiveUserError
+        if user.role not in STAFF_ROLES:
+            raise AdminAuthAccessDeniedError
+        if "admin:categories:delete" not in permission_service.get_user_permissions(role=user.role):
             raise AdminAuthAccessDeniedError
 
     async def get_categories(
@@ -374,6 +391,64 @@ class AdminCategoryService:
             is_active=updated_category.is_active,
             updated_at=updated_category.updated_date,
         )
+
+    async def delete_category(
+        self,
+        *,
+        session,
+        redis_service: RedisService,
+        user,
+        category_id: int,
+        commiter,
+        permission_service,
+        category_repository,
+        product_repository,
+        admin_audit_log_repository,
+        audit_log_service,
+        category_cache_service,
+        admin_category_cache_service,
+        product_cache_service,
+    ) -> MessageResponse:
+        self._check_delete_permission(user=user, permission_service=permission_service)
+
+        category = await category_repository.admin_get_by_id(session=session, category_id=category_id)
+        if category is None:
+            raise CategoryNotFoundError
+        if await category_repository.has_active_children(session=session, parent_id=category.id):
+            raise CategoryHasActiveChildrenError
+        if await product_repository.exists_by_category_id(session=session, category_id=category.id):
+            raise CategoryHasActiveProductsError
+
+        deleted_category = await category_repository.soft_delete(
+            session=session,
+            category=category,
+            deleted_at=datetime.now(settings.tz),
+            deleted_by=user.id,
+        )
+        await audit_log_service.log_action(
+            session=session,
+            audit_log_repository=admin_audit_log_repository,
+            user_id=user.id,
+            login=getattr(user, "email", None) or getattr(user, "phone", None) or str(user.id),
+            event="admin_category_delete",
+            status="success",
+            details={
+                "category_id": deleted_category.id,
+                "name": deleted_category.name,
+                "slug": deleted_category.slug,
+            },
+        )
+        await commiter.commit()
+
+        await admin_category_cache_service.invalidate_all(redis_service=redis_service)
+        await category_cache_service.invalidate_category(
+            redis_service=redis_service,
+            category_id=deleted_category.id,
+            slug=deleted_category.slug,
+        )
+        await product_cache_service.invalidate_all(redis_service=redis_service)
+
+        return MessageResponse(message="Категория удалена")
 
 
 class CategoryTreeService:
