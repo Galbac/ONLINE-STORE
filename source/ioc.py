@@ -48,6 +48,8 @@ from source.services.auth_cache import AuthCacheService
 from source.services.admin_auth import AdminAuthService, AuditLogService, JwtBlacklistService, JwtService, PermissionService, RateLimitService
 from source.services.admin_category import AdminCategoryService, CategoryTreeService
 from source.services.admin_category_cache import AdminCategoryCacheService
+from source.services.admin_discount import AdminDiscountService
+from source.services.admin_discount_cache import AdminDiscountCacheService
 from source.services.admin_auth_cache import AdminAuthCacheService
 from source.services.admin_dashboard import AdminDashboardService
 from source.services.admin_dashboard_cache import AdminDashboardCacheService
@@ -435,6 +437,14 @@ class AppProvider(Provider):
     )
     admin_dashboard_cache_service = provide(
         AdminDashboardCacheService,
+        scope=Scope.REQUEST,
+    )
+    admin_discount_service = provide(
+        AdminDiscountService,
+        scope=Scope.REQUEST,
+    )
+    admin_discount_cache_service = provide(
+        AdminDiscountCacheService,
         scope=Scope.REQUEST,
     )
     admin_category_service = provide(

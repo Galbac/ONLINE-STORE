@@ -84,6 +84,7 @@ from source.schemas.pydantic.admin_dashboard import (
     AdminSalesQueryParams,
     AdminSalesResponse,
 )
+from source.schemas.pydantic.discount import AdminDiscountListQueryParams, AdminDiscountListResponse
 from source.schemas.pydantic.admin_role import AdminRoleListResponse
 from source.schemas.pydantic.admin_category import (
     AdminCategoryCreateRequest,
@@ -152,6 +153,8 @@ from source.services.auth_cache import AuthCacheService
 from source.services.admin_auth_cache import AdminAuthCacheService
 from source.services.admin_category import AdminCategoryService, CategoryTreeService
 from source.services.admin_category_cache import AdminCategoryCacheService
+from source.services.admin_discount import AdminDiscountService
+from source.services.admin_discount_cache import AdminDiscountCacheService
 from source.services.admin_dashboard import AdminDashboardService
 from source.services.admin_dashboard_cache import AdminDashboardCacheService
 from source.services.admin_order import AdminOrderService
@@ -205,6 +208,58 @@ async def get_admin_roles(
             role_repository=role_repository,
             permission_repository=permission_repository,
         )
+    except InvalidCredentialsError as error:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь не авторизован") from error
+    except AdminAuthAccessDeniedError as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Недостаточно прав") from error
+    except InactiveUserError as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Пользователь заблокирован") from error
+
+
+@router.get("/discounts", response_model=AdminDiscountListResponse, status_code=status.HTTP_200_OK)
+@inject
+async def get_admin_discounts(
+    token_payload: dict = Depends(verify_access_token),
+    current_user: User = Depends(get_current_user),
+    page: str = Query(default="1"),
+    limit: str = Query(default="50"),
+    q: str | None = Query(default=None),
+    type: str | None = Query(default=None),
+    discount_type: str | None = Query(default=None),
+    is_active: str | None = Query(default=None),
+    date_from: str | None = Query(default=None),
+    date_to: str | None = Query(default=None),
+    session: FromDishka[AsyncSession] = None,
+    redis_service: FromDishka[RedisService] = None,
+    admin_discount_service: FromDishka[AdminDiscountService] = None,
+    admin_discount_cache_service: FromDishka[AdminDiscountCacheService] = None,
+    permission_service: FromDishka[PermissionService] = None,
+    discount_repository: FromDishka[DiscountRepository] = None,
+) -> AdminDiscountListResponse:
+    if token_payload.get("token_type") != "access":
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь не авторизован")
+    try:
+        query = AdminDiscountListQueryParams(
+            page=page,
+            limit=limit,
+            q=q,
+            type=type,
+            discount_type=discount_type,
+            is_active=is_active,
+            date_from=date_from,
+            date_to=date_to,
+        )
+        return await admin_discount_service.get_discounts(
+            session=session,
+            redis_service=redis_service,
+            user=current_user,
+            query=query,
+            permission_service=permission_service,
+            discount_repository=discount_repository,
+            admin_discount_cache_service=admin_discount_cache_service,
+        )
+    except ValidationError as error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Неверные query params") from error
     except InvalidCredentialsError as error:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь не авторизован") from error
     except AdminAuthAccessDeniedError as error:

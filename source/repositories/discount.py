@@ -1,14 +1,36 @@
-from datetime import datetime
+from datetime import datetime, time
 
-from sqlalchemy import exists, func, or_, select
+from sqlalchemy import desc, exists, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from source.db.models.discount import Discount
 from source.db.models.product import Product
-from source.schemas.pydantic.discount import ActiveDiscountsQueryParams, DiscountShortResponse
+from source.schemas.pydantic.discount import ActiveDiscountsQueryParams, AdminDiscountListQueryParams, DiscountShortResponse
 
 
 class DiscountRepository:
+    async def admin_get_list(
+        self,
+        *,
+        session: AsyncSession,
+        query: AdminDiscountListQueryParams,
+    ) -> list[Discount]:
+        statement = self._admin_statement(query=query)
+        result = await session.execute(
+            statement.order_by(desc(Discount.created_date), desc(Discount.id)).limit(query.limit).offset(query.offset),
+        )
+        return list(result.scalars().all())
+
+    async def admin_count(
+        self,
+        *,
+        session: AsyncSession,
+        query: AdminDiscountListQueryParams,
+    ) -> int:
+        subquery = self._admin_statement(query=query).subquery()
+        result = await session.execute(select(func.count()).select_from(subquery))
+        return int(result.scalar_one())
+
     async def get_active(
         self,
         *,
@@ -50,6 +72,22 @@ class DiscountRepository:
             ),
         )
         return list(result.scalars().all())
+
+    def _admin_statement(self, *, query: AdminDiscountListQueryParams):
+        statement = select(Discount).where(Discount.is_deleted.is_(False))
+        if query.q is not None:
+            statement = statement.where(Discount.name.ilike(f"%{query.q}%"))
+        if query.type is not None:
+            statement = statement.where(Discount.type == query.type)
+        if query.discount_type is not None:
+            statement = statement.where(Discount.discount_type == query.discount_type)
+        if query.is_active is not None:
+            statement = statement.where(Discount.is_active.is_(query.is_active))
+        if query.date_from is not None:
+            statement = statement.where(Discount.created_date >= datetime.combine(query.date_from, time.min))
+        if query.date_to is not None:
+            statement = statement.where(Discount.created_date <= datetime.combine(query.date_to, time.max))
+        return statement
 
     async def get_by_product_id(
         self,

@@ -404,6 +404,7 @@ class DeliveryTimeSlotsSettings(BaseSettings):
 class DiscountsSettings(BaseSettings):
     active_cache_ttl_seconds: int = Field(default=120, alias="DISCOUNTS_ACTIVE_CACHE_TTL_SECONDS")
     products_cache_ttl_seconds: int = Field(default=120, alias="DISCOUNT_PRODUCTS_CACHE_TTL_SECONDS")
+    admin_list_cache_ttl_seconds: int = Field(default=60, alias="ADMIN_DISCOUNTS_LIST_CACHE_TTL_SECONDS")
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
