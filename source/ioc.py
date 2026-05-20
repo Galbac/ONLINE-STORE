@@ -82,6 +82,7 @@ from source.services.product_cache import ProductCacheService
 from source.services.profile import ProfileService
 from source.services.profile_cache import ProfileCacheService
 from source.services.redis import RedisService
+from source.services.refresh_token import RefreshTokenService
 from source.services.stock import StockMovementService, StockService
 from source.services.promo_code import PromoCodeService
 from source.services.user import UserService
@@ -473,6 +474,10 @@ class AppProvider(Provider):
     )
     permission_service = provide(
         PermissionService,
+        scope=Scope.REQUEST,
+    )
+    refresh_token_service = provide(
+        RefreshTokenService,
         scope=Scope.REQUEST,
     )
 

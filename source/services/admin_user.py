@@ -4,6 +4,7 @@ from decimal import Decimal
 from source.config.settings import settings
 from source.errors.auth import (
     AdminAuthAccessDeniedError,
+    AdminUserAlreadyBlockedError,
     AdminUserNotFoundError,
     EmptyUserProfileUpdateError,
     InactiveUserError,
@@ -12,6 +13,8 @@ from source.errors.auth import (
 )
 from source.schemas.pydantic.user import (
     AdminUserAddressResponse,
+    AdminUserBlockRequest,
+    AdminUserBlockResponse,
     AdminUserDetailResponse,
     AdminUserListItemResponse,
     AdminUserListQueryParams,
@@ -28,7 +31,7 @@ from source.utils.search import normalize_search_query
 
 class AdminUserService:
     def _check_read_permission(self, *, user, permission_service) -> None:
-        if not user.is_active or user.is_deleted:
+        if not user.is_active or user.is_deleted or user.is_blocked:
             raise InactiveUserError
         if user.role not in STAFF_ROLES:
             raise AdminAuthAccessDeniedError
@@ -36,11 +39,19 @@ class AdminUserService:
             raise AdminAuthAccessDeniedError
 
     def _check_update_permission(self, *, user, permission_service) -> None:
-        if not user.is_active or user.is_deleted:
+        if not user.is_active or user.is_deleted or user.is_blocked:
             raise InactiveUserError
         if user.role not in STAFF_ROLES:
             raise AdminAuthAccessDeniedError
         if "admin:users:update" not in permission_service.get_user_permissions(role=user.role):
+            raise AdminAuthAccessDeniedError
+
+    def _check_block_permission(self, *, user, permission_service) -> None:
+        if not user.is_active or user.is_deleted or user.is_blocked:
+            raise InactiveUserError
+        if user.role not in STAFF_ROLES:
+            raise AdminAuthAccessDeniedError
+        if "admin:users:block" not in permission_service.get_user_permissions(role=user.role):
             raise AdminAuthAccessDeniedError
 
     async def get_users(
@@ -208,10 +219,13 @@ class AdminUserService:
         )
         await commiter.commit()
 
-        await redis_service.delete_by_pattern("admin:users:*")
-        await user_cache_service.delete_user_me_cache(redis_service=redis_service, user_id=updated_user.id)
-        await auth_cache_service.delete_current_user_cache(redis_service=redis_service, user_id=updated_user.id)
-        await profile_cache_service.delete_summary(redis_service=redis_service, user_id=updated_user.id)
+        await self._invalidate_user_cache(
+            redis_service=redis_service,
+            user_id=updated_user.id,
+            user_cache_service=user_cache_service,
+            auth_cache_service=auth_cache_service,
+            profile_cache_service=profile_cache_service,
+        )
 
         return AdminUserUpdateResponse(
             id=updated_user.id,
@@ -222,6 +236,76 @@ class AdminUserService:
             updated_at=updated_user.updated_date,
         )
 
+    async def block_user(
+        self,
+        *,
+        session,
+        redis_service: RedisService,
+        user,
+        user_id: int,
+        data: AdminUserBlockRequest,
+        commiter,
+        permission_service,
+        user_repository,
+        refresh_token_repository,
+        refresh_token_service,
+        admin_audit_log_repository,
+        user_cache_service,
+        auth_cache_service,
+        profile_cache_service,
+    ) -> AdminUserBlockResponse:
+        self._check_block_permission(user=user, permission_service=permission_service)
+
+        customer = await user_repository.get_by_id(session=session, user_id=user_id)
+        if customer is None:
+            raise AdminUserNotFoundError
+        if customer.is_blocked:
+            raise AdminUserAlreadyBlockedError
+
+        blocked_user = await user_repository.block(
+            session=session,
+            user=customer,
+            blocked_at=datetime.now(settings.tz),
+            blocked_by=user.id,
+            block_reason=data.reason,
+        )
+        revoked_tokens_count = 0
+        if data.revoke_sessions:
+            revoked_tokens_count = await refresh_token_service.revoke_all_user_tokens(
+                session=session,
+                refresh_token_repository=refresh_token_repository,
+                user_id=blocked_user.id,
+            )
+
+        await admin_audit_log_repository.create(
+            session=session,
+            user_id=user.id,
+            login=getattr(user, "email", None) or getattr(user, "phone", None) or str(user.id),
+            event="admin_user_block",
+            status="success",
+            details={
+                "target_user_id": blocked_user.id,
+                "reason": data.reason,
+                "revoke_sessions": data.revoke_sessions,
+                "revoked_tokens_count": revoked_tokens_count,
+            },
+        )
+        await commiter.commit()
+
+        await self._invalidate_user_cache(
+            redis_service=redis_service,
+            user_id=blocked_user.id,
+            user_cache_service=user_cache_service,
+            auth_cache_service=auth_cache_service,
+            profile_cache_service=profile_cache_service,
+        )
+
+        return AdminUserBlockResponse(
+            message="Пользователь заблокирован",
+            user_id=blocked_user.id,
+            is_blocked=blocked_user.is_blocked,
+        )
+
     def _build_user_response(self, *, customer, stats) -> AdminUserListItemResponse:
         return AdminUserListItemResponse(
             id=customer.id,
@@ -229,7 +313,7 @@ class AdminUserService:
             phone=customer.phone,
             email=customer.email,
             is_active=customer.is_active,
-            is_blocked=not customer.is_active,
+            is_blocked=customer.is_blocked,
             orders_count=stats.orders_count if stats is not None else 0,
             total_spent=stats.total_spent if stats is not None else Decimal("0.00"),
             created_at=customer.created_date,
@@ -242,7 +326,7 @@ class AdminUserService:
             phone=customer.phone,
             email=customer.email,
             is_active=customer.is_active,
-            is_blocked=not customer.is_active,
+            is_blocked=customer.is_blocked,
             is_deleted=customer.is_deleted,
             orders_count=stats.orders_count,
             total_spent=stats.total_spent,
@@ -280,3 +364,17 @@ class AdminUserService:
             items_count=order.items_count,
             created_at=order.created_at,
         )
+
+    async def _invalidate_user_cache(
+        self,
+        *,
+        redis_service: RedisService,
+        user_id: int,
+        user_cache_service,
+        auth_cache_service,
+        profile_cache_service,
+    ) -> None:
+        await redis_service.delete_by_pattern("admin:users:*")
+        await user_cache_service.delete_user_me_cache(redis_service=redis_service, user_id=user_id)
+        await auth_cache_service.delete_current_user_cache(redis_service=redis_service, user_id=user_id)
+        await profile_cache_service.delete_summary(redis_service=redis_service, user_id=user_id)

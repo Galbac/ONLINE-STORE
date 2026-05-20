@@ -86,6 +86,7 @@ def build_user(
     auth_service: AuthService,
     password: str = "OldStrongPassword123",
     is_active: bool = True,
+    is_blocked: bool = False,
 ) -> User:
     user = User(
         name="Иван Иванов",
@@ -94,6 +95,7 @@ def build_user(
         password_hash=auth_service.hash_password(password),
         role=UserRole.CUSTOMER,
         is_active=is_active,
+        is_blocked=is_blocked,
     )
     user.id = 1
     return user
@@ -174,6 +176,21 @@ async def test_change_password_with_refresh_token_instead_of_access_token() -> N
     with pytest.raises(HTTPException) as exc_info:
         await resolve_current_user(
             authorization=f"Bearer {refresh_token}",
+            session=FakeSession(execute_results=[user]),
+        )
+
+    assert exc_info.value.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_blocked_user_does_not_pass_current_user_resolution() -> None:
+    auth_service = AuthService()
+    user = build_user(auth_service=auth_service, is_blocked=True)
+    access_token = auth_service.create_access_token(user_id=user.id, role=user.role)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await resolve_current_user(
+            authorization=f"Bearer {access_token}",
             session=FakeSession(execute_results=[user]),
         )
 

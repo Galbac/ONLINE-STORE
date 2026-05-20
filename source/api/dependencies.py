@@ -122,6 +122,8 @@ async def resolve_current_user_by_payload(
     user = result.scalar_one_or_none()
     if user is None:
         raise_unauthorized()
+    if not user.is_active or user.is_deleted or user.is_blocked:
+        raise_unauthorized()
     return user
 
 

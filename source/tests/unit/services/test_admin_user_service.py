@@ -8,10 +8,23 @@ from source.config.settings import settings
 from source.db.models.choises.enum import UserRole
 from pydantic import ValidationError
 
-from source.errors.auth import AdminAuthAccessDeniedError, AdminUserNotFoundError, UserEmailAlreadyExistsError, UserPhoneAlreadyExistsError
-from source.schemas.pydantic.user import AdminUserDetailResponse, AdminUserListQueryParams, AdminUserListResponse, AdminUserUpdateRequest
+from source.errors.auth import (
+    AdminAuthAccessDeniedError,
+    AdminUserAlreadyBlockedError,
+    AdminUserNotFoundError,
+    UserEmailAlreadyExistsError,
+    UserPhoneAlreadyExistsError,
+)
+from source.schemas.pydantic.user import (
+    AdminUserBlockRequest,
+    AdminUserDetailResponse,
+    AdminUserListQueryParams,
+    AdminUserListResponse,
+    AdminUserUpdateRequest,
+)
 from source.services.admin_auth import PermissionService
 from source.services.admin_user import AdminUserService
+from source.services.refresh_token import RefreshTokenService
 from source.utils.query_hash import build_query_hash
 from source.utils.search import normalize_search_query
 
@@ -67,6 +80,14 @@ class FakeUserRepository:
     async def update(self, *, session, user):
         return user
 
+    async def block(self, *, session, user, blocked_at: datetime, blocked_by: int, block_reason: str):
+        user.is_blocked = True
+        user.blocked_at = blocked_at
+        user.blocked_by = blocked_by
+        user.block_reason = block_reason
+        user.updated_date = blocked_at
+        return user
+
     def _filter(self, *, query: AdminUserListQueryParams):
         users = [user for user in self.users if user.role == UserRole.CUSTOMER]
         if query.q is not None:
@@ -81,7 +102,7 @@ class FakeUserRepository:
         if query.is_active is not None:
             users = [user for user in users if user.is_active is query.is_active]
         if query.is_blocked is not None:
-            users = [user for user in users if (not user.is_active) is query.is_blocked]
+            users = [user for user in users if user.is_blocked is query.is_blocked]
         if query.is_deleted is not None:
             users = [user for user in users if user.is_deleted is query.is_deleted]
         else:
@@ -161,8 +182,17 @@ class FakeProfileCacheService:
         await redis_service.delete(f"profile:summary:{user_id}")
 
 
+class FakeRefreshTokenRepository:
+    def __init__(self) -> None:
+        self.revoked_user_ids = []
+
+    async def revoke_all_by_user_id(self, *, session, user_id: int, revoked_at: datetime) -> int:
+        self.revoked_user_ids.append(user_id)
+        return 3
+
+
 def build_admin(*, role=UserRole.ADMIN):
-    return SimpleNamespace(id=100, role=role, is_active=True, is_deleted=False)
+    return SimpleNamespace(id=100, role=role, is_active=True, is_deleted=False, is_blocked=False)
 
 
 def build_user(
@@ -174,6 +204,7 @@ def build_user(
     role=UserRole.CUSTOMER,
     is_active: bool = True,
     is_deleted: bool = False,
+    is_blocked: bool = False,
 ):
     return SimpleNamespace(
         id=user_id,
@@ -184,7 +215,12 @@ def build_user(
         role=role,
         is_active=is_active,
         is_deleted=is_deleted,
+        is_blocked=is_blocked,
+        blocked_at=None,
+        blocked_by=None,
+        block_reason=None,
         created_date=datetime(2026, 5, 12, 10, 0, 0) + timedelta(minutes=user_id),
+        updated_date=datetime(2026, 5, 12, 10, 30, 0),
     )
 
 
@@ -298,6 +334,47 @@ async def update_user(
     )
 
 
+async def block_user(
+    *,
+    users=None,
+    user_id: int = 1,
+    data: AdminUserBlockRequest | None = None,
+    redis_service=None,
+    role=UserRole.ADMIN,
+    user_repository=None,
+    refresh_token_repository=None,
+    audit_log_repository=None,
+    commiter=None,
+):
+    redis_service = redis_service or FakeRedisService()
+    refresh_token_repository = refresh_token_repository or FakeRefreshTokenRepository()
+    audit_log_repository = audit_log_repository or FakeAuditLogRepository()
+    commiter = commiter or FakeCommiter()
+    response = await AdminUserService().block_user(
+        session=None,
+        redis_service=redis_service,
+        user=build_admin(role=role),
+        user_id=user_id,
+        data=data or AdminUserBlockRequest(reason="Подозрительная активность", revoke_sessions=True),
+        commiter=commiter,
+        permission_service=PermissionService(),
+        user_repository=user_repository or FakeUserRepository(users or []),
+        refresh_token_repository=refresh_token_repository,
+        refresh_token_service=RefreshTokenService(),
+        admin_audit_log_repository=audit_log_repository,
+        user_cache_service=FakeUserCacheService(),
+        auth_cache_service=FakeAuthCacheService(),
+        profile_cache_service=FakeProfileCacheService(),
+    )
+    return SimpleNamespace(
+        response=response,
+        redis_service=redis_service,
+        refresh_token_repository=refresh_token_repository,
+        audit_log_repository=audit_log_repository,
+        commiter=commiter,
+    )
+
+
 @pytest.mark.asyncio
 async def test_admin_get_users_success() -> None:
     stats = {
@@ -349,8 +426,8 @@ async def test_admin_get_users_filters_by_is_active() -> None:
 async def test_admin_get_users_filters_by_is_blocked() -> None:
     response = await get_users(
         users=[
-            build_user(user_id=1, is_active=True),
-            build_user(user_id=2, is_active=False),
+            build_user(user_id=1, is_blocked=False),
+            build_user(user_id=2, is_blocked=True),
         ],
         query=AdminUserListQueryParams(is_blocked=True),
     )
@@ -557,6 +634,70 @@ async def test_admin_update_user_invalidates_cache() -> None:
     redis_service = FakeRedisService()
 
     result = await update_user(redis_service=redis_service, users=[build_user(user_id=1)])
+
+    assert "admin:users:*" in result.redis_service.deleted_patterns
+    assert "users:me:1" in result.redis_service.deleted
+    assert "auth:me:user:1" in result.redis_service.deleted
+    assert "profile:summary:1" in result.redis_service.deleted
+
+
+@pytest.mark.asyncio
+async def test_admin_block_user_success() -> None:
+    user = build_user(user_id=1)
+
+    result = await block_user(users=[user])
+
+    assert result.response.message == "Пользователь заблокирован"
+    assert result.response.user_id == 1
+    assert result.response.is_blocked is True
+    assert user.is_blocked is True
+    assert user.blocked_by == 100
+    assert user.block_reason == "Подозрительная активность"
+    assert result.audit_log_repository.logs[0]["event"] == "admin_user_block"
+    assert result.commiter.committed is True
+
+
+@pytest.mark.asyncio
+async def test_admin_block_user_already_blocked_error() -> None:
+    with pytest.raises(AdminUserAlreadyBlockedError):
+        await block_user(users=[build_user(user_id=1, is_blocked=True)])
+
+
+@pytest.mark.asyncio
+async def test_admin_block_user_not_found_error() -> None:
+    with pytest.raises(AdminUserNotFoundError):
+        await block_user(users=[], user_id=404)
+
+
+@pytest.mark.asyncio
+async def test_admin_block_user_revokes_refresh_tokens() -> None:
+    refresh_token_repository = FakeRefreshTokenRepository()
+
+    await block_user(
+        users=[build_user(user_id=1)],
+        refresh_token_repository=refresh_token_repository,
+        data=AdminUserBlockRequest(reason="Подозрительная активность", revoke_sessions=True),
+    )
+
+    assert refresh_token_repository.revoked_user_ids == [1]
+
+
+@pytest.mark.asyncio
+async def test_admin_block_user_does_not_revoke_refresh_tokens_when_disabled() -> None:
+    refresh_token_repository = FakeRefreshTokenRepository()
+
+    await block_user(
+        users=[build_user(user_id=1)],
+        refresh_token_repository=refresh_token_repository,
+        data=AdminUserBlockRequest(reason="Подозрительная активность", revoke_sessions=False),
+    )
+
+    assert refresh_token_repository.revoked_user_ids == []
+
+
+@pytest.mark.asyncio
+async def test_admin_block_user_invalidates_cache() -> None:
+    result = await block_user(users=[build_user(user_id=1)])
 
     assert "admin:users:*" in result.redis_service.deleted_patterns
     assert "users:me:1" in result.redis_service.deleted

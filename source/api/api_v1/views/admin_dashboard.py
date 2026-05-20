@@ -13,6 +13,7 @@ from source.errors.category import CategoryCycleError, CategoryNotFoundError, Ca
 from source.errors.category import CategoryHasActiveChildrenError, CategoryHasActiveProductsError
 from source.errors.auth import (
     AdminAuthAccessDeniedError,
+    AdminUserAlreadyBlockedError,
     AdminUserNotFoundError,
     EmptyUserProfileUpdateError,
     EmptyOrderUpdateError,
@@ -60,6 +61,7 @@ from source.repositories.product import ProductRepository
 from source.repositories.product_availability_log import ProductAvailabilityLogRepository
 from source.repositories.product_image import ProductImageRepository
 from source.repositories.promo_code import PromoCodeUsageRepository
+from source.repositories.refresh_token import RefreshTokenRepository
 from source.repositories.stock_movement import StockMovementRepository
 from source.repositories.upload import UploadRepository
 from source.repositories.user import UserRepository
@@ -112,6 +114,8 @@ from source.schemas.pydantic.order import (
     AdminOrderUpdateResponse,
 )
 from source.schemas.pydantic.user import (
+    AdminUserBlockRequest,
+    AdminUserBlockResponse,
     AdminUserDetailResponse,
     AdminUserListQueryParams,
     AdminUserListResponse,
@@ -140,6 +144,7 @@ from source.services.payment import PaymentService
 from source.services.profile_cache import ProfileCacheService
 from source.services.promo_code import PromoCodeService
 from source.services.redis import RedisService
+from source.services.refresh_token import RefreshTokenService
 from source.services.storage import StorageService
 from source.services.stock import StockMovementService, StockService
 from source.services.upload import UploadService
@@ -735,6 +740,67 @@ async def update_admin_user(
     except UserEmailAlreadyExistsError as error:
         await commiter.rollback()
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Пользователь с таким email уже существует") from error
+    except Exception:
+        await commiter.rollback()
+        raise
+
+
+@router.patch("/users/{user_id}/block", response_model=AdminUserBlockResponse, status_code=status.HTTP_200_OK)
+@inject
+async def block_admin_user(
+    payload: dict = Body(...),
+    user_id: int = Path(..., gt=0),
+    token_payload: dict = Depends(verify_access_token),
+    current_user: User = Depends(get_current_user),
+    session: FromDishka[AsyncSession] = None,
+    commiter: FromDishka[Commiter] = None,
+    redis_service: FromDishka[RedisService] = None,
+    admin_user_service: FromDishka[AdminUserService] = None,
+    permission_service: FromDishka[PermissionService] = None,
+    user_repository: FromDishka[UserRepository] = None,
+    refresh_token_repository: FromDishka[RefreshTokenRepository] = None,
+    refresh_token_service: FromDishka[RefreshTokenService] = None,
+    admin_audit_log_repository: FromDishka[AdminAuditLogRepository] = None,
+    user_cache_service: FromDishka[UserCacheService] = None,
+    auth_cache_service: FromDishka[AuthCacheService] = None,
+    profile_cache_service: FromDishka[ProfileCacheService] = None,
+) -> AdminUserBlockResponse:
+    if token_payload.get("token_type") != "access":
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь не авторизован")
+    try:
+        return await admin_user_service.block_user(
+            session=session,
+            redis_service=redis_service,
+            user=current_user,
+            user_id=user_id,
+            data=AdminUserBlockRequest.model_validate(payload),
+            commiter=commiter,
+            permission_service=permission_service,
+            user_repository=user_repository,
+            refresh_token_repository=refresh_token_repository,
+            refresh_token_service=refresh_token_service,
+            admin_audit_log_repository=admin_audit_log_repository,
+            user_cache_service=user_cache_service,
+            auth_cache_service=auth_cache_service,
+            profile_cache_service=profile_cache_service,
+        )
+    except ValidationError as error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Неверные данные блокировки") from error
+    except InvalidCredentialsError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь не авторизован") from error
+    except AdminAuthAccessDeniedError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Недостаточно прав") from error
+    except InactiveUserError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Пользователь заблокирован") from error
+    except AdminUserNotFoundError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Пользователь не найден") from error
+    except AdminUserAlreadyBlockedError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Пользователь уже заблокирован") from error
     except Exception:
         await commiter.rollback()
         raise

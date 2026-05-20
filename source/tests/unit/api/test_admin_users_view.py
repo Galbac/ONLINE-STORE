@@ -31,7 +31,7 @@ class FakeOrderRepository:
 
 
 def build_user(*, role=UserRole.ADMIN):
-    return SimpleNamespace(id=1, role=role, is_active=True, is_deleted=False)
+    return SimpleNamespace(id=1, role=role, is_active=True, is_deleted=False, is_blocked=False)
 
 
 @pytest.mark.asyncio

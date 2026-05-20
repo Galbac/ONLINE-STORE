@@ -78,6 +78,25 @@ class UserRepository:
         await session.refresh(user)
         return user
 
+    async def block(
+        self,
+        *,
+        session: AsyncSession,
+        user: User,
+        blocked_at: datetime,
+        blocked_by: int,
+        block_reason: str,
+    ) -> User:
+        user.is_blocked = True
+        user.blocked_at = blocked_at
+        user.blocked_by = blocked_by
+        user.block_reason = block_reason
+        user.updated_date = blocked_at
+        session.add(user)
+        await session.flush()
+        await session.refresh(user)
+        return user
+
     def _apply_admin_customer_filters(self, statement, *, query: AdminUserListQueryParams):
         statement = statement.where(User.role == UserRole.CUSTOMER)
         if query.q is not None:
@@ -92,7 +111,7 @@ class UserRepository:
         if query.is_active is not None:
             statement = statement.where(User.is_active.is_(query.is_active))
         if query.is_blocked is not None:
-            statement = statement.where(User.is_active.is_(not query.is_blocked))
+            statement = statement.where(User.is_blocked.is_(query.is_blocked))
         if query.is_deleted is not None:
             statement = statement.where(User.is_deleted.is_(query.is_deleted))
         else:

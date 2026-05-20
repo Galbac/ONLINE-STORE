@@ -86,6 +86,10 @@ class AdminUserNotFoundError(Exception):
     pass
 
 
+class AdminUserAlreadyBlockedError(Exception):
+    pass
+
+
 class EmptyUserProfileUpdateError(Exception):
     pass
 

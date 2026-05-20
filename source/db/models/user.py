@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Enum, String
+from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from source.db.models.base import Base
@@ -37,3 +37,12 @@ class User(IdBigIntPkMixin, CreateUpdateMixin, Base):
         nullable=False,
     )
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    is_blocked: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+        server_default="false",
+        nullable=False,
+    )
+    blocked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    blocked_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), index=True)
+    block_reason: Mapped[str | None] = mapped_column(Text)
