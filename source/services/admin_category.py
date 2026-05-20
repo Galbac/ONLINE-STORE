@@ -5,9 +5,12 @@ from source.errors.upload import UploadNotFoundError
 from source.schemas.pydantic.admin_category import (
     AdminCategoryCreateRequest,
     AdminCategoryDetailResponse,
+    AdminCategoryImageResponse,
     AdminCategoryListItemResponse,
     AdminCategoryListQueryParams,
     AdminCategoryListResponse,
+    AdminCategorySeoResponse,
+    AdminCategoryShortResponse,
 )
 from source.services.admin_auth import STAFF_ROLES
 from source.services.redis import RedisService
@@ -92,6 +95,80 @@ class AdminCategoryService:
         )
         return response
 
+    async def get_category_detail(
+        self,
+        *,
+        session,
+        redis_service: RedisService,
+        user,
+        category_id: int,
+        permission_service,
+        category_repository,
+        product_repository,
+        upload_repository,
+        admin_category_cache_service,
+    ) -> AdminCategoryDetailResponse:
+        self._check_read_permission(user=user, permission_service=permission_service)
+
+        cached_category = await admin_category_cache_service.get_detail(
+            redis_service=redis_service,
+            category_id=category_id,
+        )
+        if cached_category is not None:
+            return cached_category
+
+        category = await category_repository.admin_get_by_id(session=session, category_id=category_id)
+        if category is None:
+            raise CategoryNotFoundError
+
+        parent = None
+        if category.parent_id is not None:
+            parent_category = await category_repository.get_by_id(session=session, category_id=category.parent_id)
+            if parent_category is not None:
+                parent = self._build_short_response(category=parent_category)
+
+        children = [
+            self._build_short_response(category=child)
+            for child in await category_repository.get_children(session=session, parent_id=category.id)
+        ]
+        image = None
+        if category.image_file_id is not None:
+            upload = await upload_repository.get_by_id(session=session, file_id=category.image_file_id)
+            if upload is not None and not upload.is_deleted:
+                image = AdminCategoryImageResponse(id=upload.id, url=upload.url)
+
+        seo = None
+        if category.meta_title is not None or category.meta_description is not None:
+            seo = AdminCategorySeoResponse(
+                meta_title=category.meta_title,
+                meta_description=category.meta_description,
+            )
+
+        response = AdminCategoryDetailResponse(
+            id=category.id,
+            name=category.name,
+            slug=category.slug,
+            description=category.description,
+            parent_id=category.parent_id,
+            parent=parent,
+            children=children,
+            image=image,
+            sort_order=category.sort_order,
+            is_active=category.is_active,
+            products_count=await product_repository.count_by_category_id(
+                session=session,
+                category_id=category.id,
+            ),
+            seo=seo,
+        )
+        await admin_category_cache_service.set_detail(
+            redis_service=redis_service,
+            category_id=category.id,
+            response=response,
+            ttl_seconds=settings.categories.admin_list_cache_ttl_seconds,
+        )
+        return response
+
     async def create_category(
         self,
         *,
@@ -164,4 +241,11 @@ class AdminCategoryService:
             sort_order=category.sort_order,
             is_active=category.is_active,
             created_at=category.created_date,
+        )
+
+    def _build_short_response(self, *, category) -> AdminCategoryShortResponse:
+        return AdminCategoryShortResponse(
+            id=category.id,
+            name=category.name,
+            slug=category.slug,
         )

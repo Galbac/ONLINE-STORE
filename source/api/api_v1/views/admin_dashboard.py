@@ -182,6 +182,50 @@ async def create_admin_category(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Slug уже занят") from error
 
 
+@router.get(
+    "/categories/{category_id}",
+    response_model=AdminCategoryDetailResponse,
+    response_model_exclude_none=True,
+    status_code=status.HTTP_200_OK,
+)
+@inject
+async def get_admin_category_detail(
+    token_payload: dict = Depends(verify_access_token),
+    current_user: User = Depends(get_current_user),
+    category_id: int = Path(ge=1),
+    session: FromDishka[AsyncSession] = None,
+    redis_service: FromDishka[RedisService] = None,
+    admin_category_service: FromDishka[AdminCategoryService] = None,
+    admin_category_cache_service: FromDishka[AdminCategoryCacheService] = None,
+    permission_service: FromDishka[PermissionService] = None,
+    category_repository: FromDishka[CategoryRepository] = None,
+    product_repository: FromDishka[ProductRepository] = None,
+    upload_repository: FromDishka[UploadRepository] = None,
+) -> AdminCategoryDetailResponse:
+    if token_payload.get("token_type") != "access":
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь не авторизован")
+    try:
+        return await admin_category_service.get_category_detail(
+            session=session,
+            redis_service=redis_service,
+            user=current_user,
+            category_id=category_id,
+            permission_service=permission_service,
+            category_repository=category_repository,
+            product_repository=product_repository,
+            upload_repository=upload_repository,
+            admin_category_cache_service=admin_category_cache_service,
+        )
+    except InvalidCredentialsError as error:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь не авторизован") from error
+    except AdminAuthAccessDeniedError as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Недостаточно прав") from error
+    except InactiveUserError as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Пользователь заблокирован") from error
+    except CategoryNotFoundError as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Категория не найдена") from error
+
+
 @router.get("/products", response_model=AdminProductListResponse, status_code=status.HTTP_200_OK)
 @inject
 async def get_admin_products(

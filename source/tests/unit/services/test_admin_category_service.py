@@ -10,6 +10,7 @@ from source.errors.category import CategoryNotFoundError, CategorySlugAlreadyExi
 from source.errors.upload import UploadNotFoundError
 from source.schemas.pydantic.admin_category import (
     AdminCategoryCreateRequest,
+    AdminCategoryDetailResponse,
     AdminCategoryListQueryParams,
     AdminCategoryListResponse,
 )
@@ -53,6 +54,17 @@ class FakeCategoryRepository:
     async def admin_count(self, *, session, query: AdminCategoryListQueryParams):
         return len(self._filter(query=query))
 
+    async def admin_get_by_id(self, *, session, category_id: int):
+        self.called = True
+        return next(
+            (
+                category
+                for category in self.categories
+                if category.id == category_id and not category.is_deleted
+            ),
+            None,
+        )
+
     async def get_by_slug(self, *, session, slug: str):
         return next((category for category in self.categories if category.slug == slug), None)
 
@@ -64,6 +76,16 @@ class FakeCategoryRepository:
                 if category.id == category_id and not category.is_deleted
             ),
             None,
+        )
+
+    async def get_children(self, *, session, parent_id: int):
+        return sorted(
+            [
+                category
+                for category in self.categories
+                if category.parent_id == parent_id and not category.is_deleted
+            ],
+            key=lambda category: (category.sort_order, category.name),
         )
 
     async def create(self, *, session, data: AdminCategoryCreateRequest, slug: str, image_url: str | None):
@@ -161,11 +183,15 @@ def build_category(
         id=category_id,
         name=name,
         slug=slug,
+        description=f"{name} описание",
         parent_id=parent_id,
+        image_file_id=1001 if category_id == 1 else None,
         image_url=f"/media/categories/{slug}.png",
         sort_order=sort_order,
         is_active=is_active,
         is_deleted=is_deleted,
+        meta_title=f"{name} купить онлайн",
+        meta_description=f"{name} с доставкой",
         created_date=datetime(2026, 5, 12, 10),
     )
 
@@ -236,6 +262,29 @@ async def create_category(
         admin_audit_log_repository=audit_log_repository or FakeAuditLogRepository(),
         audit_log_service=AuditLogService(),
         category_cache_service=CategoryCacheService(),
+        admin_category_cache_service=AdminCategoryCacheService(),
+    )
+
+
+async def get_category_detail(
+    *,
+    redis_service=None,
+    user=None,
+    category_repository=None,
+    product_repository=None,
+    upload_repository=None,
+    category_id: int = 1,
+):
+    return await AdminCategoryService().get_category_detail(
+        session=None,
+        redis_service=redis_service or FakeRedisService(),
+        user=user or build_user(),
+        category_id=category_id,
+        permission_service=PermissionService(),
+        category_repository=category_repository or build_category_repository(),
+        product_repository=product_repository
+        or FakeProductRepository(counts_by_category_id={1: 120, 2: 95, 11: 25, 12: 10, 99: 3}),
+        upload_repository=upload_repository or FakeUploadRepository(),
         admin_category_cache_service=AdminCategoryCacheService(),
     )
 
@@ -319,6 +368,84 @@ async def test_admin_categories_response_is_cached() -> None:
     cache_key = f"admin:categories:list:{build_query_hash(query.model_dump())}"
     assert cache_key in redis_service.values
     assert redis_service.ttls[cache_key] == settings.categories.admin_list_cache_ttl_seconds
+
+
+@pytest.mark.asyncio
+async def test_admin_category_detail_success() -> None:
+    response = await get_category_detail()
+
+    assert response.id == 1
+    assert response.name == "Фрукты"
+    assert response.slug == "frukty"
+    assert response.parent is None
+    assert [child.id for child in response.children] == [11, 12]
+    assert response.image.id == 1001
+    assert response.image.url == "/media/categories/fruits.png"
+    assert response.products_count == 120
+    assert response.seo.meta_title == "Фрукты купить онлайн"
+    assert response.seo.meta_description == "Фрукты с доставкой"
+
+
+@pytest.mark.asyncio
+async def test_admin_category_detail_with_parent_success() -> None:
+    response = await get_category_detail(category_id=11)
+
+    assert response.id == 11
+    assert response.parent.id == 1
+    assert response.parent.name == "Фрукты"
+    assert response.children == []
+
+
+@pytest.mark.asyncio
+async def test_admin_category_detail_from_redis_cache() -> None:
+    redis_service = FakeRedisService()
+    cached_response = AdminCategoryDetailResponse(
+        id=1,
+        name="Фрукты",
+        slug="frukty",
+        sort_order=10,
+        is_active=True,
+        products_count=120,
+        children=[],
+    )
+    redis_service.values["admin:categories:detail:1"] = cached_response.model_dump_json()
+    category_repository = build_category_repository()
+
+    response = await get_category_detail(
+        redis_service=redis_service,
+        category_repository=category_repository,
+    )
+
+    assert response == cached_response
+    assert category_repository.called is False
+
+
+@pytest.mark.asyncio
+async def test_admin_category_detail_not_found_error() -> None:
+    with pytest.raises(CategoryNotFoundError):
+        await get_category_detail(category_id=999)
+
+
+@pytest.mark.asyncio
+async def test_admin_category_detail_deleted_category_not_returned() -> None:
+    with pytest.raises(CategoryNotFoundError):
+        await get_category_detail(category_id=99)
+
+
+@pytest.mark.asyncio
+async def test_admin_category_detail_no_permission_error() -> None:
+    with pytest.raises(AdminAuthAccessDeniedError):
+        await get_category_detail(user=build_user(role=UserRole.PICKER))
+
+
+@pytest.mark.asyncio
+async def test_admin_category_detail_response_is_cached() -> None:
+    redis_service = FakeRedisService()
+
+    await get_category_detail(redis_service=redis_service)
+
+    assert "admin:categories:detail:1" in redis_service.values
+    assert redis_service.ttls["admin:categories:detail:1"] == settings.categories.admin_list_cache_ttl_seconds
 
 
 @pytest.mark.asyncio

@@ -71,16 +71,37 @@ class AdminCategoryListItemResponse(BaseModel):
     created_at: datetime
 
 
+class AdminCategoryShortResponse(BaseModel):
+    id: int
+    name: str
+    slug: str
+
+
+class AdminCategoryImageResponse(BaseModel):
+    id: int
+    url: str
+
+
+class AdminCategorySeoResponse(BaseModel):
+    meta_title: str | None = None
+    meta_description: str | None = None
+
+
 class AdminCategoryDetailResponse(BaseModel):
     id: int
     name: str
     slug: str
     description: str | None = None
     parent_id: int | None = None
+    parent: AdminCategoryShortResponse | None = None
+    children: list[AdminCategoryShortResponse] | None = None
+    image: AdminCategoryImageResponse | None = None
     image_url: str | None = None
     sort_order: int
     is_active: bool
-    created_at: datetime
+    products_count: int | None = None
+    seo: AdminCategorySeoResponse | None = None
+    created_at: datetime | None = None
 
 
 class AdminCategoryListResponse(BaseModel):

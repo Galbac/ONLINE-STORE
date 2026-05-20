@@ -142,6 +142,36 @@ class CategoryRepository:
         result = await session.execute(select(func.count()).select_from(categories_subquery))
         return int(result.scalar_one())
 
+    async def admin_get_by_id(
+        self,
+        *,
+        session: AsyncSession,
+        category_id: int,
+    ) -> Category | None:
+        result = await session.execute(
+            select(Category).where(
+                Category.id == category_id,
+                Category.is_deleted.is_(False),
+            ),
+        )
+        return result.scalar_one_or_none()
+
+    async def get_children(
+        self,
+        *,
+        session: AsyncSession,
+        parent_id: int,
+    ) -> list[Category]:
+        result = await session.execute(
+            select(Category)
+            .where(
+                Category.parent_id == parent_id,
+                Category.is_deleted.is_(False),
+            )
+            .order_by(Category.sort_order.asc(), Category.name.asc()),
+        )
+        return list(result.scalars().all())
+
     async def get_active_all(
         self,
         *,
