@@ -18,6 +18,13 @@ STAFF_ROLES = (
 
 
 class UserRepository:
+    async def create(self, *, session: AsyncSession, **data) -> User:
+        user = User(**data)
+        session.add(user)
+        await session.flush()
+        await session.refresh(user)
+        return user
+
     async def get_by_id(
         self,
         *,

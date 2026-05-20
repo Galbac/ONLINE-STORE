@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from pydantic import BaseModel, EmailStr, Field, computed_field, field_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, computed_field, field_validator
 
 from source.db.models.choises.enum import UserRole
 
@@ -61,3 +61,48 @@ class AdminStaffListResponse(BaseModel):
             limit=limit,
             pages=(total + limit - 1) // limit if total else 0,
         )
+
+
+class AdminStaffCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=2, max_length=100)
+    email: EmailStr | None = None
+    phone: str = Field(min_length=5, max_length=32)
+    password: str = Field(min_length=8)
+    role: UserRole
+    is_active: bool = True
+
+    @field_validator("name", "phone", mode="before")
+    @classmethod
+    def normalize_string(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        return " ".join(value.strip().split())
+
+    @field_validator("email")
+    @classmethod
+    def normalize_email(cls, value: EmailStr | None) -> str | None:
+        if value is None:
+            return value
+        return str(value).lower()
+
+    @field_validator("password")
+    @classmethod
+    def validate_password_complexity(cls, value: str) -> str:
+        has_upper = any(char.isupper() for char in value)
+        has_lower = any(char.islower() for char in value)
+        has_digit = any(char.isdigit() for char in value)
+        if not (has_upper and has_lower and has_digit):
+            raise ValueError("Пароль слишком слабый")
+        return value
+
+
+class AdminStaffDetailResponse(BaseModel):
+    id: int
+    name: str
+    email: EmailStr | None
+    phone: str
+    role: UserRole
+    is_active: bool
+    created_at: datetime

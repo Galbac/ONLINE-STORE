@@ -79,6 +79,7 @@ from source.services.order_status import OrderStatusService
 from source.services.payment_cache import PaymentCacheService
 from source.services.payment import PaymentProviderService, PaymentService
 from source.services.payment_webhook import PaymentWebhookService
+from source.services.password import PasswordService
 from source.services.product import ProductService
 from source.services.product_cache import ProductCacheService
 from source.services.profile import ProfileService
@@ -484,6 +485,10 @@ class AppProvider(Provider):
     )
     permission_service = provide(
         PermissionService,
+        scope=Scope.REQUEST,
+    )
+    password_service = provide(
+        PasswordService,
         scope=Scope.REQUEST,
     )
     refresh_token_service = provide(

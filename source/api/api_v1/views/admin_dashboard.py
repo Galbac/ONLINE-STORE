@@ -13,6 +13,7 @@ from source.errors.category import CategoryCycleError, CategoryNotFoundError, Ca
 from source.errors.category import CategoryHasActiveChildrenError, CategoryHasActiveProductsError
 from source.errors.auth import (
     AdminAuthAccessDeniedError,
+    AdminStaffInvalidRoleError,
     AdminUserAlreadyBlockedError,
     AdminUserNotFoundError,
     AdminUserNotBlockedError,
@@ -99,7 +100,12 @@ from source.schemas.pydantic.admin_product import (
     ProductStockResponse,
     ProductStockUpdateRequest,
 )
-from source.schemas.pydantic.admin_staff import AdminStaffListQueryParams, AdminStaffListResponse
+from source.schemas.pydantic.admin_staff import (
+    AdminStaffCreateRequest,
+    AdminStaffDetailResponse,
+    AdminStaffListQueryParams,
+    AdminStaffListResponse,
+)
 from source.schemas.pydantic.order import (
     AdminOrderActionResponse,
     AdminOrderCancelRequest,
@@ -148,6 +154,7 @@ from source.services.order_status import OrderStatusService
 from source.services.notifications import EmailService, NotificationService, TelegramNotificationService
 from source.services.one_c import OneCIntegrationService
 from source.services.payment import PaymentService
+from source.services.password import PasswordService
 from source.services.profile_cache import ProfileCacheService
 from source.services.promo_code import PromoCodeService
 from source.services.redis import RedisService
@@ -206,6 +213,62 @@ async def get_admin_staff(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Недостаточно прав") from error
     except InactiveUserError as error:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Пользователь заблокирован") from error
+
+
+@router.post("/staff", response_model=AdminStaffDetailResponse, status_code=status.HTTP_201_CREATED)
+@inject
+async def create_admin_staff(
+    payload: dict = Body(...),
+    token_payload: dict = Depends(verify_access_token),
+    current_user: User = Depends(get_current_user),
+    session: FromDishka[AsyncSession] = None,
+    commiter: FromDishka[Commiter] = None,
+    redis_service: FromDishka[RedisService] = None,
+    admin_staff_service: FromDishka[AdminStaffService] = None,
+    admin_staff_cache_service: FromDishka[AdminStaffCacheService] = None,
+    permission_service: FromDishka[PermissionService] = None,
+    user_repository: FromDishka[UserRepository] = None,
+    password_service: FromDishka[PasswordService] = None,
+    admin_audit_log_repository: FromDishka[AdminAuditLogRepository] = None,
+) -> AdminStaffDetailResponse:
+    if token_payload.get("token_type") != "access":
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь не авторизован")
+    try:
+        return await admin_staff_service.create_staff(
+            session=session,
+            redis_service=redis_service,
+            user=current_user,
+            data=AdminStaffCreateRequest.model_validate(payload),
+            commiter=commiter,
+            permission_service=permission_service,
+            user_repository=user_repository,
+            password_service=password_service,
+            admin_audit_log_repository=admin_audit_log_repository,
+            admin_staff_cache_service=admin_staff_cache_service,
+        )
+    except ValidationError as error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Неверные данные сотрудника") from error
+    except InvalidCredentialsError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь не авторизован") from error
+    except AdminAuthAccessDeniedError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Недостаточно прав") from error
+    except InactiveUserError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Пользователь заблокирован") from error
+    except AdminStaffInvalidRoleError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Недопустимая роль") from error
+    except UserPhoneAlreadyExistsError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Пользователь с таким телефоном уже существует") from error
+    except UserEmailAlreadyExistsError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Пользователь с таким email уже существует") from error
+    except Exception:
+        await commiter.rollback()
+        raise
 
 
 @router.get("/categories", response_model=AdminCategoryListResponse, status_code=status.HTTP_200_OK)

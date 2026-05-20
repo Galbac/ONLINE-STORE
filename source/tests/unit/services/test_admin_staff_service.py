@@ -2,11 +2,17 @@ from datetime import datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
+from pydantic import ValidationError
 
 from source.config.settings import settings
 from source.db.models.choises.enum import UserRole
-from source.errors.auth import AdminAuthAccessDeniedError
-from source.schemas.pydantic.admin_staff import AdminStaffListQueryParams, AdminStaffListResponse
+from source.errors.auth import (
+    AdminAuthAccessDeniedError,
+    AdminStaffInvalidRoleError,
+    UserEmailAlreadyExistsError,
+    UserPhoneAlreadyExistsError,
+)
+from source.schemas.pydantic.admin_staff import AdminStaffCreateRequest, AdminStaffListQueryParams, AdminStaffListResponse
 from source.services.admin_auth import PermissionService
 from source.services.admin_staff import AdminStaffService
 from source.services.admin_staff_cache import AdminStaffCacheService
@@ -48,6 +54,17 @@ class FakeUserRepository:
         self.count_calls += 1
         return len(self._filter(query=query))
 
+    async def get_by_phone(self, *, session, phone: str):
+        return next((user for user in self.users if user.phone == phone), None)
+
+    async def get_by_email(self, *, session, email: str):
+        return next((user for user in self.users if user.email == email), None)
+
+    async def create(self, *, session, **data):
+        user = build_user(user_id=len(self.users) + 1, **data)
+        self.users.append(user)
+        return user
+
     def _filter(self, *, query: AdminStaffListQueryParams):
         users = [user for user in self.users if user.role != UserRole.CUSTOMER]
         if query.q is not None:
@@ -79,6 +96,7 @@ def build_user(
     name: str = "Менеджер",
     email: str | None = "manager@example.com",
     phone: str = "+79990000000",
+    password_hash: str = "secret-hash",
     is_active: bool = True,
     is_blocked: bool = False,
 ):
@@ -87,7 +105,7 @@ def build_user(
         name=name,
         email=email,
         phone=phone,
-        password_hash="secret-hash",
+        password_hash=password_hash,
         role=role,
         is_active=is_active,
         is_deleted=False,
@@ -105,6 +123,74 @@ async def get_staff(*, users=None, query=None, redis_service=None, role=UserRole
         permission_service=PermissionService(),
         user_repository=repository or FakeUserRepository(users or []),
         admin_staff_cache_service=AdminStaffCacheService(),
+    )
+
+
+class FakeCommiter:
+    def __init__(self) -> None:
+        self.committed = False
+        self.rolled_back = False
+
+    async def commit(self) -> None:
+        self.committed = True
+
+    async def rollback(self) -> None:
+        self.rolled_back = True
+
+
+class FakeAuditLogRepository:
+    def __init__(self) -> None:
+        self.logs = []
+
+    async def create(self, *, session, **data):
+        self.logs.append(data)
+        return SimpleNamespace(**data)
+
+
+class FakePasswordService:
+    def hash_password(self, password: str) -> str:
+        return f"hashed:{password}"
+
+
+async def create_staff(
+    *,
+    users=None,
+    data: AdminStaffCreateRequest | None = None,
+    redis_service=None,
+    role=UserRole.ADMIN,
+    repository=None,
+    audit_log_repository=None,
+    commiter=None,
+):
+    redis_service = redis_service or FakeRedisService()
+    audit_log_repository = audit_log_repository or FakeAuditLogRepository()
+    commiter = commiter or FakeCommiter()
+    repository = repository or FakeUserRepository(users or [])
+    response = await AdminStaffService().create_staff(
+        session=None,
+        redis_service=redis_service,
+        user=build_current_user(role=role),
+        data=data or AdminStaffCreateRequest(
+            name="Менеджер Иван",
+            email="manager@example.com",
+            phone="+79991112233",
+            password="StrongPassword123",
+            role=UserRole.MANAGER,
+            is_active=True,
+        ),
+        commiter=commiter,
+        permission_service=PermissionService(),
+        user_repository=repository,
+        password_service=FakePasswordService(),
+        admin_audit_log_repository=audit_log_repository,
+        admin_staff_cache_service=AdminStaffCacheService(),
+    )
+    return SimpleNamespace(
+        response=response,
+        redis_service=redis_service,
+        repository=repository,
+        audit_log_repository=audit_log_repository,
+        commiter=commiter,
     )
 
 
@@ -231,3 +317,93 @@ async def test_admin_get_staff_response_is_cached() -> None:
     cache_key = f"admin:staff:list:{build_query_hash(query.model_dump())}"
     assert cache_key in redis_service.values
     assert redis_service.ttls[cache_key] == settings.admin_staff.list_cache_ttl_seconds
+
+
+@pytest.mark.asyncio
+async def test_admin_create_staff_manager_success() -> None:
+    result = await create_staff()
+
+    assert result.response.id == 1
+    assert result.response.role == UserRole.MANAGER
+    assert result.response.email == "manager@example.com"
+    assert result.commiter.committed is True
+    assert result.repository.users[0].password_hash == "hashed:StrongPassword123"
+
+
+@pytest.mark.asyncio
+async def test_admin_create_staff_picker_success() -> None:
+    result = await create_staff(
+        data=AdminStaffCreateRequest(
+            name="Сборщик Петр",
+            email="picker@example.com",
+            phone="+79991112234",
+            password="StrongPassword123",
+            role=UserRole.PICKER,
+            is_active=True,
+        ),
+    )
+
+    assert result.response.role == UserRole.PICKER
+
+
+@pytest.mark.asyncio
+async def test_admin_create_staff_email_already_exists_error() -> None:
+    with pytest.raises(UserEmailAlreadyExistsError):
+        await create_staff(users=[build_user(user_id=1, email="manager@example.com")])
+
+
+@pytest.mark.asyncio
+async def test_admin_create_staff_phone_already_exists_error() -> None:
+    with pytest.raises(UserPhoneAlreadyExistsError):
+        await create_staff(users=[build_user(user_id=1, phone="+79991112233")])
+
+
+def test_admin_create_staff_weak_password_error() -> None:
+    with pytest.raises(ValidationError):
+        AdminStaffCreateRequest(
+            name="Менеджер Иван",
+            email="manager@example.com",
+            phone="+79991112233",
+            password="weakpassword",
+            role=UserRole.MANAGER,
+        )
+
+
+@pytest.mark.asyncio
+async def test_admin_create_staff_invalid_role_error() -> None:
+    with pytest.raises(AdminStaffInvalidRoleError):
+        await create_staff(
+            data=AdminStaffCreateRequest(
+                name="Клиент Иван",
+                email="customer@example.com",
+                phone="+79991112235",
+                password="StrongPassword123",
+                role=UserRole.CUSTOMER,
+            ),
+        )
+
+
+@pytest.mark.asyncio
+async def test_admin_create_staff_password_hash_not_returned() -> None:
+    result = await create_staff()
+
+    assert "password_hash" not in result.response.model_dump()
+
+
+@pytest.mark.asyncio
+async def test_admin_create_staff_audit_log_created() -> None:
+    result = await create_staff()
+
+    assert result.audit_log_repository.logs[0]["event"] == "admin_staff_create"
+    assert result.audit_log_repository.logs[0]["details"] == {
+        "target_user_id": 1,
+        "role": "manager",
+    }
+
+
+@pytest.mark.asyncio
+async def test_admin_create_staff_invalidates_cache() -> None:
+    result = await create_staff()
+
+    assert "admin:staff:*" in result.redis_service.deleted_patterns
+    assert "admin:roles:*" in result.redis_service.deleted_patterns

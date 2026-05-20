@@ -61,6 +61,7 @@ ADMIN_PERMISSIONS_BY_ROLE = {
         "admin:users:update",
         "admin:users:block",
         "admin:staff:read",
+        "admin:staff:create",
     ],
     UserRole.MANAGER: [
         "admin:dashboard:read",
@@ -87,6 +88,7 @@ ADMIN_PERMISSIONS_BY_ROLE = {
         "admin:users:update",
         "admin:users:block",
         "admin:staff:read",
+        "admin:staff:create",
     ],
     UserRole.CONTENT_MANAGER: [
         "admin:dashboard:read",
@@ -99,6 +101,14 @@ ADMIN_PERMISSIONS_BY_ROLE = {
     ],
     UserRole.PICKER: ["admin:dashboard:read", "admin:orders:pick", "admin:orders:print"],
     UserRole.COURIER: ["admin:dashboard:read", "admin:orders:deliver"],
+}
+
+ROLE_LEVELS = {
+    UserRole.COURIER: 10,
+    UserRole.PICKER: 20,
+    UserRole.CONTENT_MANAGER: 30,
+    UserRole.MANAGER: 80,
+    UserRole.ADMIN: 100,
 }
 
 
@@ -256,6 +266,11 @@ class AuditLogService:
 class PermissionService:
     def get_user_permissions(self, *, role: UserRole) -> list[str]:
         return ADMIN_PERMISSIONS_BY_ROLE.get(role, [])
+
+    def validate_role_assignable(self, *, actor_role: UserRole, target_role: UserRole) -> bool:
+        actor_level = ROLE_LEVELS.get(actor_role, 0)
+        target_level = ROLE_LEVELS.get(target_role, 0)
+        return target_level > 0 and target_level <= actor_level
 
 
 class AdminAuthService:

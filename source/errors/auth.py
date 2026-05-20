@@ -94,6 +94,10 @@ class AdminUserNotBlockedError(Exception):
     pass
 
 
+class AdminStaffInvalidRoleError(Exception):
+    pass
+
+
 class EmptyUserProfileUpdateError(Exception):
     pass
 
