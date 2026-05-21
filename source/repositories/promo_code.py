@@ -1,10 +1,54 @@
-from sqlalchemy import func, select
+from datetime import datetime, time
+
+from sqlalchemy import desc, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from source.db.models.promo_code import PromoCode, PromoCodeUsage
+from source.schemas.pydantic.promo_code import AdminPromoCodeListQueryParams
 
 
 class PromoCodeRepository:
+    async def admin_get_list(
+        self,
+        *,
+        session: AsyncSession,
+        query: AdminPromoCodeListQueryParams,
+    ) -> list[PromoCode]:
+        statement = self._admin_statement(query=query)
+        result = await session.execute(
+            statement.order_by(desc(PromoCode.created_date), desc(PromoCode.id)).limit(query.limit).offset(query.offset),
+        )
+        return list(result.scalars().all())
+
+    async def admin_count(
+        self,
+        *,
+        session: AsyncSession,
+        query: AdminPromoCodeListQueryParams,
+    ) -> int:
+        subquery = self._admin_statement(query=query).subquery()
+        result = await session.execute(select(func.count()).select_from(subquery))
+        return int(result.scalar_one())
+
+    def _admin_statement(self, *, query: AdminPromoCodeListQueryParams):
+        statement = select(PromoCode)
+        if query.q is not None:
+            statement = statement.where(
+                or_(
+                    PromoCode.code.ilike(f"%{query.q}%"),
+                    PromoCode.name.ilike(f"%{query.q}%"),
+                ),
+            )
+        if query.is_active is not None:
+            statement = statement.where(PromoCode.is_active.is_(query.is_active))
+        if query.discount_type is not None:
+            statement = statement.where(PromoCode.discount_type == query.discount_type)
+        if query.date_from is not None:
+            statement = statement.where(PromoCode.created_date >= datetime.combine(query.date_from, time.min))
+        if query.date_to is not None:
+            statement = statement.where(PromoCode.created_date <= datetime.combine(query.date_to, time.max))
+        return statement
+
     async def get_by_id(self, *, session: AsyncSession, promo_code_id: int) -> PromoCode | None:
         result = await session.execute(select(PromoCode).where(PromoCode.id == promo_code_id))
         return result.scalar_one_or_none()
@@ -19,6 +63,21 @@ class PromoCodeRepository:
 
 
 class PromoCodeUsageRepository:
+    async def count_grouped_by_promo_code_ids(
+        self,
+        *,
+        session: AsyncSession,
+        promo_code_ids: list[int],
+    ) -> dict[int, int]:
+        if not promo_code_ids:
+            return {}
+        result = await session.execute(
+            select(PromoCodeUsage.promo_code_id, func.count(PromoCodeUsage.id))
+            .where(PromoCodeUsage.promo_code_id.in_(promo_code_ids))
+            .group_by(PromoCodeUsage.promo_code_id),
+        )
+        return {promo_code_id: count for promo_code_id, count in result.all()}
+
     async def count_by_code(self, *, session: AsyncSession, promo_code_id: int) -> int:
         result = await session.execute(
             select(func.count(PromoCodeUsage.id)).where(PromoCodeUsage.promo_code_id == promo_code_id),

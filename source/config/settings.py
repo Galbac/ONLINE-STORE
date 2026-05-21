@@ -410,6 +410,12 @@ class DiscountsSettings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 
+class PromoCodesSettings(BaseSettings):
+    admin_list_cache_ttl_seconds: int = Field(default=60, alias="ADMIN_PROMO_CODES_LIST_CACHE_TTL_SECONDS")
+
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+
 class FavoritesSettings(BaseSettings):
     cache_ttl_seconds: int = Field(default=120, alias="FAVORITES_CACHE_TTL_SECONDS")
 
@@ -491,6 +497,7 @@ class Settings(BaseSettings):
     delivery_pickup_points: DeliveryPickupPointsSettings = DeliveryPickupPointsSettings()
     delivery_time_slots: DeliveryTimeSlotsSettings = DeliveryTimeSlotsSettings()
     discounts: DiscountsSettings = DiscountsSettings()
+    promo_codes: PromoCodesSettings = PromoCodesSettings()
     favorites: FavoritesSettings = FavoritesSettings()
     notifications: NotificationsSettings = NotificationsSettings()
     media: MediaSettings = MediaSettings()

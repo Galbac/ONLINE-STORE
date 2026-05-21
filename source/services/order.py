@@ -779,6 +779,8 @@ class OrderService:
         await cart_cache_service.invalidate_cart(redis_service=redis_service, user_id=user.id)
         await order_cache_service.invalidate_my_orders(redis_service=redis_service, user_id=user.id)
         await order_cache_service.invalidate_admin_list(redis_service=redis_service)
+        if promo_code is not None:
+            await redis_service.delete_by_pattern("admin:promo_codes:*")
         await profile_cache_service.invalidate_orders(redis_service=redis_service, user_id=user.id)
         await profile_cache_service.delete_summary(redis_service=redis_service, user_id=user.id)
         await product_cache_service.invalidate_by_stock_changes(redis_service=redis_service, products=products)

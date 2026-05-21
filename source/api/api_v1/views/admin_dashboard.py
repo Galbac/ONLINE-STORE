@@ -72,6 +72,7 @@ from source.repositories.product import ProductRepository
 from source.repositories.product_availability_log import ProductAvailabilityLogRepository
 from source.repositories.product_image import ProductImageRepository
 from source.repositories.promo_code import PromoCodeUsageRepository
+from source.repositories.promo_code import PromoCodeRepository
 from source.repositories.refresh_token import RefreshTokenRepository
 from source.repositories.role import PermissionRepository, RoleRepository, UserRoleRepository
 from source.repositories.stock_movement import StockMovementRepository
@@ -144,6 +145,10 @@ from source.schemas.pydantic.order import (
     AdminOrderUpdateRequest,
     AdminOrderUpdateResponse,
 )
+from source.schemas.pydantic.promo_code import (
+    AdminPromoCodeListQueryParams,
+    AdminPromoCodeListResponse,
+)
 from source.schemas.pydantic.user import (
     AdminUserBlockRequest,
     AdminUserBlockResponse,
@@ -171,6 +176,7 @@ from source.services.admin_order_print import AdminOrderPrintService
 from source.services.admin_product import AdminProductService
 from source.services.admin_product_cache import AdminProductCacheService
 from source.services.admin_product_image import AdminProductImageService
+from source.services.admin_promo_code import AdminPromoCodeService
 from source.services.admin_staff import AdminStaffService
 from source.services.admin_staff_cache import AdminStaffCacheService
 from source.services.admin_user import AdminUserService
@@ -223,6 +229,58 @@ async def get_admin_roles(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Недостаточно прав") from error
     except InactiveUserError as error:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Пользователь заблокирован") from error
+
+
+@router.get("/promo-codes", response_model=AdminPromoCodeListResponse, status_code=status.HTTP_200_OK)
+@inject
+async def get_admin_promo_codes(
+    token_payload: dict = Depends(verify_access_token),
+    current_user: User = Depends(get_current_user),
+    page: str = Query(default="1"),
+    limit: str = Query(default="50"),
+    q: str | None = Query(default=None),
+    is_active: str | None = Query(default=None),
+    discount_type: str | None = Query(default=None),
+    date_from: str | None = Query(default=None),
+    date_to: str | None = Query(default=None),
+    session: FromDishka[AsyncSession] = None,
+    redis_service: FromDishka[RedisService] = None,
+    admin_promo_code_service: FromDishka[AdminPromoCodeService] = None,
+    permission_service: FromDishka[PermissionService] = None,
+    promo_code_repository: FromDishka[PromoCodeRepository] = None,
+    promo_code_usage_repository: FromDishka[PromoCodeUsageRepository] = None,
+) -> AdminPromoCodeListResponse:
+    if token_payload.get("token_type") != "access":
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь не авторизован")
+    try:
+        query = AdminPromoCodeListQueryParams(
+            page=page,
+            limit=limit,
+            q=q,
+            is_active=is_active,
+            discount_type=discount_type,
+            date_from=date_from,
+            date_to=date_to,
+        )
+        return await admin_promo_code_service.get_promo_codes(
+            session=session,
+            redis_service=redis_service,
+            user=current_user,
+            query=query,
+            permission_service=permission_service,
+            promo_code_repository=promo_code_repository,
+            promo_code_usage_repository=promo_code_usage_repository,
+        )
+    except ValidationError as error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Неверные query params") from error
+    except InvalidCredentialsError as error:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь не авторизован") from error
+    except AdminAuthAccessDeniedError as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Недостаточно прав") from error
+    except InactiveUserError as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Пользователь заблокирован") from error
+    except Exception as error:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Внутренняя ошибка сервера") from error
 
 
 @router.get("/discounts", response_model=AdminDiscountListResponse, status_code=status.HTTP_200_OK)

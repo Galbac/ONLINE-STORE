@@ -11,6 +11,7 @@ from source.db.models.mixins.id_int_pk import IdBigIntPkMixin
 
 class PromoCode(IdBigIntPkMixin, CreateUpdateMixin, Base):
     code: Mapped[str] = mapped_column(String(50), unique=True, index=True, nullable=False)
+    name: Mapped[str | None] = mapped_column(String(255))
     discount_type: Mapped[str] = mapped_column(String(20), nullable=False)
     discount_value: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
     min_order_amount: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
