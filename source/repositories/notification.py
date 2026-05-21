@@ -115,3 +115,17 @@ class NotificationSettingsRepository:
         await session.flush()
         await session.refresh(notification_settings)
         return notification_settings, True
+
+    async def update(
+        self,
+        *,
+        session: AsyncSession,
+        notification_settings: NotificationSettings,
+        data: dict,
+    ) -> NotificationSettings:
+        for field, value in data.items():
+            setattr(notification_settings, field, value)
+        session.add(notification_settings)
+        await session.flush()
+        await session.refresh(notification_settings)
+        return notification_settings

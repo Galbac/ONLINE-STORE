@@ -1,5 +1,6 @@
 from dishka.integrations.fastapi import FromDishka, inject
-from fastapi import APIRouter, Body, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, status
+from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from source.api.dependencies import get_current_user, require_admin_or_manager, require_permission
@@ -15,9 +16,12 @@ from source.errors.notification import (
     NotificationTelegramChatIdMissingError,
     NotificationTelegramDisabledError,
 )
+from source.errors.settings import EmptyNotificationSettingsUpdateError
+from source.repositories.admin_audit_log import AdminAuditLogRepository
 from source.repositories.notification import NotificationLogRepository, NotificationRepository, NotificationSettingsRepository
 from source.schemas.pydantic.notifications import (
     AdminNotificationSettingsResponse,
+    AdminNotificationSettingsUpdateRequest,
     MessageResponse,
     NotificationListResponse,
     NotificationQueryParams,
@@ -27,7 +31,7 @@ from source.schemas.pydantic.notifications import (
 )
 from source.services.notification_cache import NotificationCacheService
 from source.services.notification_settings_cache import NotificationSettingsCacheService
-from source.services.admin_auth import PermissionService
+from source.services.admin_auth import AuditLogService, PermissionService
 from source.services.admin_notification import AdminNotificationService
 from source.services.notifications import EmailService, NotificationService, TelegramNotificationService
 from source.services.redis import RedisService
@@ -61,6 +65,52 @@ async def get_admin_notification_settings(
             notification_settings_repository=notification_settings_repository,
             notification_settings_cache_service=notification_settings_cache_service,
         )
+    except (AdminAuthAccessDeniedError, InactiveUserError) as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Недостаточно прав") from error
+
+
+@router.patch(
+    "/admin/notifications/settings",
+    response_model=AdminNotificationSettingsResponse,
+    status_code=status.HTTP_200_OK,
+)
+@inject
+async def update_admin_notification_settings(
+    request: Request,
+    body: dict = Body(default_factory=dict),
+    current_user: User = Depends(require_permission("admin:notifications:update")),
+    session: FromDishka[AsyncSession] = None,
+    redis_service: FromDishka[RedisService] = None,
+    commiter: FromDishka[Commiter] = None,
+    admin_notification_service: FromDishka[AdminNotificationService] = None,
+    permission_service: FromDishka[PermissionService] = None,
+    notification_settings_repository: FromDishka[NotificationSettingsRepository] = None,
+    notification_settings_cache_service: FromDishka[NotificationSettingsCacheService] = None,
+    audit_log_service: FromDishka[AuditLogService] = None,
+    admin_audit_log_repository: FromDishka[AdminAuditLogRepository] = None,
+) -> AdminNotificationSettingsResponse:
+    try:
+        data = AdminNotificationSettingsUpdateRequest.model_validate(body)
+    except ValidationError as error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Некорректные настройки уведомлений") from error
+
+    try:
+        return await admin_notification_service.update_settings(
+            session=session,
+            redis_service=redis_service,
+            user=current_user,
+            data=data,
+            commiter=commiter,
+            permission_service=permission_service,
+            notification_settings_repository=notification_settings_repository,
+            notification_settings_cache_service=notification_settings_cache_service,
+            audit_log_service=audit_log_service,
+            admin_audit_log_repository=admin_audit_log_repository,
+            ip_address=request.client.host if request.client is not None else None,
+            user_agent=request.headers.get("user-agent"),
+        )
+    except EmptyNotificationSettingsUpdateError as error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Не передано ни одного поля") from error
     except (AdminAuthAccessDeniedError, InactiveUserError) as error:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Недостаточно прав") from error
 

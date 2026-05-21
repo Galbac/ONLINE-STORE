@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import ClassVar
 
-from pydantic import BaseModel, EmailStr, Field, computed_field, field_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, computed_field, field_validator
 
 
 class NotificationQueryParams(BaseModel):
@@ -57,6 +57,30 @@ class AdminNotificationSettingsResponse(BaseModel):
     notify_customer_payment: bool
     notify_customer_delivery: bool
     updated_at: datetime
+
+
+class AdminNotificationSettingsUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    email_enabled: bool | None = None
+    email_from: EmailStr | None = None
+    email_sender_name: str | None = Field(default=None, min_length=1, max_length=255)
+    telegram_enabled: bool | None = None
+    telegram_admin_chat_id: str | None = Field(default=None, min_length=1, max_length=100)
+    notify_admin_new_order: bool | None = None
+    notify_admin_payment_error: bool | None = None
+    notify_admin_1c_error: bool | None = None
+    notify_customer_order_created: bool | None = None
+    notify_customer_order_status: bool | None = None
+    notify_customer_payment: bool | None = None
+    notify_customer_delivery: bool | None = None
+
+    @field_validator("email_sender_name", "telegram_admin_chat_id", mode="before")
+    @classmethod
+    def normalize_optional_string(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        return " ".join(value.strip().split())
 
 
 class TestEmailRequest(BaseModel):

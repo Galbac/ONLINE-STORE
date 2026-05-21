@@ -2,12 +2,14 @@ from datetime import datetime
 from types import SimpleNamespace
 
 import pytest
+from pydantic import ValidationError
 
 from source.config.settings import settings
 from source.db.models.choises.enum import UserRole
 from source.errors.auth import AdminAuthAccessDeniedError
-from source.schemas.pydantic.notifications import AdminNotificationSettingsResponse
-from source.services.admin_auth import PermissionService
+from source.errors.settings import EmptyNotificationSettingsUpdateError
+from source.schemas.pydantic.notifications import AdminNotificationSettingsResponse, AdminNotificationSettingsUpdateRequest
+from source.services.admin_auth import AuditLogService, PermissionService
 from source.services.admin_notification import AdminNotificationService
 from source.services.notification_settings_cache import NotificationSettingsCacheService
 
@@ -44,6 +46,7 @@ class FakeNotificationSettingsRepository:
         self.notification_settings = notification_settings
         self.created = created
         self.called = False
+        self.updated_payload: dict | None = None
 
     async def get_or_create_default(self, *, session):
         self.called = True
@@ -51,11 +54,30 @@ class FakeNotificationSettingsRepository:
             self.notification_settings = build_notification_settings()
         return self.notification_settings, self.created
 
+    async def update(self, *, session, notification_settings, data: dict):
+        self.updated_payload = data
+        for field, value in data.items():
+            setattr(notification_settings, field, value)
+        notification_settings.updated_date = datetime(2026, 5, 12, 11, 0, tzinfo=settings.tz)
+        self.notification_settings = notification_settings
+        return notification_settings
+
+
+class FakeAuditLogRepository:
+    def __init__(self) -> None:
+        self.created_payload: dict | None = None
+
+    async def create(self, *, session, **data):
+        self.created_payload = data
+        return SimpleNamespace(**data)
+
 
 def build_user(*, role=UserRole.ADMIN):
     return SimpleNamespace(
         id=1,
         role=role,
+        email="admin@example.com",
+        phone=None,
         is_active=True,
         is_deleted=False,
         is_blocked=False,
@@ -91,6 +113,31 @@ async def get_settings(*, redis_service=None, repository=None, user=None, commit
         permission_service=PermissionService(),
         notification_settings_repository=repository or FakeNotificationSettingsRepository(),
         notification_settings_cache_service=NotificationSettingsCacheService(),
+    )
+
+
+async def update_settings(
+    *,
+    data=None,
+    redis_service=None,
+    repository=None,
+    user=None,
+    commiter=None,
+    audit_log_repository=None,
+):
+    return await AdminNotificationService().update_settings(
+        session=object(),
+        redis_service=redis_service or FakeRedisService(),
+        user=user or build_user(),
+        data=data or AdminNotificationSettingsUpdateRequest(email_enabled=False),
+        commiter=commiter or FakeCommiter(),
+        permission_service=PermissionService(),
+        notification_settings_repository=repository or FakeNotificationSettingsRepository(build_notification_settings()),
+        notification_settings_cache_service=NotificationSettingsCacheService(),
+        audit_log_service=AuditLogService(),
+        admin_audit_log_repository=audit_log_repository or FakeAuditLogRepository(),
+        ip_address="127.0.0.1",
+        user_agent="pytest",
     )
 
 
@@ -170,3 +217,88 @@ async def test_admin_notification_settings_without_permission_error() -> None:
             user=build_user(role=UserRole.MANAGER),
             repository=FakeNotificationSettingsRepository(build_notification_settings()),
         )
+
+
+@pytest.mark.asyncio
+async def test_admin_notification_settings_update_email_enabled_success() -> None:
+    repository = FakeNotificationSettingsRepository(build_notification_settings(email_enabled=True))
+
+    response = await update_settings(
+        data=AdminNotificationSettingsUpdateRequest(email_enabled=False),
+        repository=repository,
+    )
+
+    assert response.email_enabled is False
+    assert repository.updated_payload == {"email_enabled": False}
+
+
+@pytest.mark.asyncio
+async def test_admin_notification_settings_update_telegram_enabled_success() -> None:
+    response = await update_settings(data=AdminNotificationSettingsUpdateRequest(telegram_enabled=False))
+
+    assert response.telegram_enabled is False
+
+
+@pytest.mark.asyncio
+async def test_admin_notification_settings_update_telegram_admin_chat_id_success() -> None:
+    response = await update_settings(data=AdminNotificationSettingsUpdateRequest(telegram_admin_chat_id="-100123456789"))
+
+    assert response.telegram_admin_chat_id == "-100123456789"
+
+
+@pytest.mark.asyncio
+async def test_admin_notification_settings_update_empty_body_error() -> None:
+    with pytest.raises(EmptyNotificationSettingsUpdateError):
+        await update_settings(data=AdminNotificationSettingsUpdateRequest())
+
+
+def test_admin_notification_settings_update_invalid_email_error() -> None:
+    with pytest.raises(ValidationError):
+        AdminNotificationSettingsUpdateRequest(email_from="not-an-email")
+
+
+def test_admin_notification_settings_update_rejects_secrets() -> None:
+    with pytest.raises(ValidationError):
+        AdminNotificationSettingsUpdateRequest.model_validate({"EMAIL_PASSWORD": "secret"})
+    with pytest.raises(ValidationError):
+        AdminNotificationSettingsUpdateRequest.model_validate({"TELEGRAM_BOT_TOKEN": "secret"})
+    with pytest.raises(ValidationError):
+        AdminNotificationSettingsUpdateRequest.model_validate({"smtp_password": "secret"})
+
+
+@pytest.mark.asyncio
+async def test_admin_notification_settings_update_does_not_return_secrets() -> None:
+    response = await update_settings(data=AdminNotificationSettingsUpdateRequest(email_from="new@example.com"))
+
+    payload = response.model_dump()
+    assert "password" not in payload
+    assert "bot_token" not in payload
+    assert "smtp_username" not in payload
+
+
+@pytest.mark.asyncio
+async def test_admin_notification_settings_update_invalidates_cache() -> None:
+    redis_service = FakeRedisService()
+
+    await update_settings(
+        data=AdminNotificationSettingsUpdateRequest(email_enabled=False),
+        redis_service=redis_service,
+    )
+
+    assert "admin:notifications:settings" in redis_service.deleted
+
+
+@pytest.mark.asyncio
+async def test_admin_notification_settings_update_audit_log_created() -> None:
+    audit_log_repository = FakeAuditLogRepository()
+
+    await update_settings(
+        data=AdminNotificationSettingsUpdateRequest(email_enabled=False),
+        audit_log_repository=audit_log_repository,
+    )
+
+    assert audit_log_repository.created_payload["event"] == "admin_notification_settings_update"
+    assert audit_log_repository.created_payload["details"]["changes"]["email_enabled"] == {
+        "old": "True",
+        "new": "False",
+    }

@@ -1,6 +1,7 @@
 from source.config.settings import settings
 from source.errors.auth import AdminAuthAccessDeniedError, InactiveUserError
-from source.schemas.pydantic.notifications import AdminNotificationSettingsResponse
+from source.errors.settings import EmptyNotificationSettingsUpdateError
+from source.schemas.pydantic.notifications import AdminNotificationSettingsResponse, AdminNotificationSettingsUpdateRequest
 from source.services.admin_auth import STAFF_ROLES
 from source.services.notification_settings_cache import NotificationSettingsCacheService
 from source.services.redis import RedisService
@@ -13,6 +14,14 @@ class AdminNotificationService:
         if user.role not in STAFF_ROLES:
             raise AdminAuthAccessDeniedError
         if "admin:notifications:read" not in permission_service.get_user_permissions(role=user.role):
+            raise AdminAuthAccessDeniedError
+
+    def _check_update_permission(self, *, user, permission_service) -> None:
+        if not user.is_active or user.is_deleted or user.is_blocked:
+            raise InactiveUserError
+        if user.role not in STAFF_ROLES:
+            raise AdminAuthAccessDeniedError
+        if "admin:notifications:update" not in permission_service.get_user_permissions(role=user.role):
             raise AdminAuthAccessDeniedError
 
     async def get_settings(
@@ -43,6 +52,68 @@ class AdminNotificationService:
             ttl_seconds=600,
         )
         return response
+
+    async def update_settings(
+        self,
+        *,
+        session,
+        redis_service: RedisService,
+        user,
+        data: AdminNotificationSettingsUpdateRequest,
+        commiter,
+        permission_service,
+        notification_settings_repository,
+        notification_settings_cache_service: NotificationSettingsCacheService,
+        audit_log_service,
+        admin_audit_log_repository,
+        ip_address: str | None = None,
+        user_agent: str | None = None,
+    ) -> AdminNotificationSettingsResponse:
+        self._check_update_permission(user=user, permission_service=permission_service)
+
+        update_fields = data.model_dump(exclude_unset=True)
+        if not update_fields:
+            raise EmptyNotificationSettingsUpdateError
+
+        notification_settings, _created = await notification_settings_repository.get_or_create_default(session=session)
+        before = {
+            field: getattr(notification_settings, field)
+            for field in update_fields
+        }
+
+        notification_settings = await notification_settings_repository.update(
+            session=session,
+            notification_settings=notification_settings,
+            data=update_fields,
+        )
+
+        changes = {}
+        for field in update_fields:
+            current_value = getattr(notification_settings, field)
+            if before[field] != current_value:
+                changes[field] = {
+                    "old": str(before[field]) if before[field] is not None else None,
+                    "new": str(current_value) if current_value is not None else None,
+                }
+
+        await audit_log_service.log_action(
+            session=session,
+            audit_log_repository=admin_audit_log_repository,
+            user_id=user.id,
+            login=getattr(user, "email", None) or getattr(user, "phone", None) or str(user.id),
+            event="admin_notification_settings_update",
+            status="success",
+            ip_address=ip_address,
+            user_agent=user_agent,
+            details={
+                "actor_id": user.id,
+                "changes": changes,
+            },
+        )
+        await commiter.commit()
+        await notification_settings_cache_service.invalidate(redis_service=redis_service)
+
+        return self._build_response(notification_settings=notification_settings)
 
     def _build_response(self, *, notification_settings) -> AdminNotificationSettingsResponse:
         email_from = notification_settings.email_from or settings.email_notifications.from_email or None
