@@ -198,6 +198,42 @@ class AdminDiscountCreateRequest(BaseModel):
         return self
 
 
+class AdminDiscountUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+    product_ids: list[int] | None = None
+    category_ids: list[int] | None = None
+    discount_type: DiscountValueType | None = None
+    discount_value: Decimal | None = Field(default=None, gt=0)
+    starts_at: datetime | None = None
+    ends_at: datetime | None = None
+    is_active: bool | None = None
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def normalize_name(cls, value: str | None) -> str | None:
+        if isinstance(value, str):
+            return " ".join(value.strip().split())
+        return value
+
+    @field_validator("product_ids", "category_ids")
+    @classmethod
+    def validate_ids(cls, value: list[int] | None) -> list[int] | None:
+        if value is None:
+            return value
+        unique_ids = list(dict.fromkeys(value))
+        if any(item_id <= 0 for item_id in unique_ids):
+            raise ValueError("ids must be positive")
+        return unique_ids
+
+    @model_validator(mode="after")
+    def validate_dates(self) -> "AdminDiscountUpdateRequest":
+        if self.ends_at is not None and self.starts_at is not None and self.starts_at >= self.ends_at:
+            raise ValueError("starts_at must be less than ends_at")
+        return self
+
+
 class AdminDiscountDetailResponse(BaseModel):
     id: int
     name: str
@@ -207,5 +243,6 @@ class AdminDiscountDetailResponse(BaseModel):
     is_active: bool
     starts_at: datetime | None = None
     ends_at: datetime | None = None
+    updated_at: datetime | None = None
     products: list[AdminDiscountProductResponse] = Field(default_factory=list)
     categories: list[AdminDiscountCategoryResponse] = Field(default_factory=list)

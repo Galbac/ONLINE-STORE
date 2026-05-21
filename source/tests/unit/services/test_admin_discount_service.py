@@ -9,9 +9,9 @@ from source.config.settings import settings
 from source.db.models.choises.enum import UserRole
 from source.errors.auth import AdminAuthAccessDeniedError
 from source.errors.category import CategoryNotFoundError
-from source.errors.discount import DiscountNotFoundError
+from source.errors.discount import DiscountNotFoundError, EmptyDiscountUpdateError
 from source.errors.product import ProductNotFoundError
-from source.schemas.pydantic.discount import AdminDiscountCreateRequest, AdminDiscountDetailResponse, AdminDiscountListQueryParams, AdminDiscountListResponse
+from source.schemas.pydantic.discount import AdminDiscountCreateRequest, AdminDiscountDetailResponse, AdminDiscountListQueryParams, AdminDiscountListResponse, AdminDiscountUpdateRequest
 from source.services.admin_auth import AuditLogService, PermissionService
 from source.services.admin_discount import AdminDiscountService, DiscountConflictService
 from source.services.admin_discount_cache import AdminDiscountCacheService
@@ -47,6 +47,7 @@ class FakeDiscountRepository:
         self.list_calls = 0
         self.count_calls = 0
         self.detail_calls = 0
+        self.updated = []
 
     async def admin_get_list(self, *, session, query: AdminDiscountListQueryParams):
         self.list_calls += 1
@@ -69,6 +70,16 @@ class FakeDiscountRepository:
             if discount.id == discount_id and not discount.is_deleted:
                 return discount
         return None
+
+    async def update(self, *, session, discount, data: dict):
+        self.updated.append((discount.id, data))
+        for field, value in data.items():
+            setattr(discount, field, value)
+        discount.updated_date = datetime(2026, 5, 12, 11, 0, 0)
+        return discount
+
+    async def has_conflicts(self, **kwargs) -> bool:
+        return False
 
     def _filter(self, *, query: AdminDiscountListQueryParams):
         discounts = [discount for discount in self.discounts if not discount.is_deleted]
@@ -122,6 +133,7 @@ def build_discount(
         starts_at=datetime(2026, 5, 1, 0, 0, 0),
         ends_at=datetime(2026, 5, 31, 23, 59, 59),
         created_date=created_date,
+        updated_date=extra.get("updated_date", created_date),
         applicable_product_id=extra.get("applicable_product_id"),
         applicable_category_id=extra.get("applicable_category_id"),
     )
@@ -130,6 +142,7 @@ def build_discount(
 class FakeDiscountProductRepository:
     def __init__(self, products=None) -> None:
         self.created = []
+        self.replaced = []
         self.products = products if products is not None else [
             SimpleNamespace(id=55, name="Яблоки красные", price=Decimal("150.00")),
         ]
@@ -143,10 +156,19 @@ class FakeDiscountProductRepository:
         self.get_calls += 1
         return self.products
 
+    async def replace_products(self, *, session, discount_id: int, product_ids: list[int]):
+        self.replaced.append((discount_id, product_ids))
+        self.products = [
+            SimpleNamespace(id=product_id, name=f"Товар {product_id}", price=Decimal("100.00"))
+            for product_id in product_ids
+        ]
+        return []
+
 
 class FakeDiscountCategoryRepository:
     def __init__(self, categories=None) -> None:
         self.created = []
+        self.replaced = []
         self.categories = categories if categories is not None else []
         self.get_calls = 0
 
@@ -157,6 +179,14 @@ class FakeDiscountCategoryRepository:
     async def get_categories(self, *, session, discount_id: int):
         self.get_calls += 1
         return self.categories
+
+    async def replace_categories(self, *, session, discount_id: int, category_ids: list[int]):
+        self.replaced.append((discount_id, category_ids))
+        self.categories = [
+            SimpleNamespace(id=category_id, name=f"Категория {category_id}")
+            for category_id in category_ids
+        ]
+        return []
 
 
 class FakeProductRepository:
@@ -288,6 +318,63 @@ async def create_discount(
         redis_service=redis_service,
         audit_log_repository=audit_log_repository,
         commiter=commiter,
+        discount_product_repository=discount_product_repository,
+        discount_category_repository=discount_category_repository,
+    )
+
+
+async def update_discount(
+    *,
+    data: AdminDiscountUpdateRequest | None = None,
+    redis_service=None,
+    role=UserRole.ADMIN,
+    discount_repository=None,
+    discount_product_repository=None,
+    discount_category_repository=None,
+    product_repository=None,
+    category_repository=None,
+    audit_log_repository=None,
+    commiter=None,
+):
+    redis_service = redis_service or FakeRedisService()
+    audit_log_repository = audit_log_repository or FakeAuditLogRepository()
+    commiter = commiter or FakeCommiter()
+    discount_repository = discount_repository or FakeDiscountRepository()
+    discount_product_repository = discount_product_repository or FakeDiscountProductRepository()
+    discount_category_repository = discount_category_repository or FakeDiscountCategoryRepository()
+    response = await AdminDiscountService().update_discount(
+        session=None,
+        redis_service=redis_service,
+        user=build_user(role=role),
+        discount_id=1,
+        data=data or AdminDiscountUpdateRequest(
+            name="Скидка на яблоки 25%",
+            product_ids=[55, 56],
+            category_ids=[],
+            discount_type="percent",
+            discount_value=Decimal("25"),
+            starts_at=datetime(2026, 5, 1, 0, 0, 0),
+            ends_at=datetime(2026, 6, 1, 0, 0, 0),
+            is_active=True,
+        ),
+        commiter=commiter,
+        permission_service=PermissionService(),
+        discount_repository=discount_repository,
+        discount_product_repository=discount_product_repository,
+        discount_category_repository=discount_category_repository,
+        product_repository=product_repository or FakeProductRepository(product_ids=[55, 56]),
+        category_repository=category_repository or FakeCategoryRepository(),
+        discount_conflict_service=DiscountConflictService(),
+        audit_log_service=AuditLogService(),
+        admin_audit_log_repository=audit_log_repository,
+        admin_discount_cache_service=AdminDiscountCacheService(),
+    )
+    return SimpleNamespace(
+        response=response,
+        redis_service=redis_service,
+        audit_log_repository=audit_log_repository,
+        commiter=commiter,
+        discount_repository=discount_repository,
         discount_product_repository=discount_product_repository,
         discount_category_repository=discount_category_repository,
     )
@@ -537,4 +624,78 @@ async def test_admin_create_discount_audit_log_created() -> None:
         "discount_type": "percent",
         "product_ids": [55],
         "category_ids": [],
+    }
+
+
+@pytest.mark.asyncio
+async def test_admin_update_discount_success() -> None:
+    result = await update_discount()
+
+    assert result.response.id == 1
+    assert result.response.name == "Скидка на яблоки 25%"
+    assert result.response.discount_type == "percent"
+    assert result.response.discount_value == Decimal("25")
+    assert result.response.is_active is True
+    assert result.response.updated_at == datetime(2026, 5, 12, 11, 0, 0)
+    assert result.discount_product_repository.replaced == [(1, [55, 56])]
+    assert result.discount_category_repository.replaced == [(1, [])]
+    assert result.commiter.committed is True
+
+
+@pytest.mark.asyncio
+async def test_admin_update_discount_no_fields_error() -> None:
+    with pytest.raises(EmptyDiscountUpdateError):
+        await update_discount(data=AdminDiscountUpdateRequest())
+
+
+@pytest.mark.asyncio
+async def test_admin_update_discount_invalid_percent_error() -> None:
+    with pytest.raises(ValueError):
+        await update_discount(data=AdminDiscountUpdateRequest(discount_value=Decimal("101")))
+
+
+@pytest.mark.asyncio
+async def test_admin_update_discount_product_not_found_error() -> None:
+    with pytest.raises(ProductNotFoundError):
+        await update_discount(
+            data=AdminDiscountUpdateRequest(product_ids=[55, 56]),
+            product_repository=FakeProductRepository(product_ids=[55]),
+        )
+
+
+@pytest.mark.asyncio
+async def test_admin_update_discount_category_not_found_error() -> None:
+    with pytest.raises(CategoryNotFoundError):
+        await update_discount(
+            data=AdminDiscountUpdateRequest(category_ids=[2]),
+            category_repository=FakeCategoryRepository(category_ids=[]),
+        )
+
+
+@pytest.mark.asyncio
+async def test_admin_update_discount_invalidates_cache() -> None:
+    result = await update_discount()
+
+    assert "admin:discounts:*" in result.redis_service.deleted_patterns
+    assert "discounts:*" in result.redis_service.deleted_patterns
+    assert "products:list:*" in result.redis_service.deleted_patterns
+    assert "products:detail:*" in result.redis_service.deleted_patterns
+    assert "products:slug:*" in result.redis_service.deleted_patterns
+    assert "products:discounted:*" in result.redis_service.deleted_patterns
+    assert "cart:*" in result.redis_service.deleted_patterns
+
+
+@pytest.mark.asyncio
+async def test_admin_update_discount_audit_log_created() -> None:
+    result = await update_discount()
+
+    assert result.audit_log_repository.logs[0]["event"] == "admin_discount_update"
+    assert result.audit_log_repository.logs[0]["details"]["discount_id"] == 1
+    assert result.audit_log_repository.logs[0]["details"]["changes"]["name"] == {
+        "old": "Скидка на яблоки",
+        "new": "Скидка на яблоки 25%",
+    }
+    assert result.audit_log_repository.logs[0]["details"]["changes"]["product_ids"] == {
+        "old": [55],
+        "new": [55, 56],
     }

@@ -11,7 +11,7 @@ from source.common.commiter import Commiter
 from source.db.models.user import User
 from source.errors.category import CategoryCycleError, CategoryNotFoundError, CategorySlugAlreadyExistsError
 from source.errors.category import CategoryHasActiveChildrenError, CategoryHasActiveProductsError
-from source.errors.discount import DiscountNotFoundError
+from source.errors.discount import DiscountConflictError, DiscountNotFoundError, EmptyDiscountUpdateError
 from source.errors.auth import (
     AdminAuthAccessDeniedError,
     AdminRoleNotFoundError,
@@ -85,7 +85,7 @@ from source.schemas.pydantic.admin_dashboard import (
     AdminSalesQueryParams,
     AdminSalesResponse,
 )
-from source.schemas.pydantic.discount import AdminDiscountCreateRequest, AdminDiscountDetailResponse, AdminDiscountListQueryParams, AdminDiscountListResponse
+from source.schemas.pydantic.discount import AdminDiscountCreateRequest, AdminDiscountDetailResponse, AdminDiscountListQueryParams, AdminDiscountListResponse, AdminDiscountUpdateRequest
 from source.schemas.pydantic.admin_role import AdminRoleListResponse
 from source.schemas.pydantic.admin_category import (
     AdminCategoryCreateRequest,
@@ -372,6 +372,86 @@ async def get_admin_discount_detail(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Пользователь заблокирован") from error
     except DiscountNotFoundError as error:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Скидка не найдена") from error
+
+
+@router.patch("/discounts/{discount_id}", response_model=AdminDiscountDetailResponse, status_code=status.HTTP_200_OK)
+@inject
+async def update_admin_discount(
+    request: Request,
+    payload: dict = Body(...),
+    discount_id: int = Path(..., gt=0),
+    token_payload: dict = Depends(verify_access_token),
+    current_user: User = Depends(get_current_user),
+    session: FromDishka[AsyncSession] = None,
+    commiter: FromDishka[Commiter] = None,
+    redis_service: FromDishka[RedisService] = None,
+    admin_discount_service: FromDishka[AdminDiscountService] = None,
+    admin_discount_cache_service: FromDishka[AdminDiscountCacheService] = None,
+    permission_service: FromDishka[PermissionService] = None,
+    discount_repository: FromDishka[DiscountRepository] = None,
+    discount_product_repository: FromDishka[DiscountProductRepository] = None,
+    discount_category_repository: FromDishka[DiscountCategoryRepository] = None,
+    product_repository: FromDishka[ProductRepository] = None,
+    category_repository: FromDishka[CategoryRepository] = None,
+    discount_conflict_service: FromDishka[DiscountConflictService] = None,
+    audit_log_service: FromDishka[AuditLogService] = None,
+    admin_audit_log_repository: FromDishka[AdminAuditLogRepository] = None,
+) -> AdminDiscountDetailResponse:
+    if token_payload.get("token_type") != "access":
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь не авторизован")
+    try:
+        return await admin_discount_service.update_discount(
+            session=session,
+            redis_service=redis_service,
+            user=current_user,
+            discount_id=discount_id,
+            data=AdminDiscountUpdateRequest.model_validate(payload),
+            commiter=commiter,
+            permission_service=permission_service,
+            discount_repository=discount_repository,
+            discount_product_repository=discount_product_repository,
+            discount_category_repository=discount_category_repository,
+            product_repository=product_repository,
+            category_repository=category_repository,
+            discount_conflict_service=discount_conflict_service,
+            audit_log_service=audit_log_service,
+            admin_audit_log_repository=admin_audit_log_repository,
+            admin_discount_cache_service=admin_discount_cache_service,
+            ip_address=request.client.host if request.client else None,
+            user_agent=request.headers.get("user-agent"),
+        )
+    except ValidationError as error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Неверные данные скидки") from error
+    except EmptyDiscountUpdateError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Не передано ни одного поля для изменения") from error
+    except ValueError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Неверные данные скидки") from error
+    except InvalidCredentialsError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь не авторизован") from error
+    except AdminAuthAccessDeniedError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Недостаточно прав") from error
+    except InactiveUserError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Пользователь заблокирован") from error
+    except DiscountNotFoundError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Скидка не найдена") from error
+    except ProductNotFoundError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Товар не найден") from error
+    except CategoryNotFoundError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Категория не найдена") from error
+    except DiscountConflictError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Конфликт скидок") from error
+    except Exception:
+        await commiter.rollback()
+        raise
 
 
 @router.get("/staff", response_model=AdminStaffListResponse, status_code=status.HTTP_200_OK)

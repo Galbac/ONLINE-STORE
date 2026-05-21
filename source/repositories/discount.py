@@ -1,6 +1,6 @@
 from datetime import datetime, time
 
-from sqlalchemy import desc, exists, func, or_, select
+from sqlalchemy import delete, desc, exists, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from source.db.models.discount import Discount, DiscountCategory, DiscountProduct
@@ -57,6 +57,69 @@ class DiscountRepository:
             ),
         )
         return result.scalar_one_or_none()
+
+    async def update(
+        self,
+        *,
+        session: AsyncSession,
+        discount: Discount,
+        data: dict,
+    ) -> Discount:
+        for field, value in data.items():
+            setattr(discount, field, value)
+        session.add(discount)
+        await session.flush()
+        await session.refresh(discount)
+        return discount
+
+    async def has_conflicts(
+        self,
+        *,
+        session: AsyncSession,
+        discount_id: int | None,
+        type: str,
+        product_ids: list[int],
+        category_ids: list[int],
+        starts_at: datetime | None,
+        ends_at: datetime | None,
+        is_active: bool,
+    ) -> bool:
+        if not is_active:
+            return False
+
+        statement = select(Discount.id).where(
+            Discount.is_deleted.is_(False),
+            Discount.is_active.is_(True),
+            Discount.type == type,
+        )
+        if discount_id is not None:
+            statement = statement.where(Discount.id != discount_id)
+        if starts_at is not None:
+            statement = statement.where(or_(Discount.ends_at.is_(None), Discount.ends_at > starts_at))
+        if ends_at is not None:
+            statement = statement.where(or_(Discount.starts_at.is_(None), Discount.starts_at < ends_at))
+
+        if type == "product":
+            if not product_ids:
+                return False
+            relation_exists = exists().where(
+                DiscountProduct.discount_id == Discount.id,
+                DiscountProduct.product_id.in_(product_ids),
+            )
+            statement = statement.where(or_(Discount.applicable_product_id.in_(product_ids), relation_exists))
+        elif type == "category":
+            if not category_ids:
+                return False
+            relation_exists = exists().where(
+                DiscountCategory.discount_id == Discount.id,
+                DiscountCategory.category_id.in_(category_ids),
+            )
+            statement = statement.where(or_(Discount.applicable_category_id.in_(category_ids), relation_exists))
+        elif type != "cart":
+            return False
+
+        result = await session.execute(statement.limit(1))
+        return result.scalar_one_or_none() is not None
 
     async def get_active(
         self,
@@ -189,6 +252,13 @@ class DiscountProductRepository:
         )
         return list(result.scalars().all())
 
+    async def replace_products(self, *, session: AsyncSession, discount_id: int, product_ids: list[int]) -> list[DiscountProduct]:
+        await session.execute(delete(DiscountProduct).where(DiscountProduct.discount_id == discount_id))
+        if not product_ids:
+            await session.flush()
+            return []
+        return await self.bulk_create(session=session, discount_id=discount_id, product_ids=product_ids)
+
 
 class DiscountCategoryRepository:
     async def bulk_create(self, *, session: AsyncSession, discount_id: int, category_ids: list[int]) -> list[DiscountCategory]:
@@ -211,3 +281,10 @@ class DiscountCategoryRepository:
             .order_by(Category.name.asc(), Category.id.asc()),
         )
         return list(result.scalars().all())
+
+    async def replace_categories(self, *, session: AsyncSession, discount_id: int, category_ids: list[int]) -> list[DiscountCategory]:
+        await session.execute(delete(DiscountCategory).where(DiscountCategory.discount_id == discount_id))
+        if not category_ids:
+            await session.flush()
+            return []
+        return await self.bulk_create(session=session, discount_id=discount_id, category_ids=category_ids)
