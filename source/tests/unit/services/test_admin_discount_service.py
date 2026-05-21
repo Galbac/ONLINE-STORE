@@ -9,8 +9,9 @@ from source.config.settings import settings
 from source.db.models.choises.enum import UserRole
 from source.errors.auth import AdminAuthAccessDeniedError
 from source.errors.category import CategoryNotFoundError
+from source.errors.discount import DiscountNotFoundError
 from source.errors.product import ProductNotFoundError
-from source.schemas.pydantic.discount import AdminDiscountCreateRequest, AdminDiscountListQueryParams, AdminDiscountListResponse
+from source.schemas.pydantic.discount import AdminDiscountCreateRequest, AdminDiscountDetailResponse, AdminDiscountListQueryParams, AdminDiscountListResponse
 from source.services.admin_auth import AuditLogService, PermissionService
 from source.services.admin_discount import AdminDiscountService, DiscountConflictService
 from source.services.admin_discount_cache import AdminDiscountCacheService
@@ -45,6 +46,7 @@ class FakeDiscountRepository:
         ]
         self.list_calls = 0
         self.count_calls = 0
+        self.detail_calls = 0
 
     async def admin_get_list(self, *, session, query: AdminDiscountListQueryParams):
         self.list_calls += 1
@@ -60,6 +62,13 @@ class FakeDiscountRepository:
         discount = build_discount(discount_id=len(self.discounts) + 1, **data)
         self.discounts.append(discount)
         return discount
+
+    async def admin_get_by_id(self, *, session, discount_id: int):
+        self.detail_calls += 1
+        for discount in self.discounts:
+            if discount.id == discount_id and not discount.is_deleted:
+                return discount
+        return None
 
     def _filter(self, *, query: AdminDiscountListQueryParams):
         discounts = [discount for discount in self.discounts if not discount.is_deleted]
@@ -119,21 +128,35 @@ def build_discount(
 
 
 class FakeDiscountProductRepository:
-    def __init__(self) -> None:
+    def __init__(self, products=None) -> None:
         self.created = []
+        self.products = products if products is not None else [
+            SimpleNamespace(id=55, name="Яблоки красные", price=Decimal("150.00")),
+        ]
+        self.get_calls = 0
 
     async def bulk_create(self, *, session, discount_id: int, product_ids: list[int]):
         self.created.append((discount_id, product_ids))
         return []
 
+    async def get_products(self, *, session, discount_id: int):
+        self.get_calls += 1
+        return self.products
+
 
 class FakeDiscountCategoryRepository:
-    def __init__(self) -> None:
+    def __init__(self, categories=None) -> None:
         self.created = []
+        self.categories = categories if categories is not None else []
+        self.get_calls = 0
 
     async def bulk_create(self, *, session, discount_id: int, category_ids: list[int]):
         self.created.append((discount_id, category_ids))
         return []
+
+    async def get_categories(self, *, session, discount_id: int):
+        self.get_calls += 1
+        return self.categories
 
 
 class FakeProductRepository:
@@ -182,6 +205,37 @@ async def get_discounts(*, query=None, redis_service=None, role=UserRole.ADMIN, 
         permission_service=PermissionService(),
         discount_repository=repository or FakeDiscountRepository(),
         admin_discount_cache_service=AdminDiscountCacheService(),
+    )
+
+
+async def get_discount_detail(
+    *,
+    discount_id: int = 1,
+    redis_service=None,
+    role=UserRole.ADMIN,
+    discount_repository=None,
+    discount_product_repository=None,
+    discount_category_repository=None,
+):
+    discount_repository = discount_repository or FakeDiscountRepository()
+    discount_product_repository = discount_product_repository or FakeDiscountProductRepository()
+    discount_category_repository = discount_category_repository or FakeDiscountCategoryRepository()
+    response = await AdminDiscountService().get_discount_detail(
+        session=None,
+        redis_service=redis_service or FakeRedisService(),
+        user=build_user(role=role),
+        discount_id=discount_id,
+        permission_service=PermissionService(),
+        discount_repository=discount_repository,
+        discount_product_repository=discount_product_repository,
+        discount_category_repository=discount_category_repository,
+        admin_discount_cache_service=AdminDiscountCacheService(),
+    )
+    return SimpleNamespace(
+        response=response,
+        discount_repository=discount_repository,
+        discount_product_repository=discount_product_repository,
+        discount_category_repository=discount_category_repository,
     )
 
 
@@ -318,6 +372,65 @@ async def test_admin_get_discounts_response_is_cached() -> None:
     cache_key = f"admin:discounts:list:{build_query_hash(query.model_dump())}"
     assert cache_key in redis_service.values
     assert redis_service.ttls[cache_key] == settings.discounts.admin_list_cache_ttl_seconds
+
+
+@pytest.mark.asyncio
+async def test_admin_get_discount_detail_success() -> None:
+    result = await get_discount_detail()
+
+    assert result.response.id == 1
+    assert result.response.name == "Скидка на яблоки"
+    assert result.response.products[0].id == 55
+    assert result.response.products[0].name == "Яблоки красные"
+    assert result.response.products[0].price == Decimal("150.00")
+    assert result.response.categories == []
+
+
+@pytest.mark.asyncio
+async def test_admin_get_discount_detail_returns_cached_response() -> None:
+    redis_service = FakeRedisService()
+    cached_response = AdminDiscountDetailResponse(
+        id=1,
+        name="Скидка из кеша",
+        type="product",
+        discount_type="percent",
+        discount_value=Decimal("20"),
+        is_active=True,
+        starts_at=datetime(2026, 5, 1, 0, 0, 0),
+        ends_at=datetime(2026, 5, 31, 23, 59, 59),
+        products=[],
+        categories=[],
+    )
+    redis_service.values["admin:discounts:detail:1"] = cached_response.model_dump_json()
+    repository = FakeDiscountRepository()
+
+    result = await get_discount_detail(redis_service=redis_service, discount_repository=repository)
+
+    assert result.response == cached_response
+    assert repository.detail_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_admin_get_discount_detail_not_found_error() -> None:
+    with pytest.raises(DiscountNotFoundError):
+        await get_discount_detail(discount_id=999)
+
+
+@pytest.mark.asyncio
+async def test_admin_get_discount_detail_no_permission_error() -> None:
+    with pytest.raises(AdminAuthAccessDeniedError):
+        await get_discount_detail(role=UserRole.MANAGER)
+
+
+@pytest.mark.asyncio
+async def test_admin_get_discount_detail_response_is_cached() -> None:
+    redis_service = FakeRedisService()
+
+    await get_discount_detail(redis_service=redis_service)
+
+    cache_key = "admin:discounts:detail:1"
+    assert cache_key in redis_service.values
+    assert redis_service.ttls[cache_key] == settings.discounts.admin_detail_cache_ttl_seconds
 
 
 @pytest.mark.asyncio

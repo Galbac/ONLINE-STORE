@@ -142,6 +142,17 @@ class AdminDiscountListResponse(BaseModel):
         )
 
 
+class AdminDiscountProductResponse(BaseModel):
+    id: int
+    name: str
+    price: Decimal
+
+
+class AdminDiscountCategoryResponse(BaseModel):
+    id: int
+    name: str
+
+
 class AdminDiscountCreateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -196,3 +207,5 @@ class AdminDiscountDetailResponse(BaseModel):
     is_active: bool
     starts_at: datetime | None = None
     ends_at: datetime | None = None
+    products: list[AdminDiscountProductResponse] = Field(default_factory=list)
+    categories: list[AdminDiscountCategoryResponse] = Field(default_factory=list)

@@ -1,13 +1,16 @@
 from source.config.settings import settings
 from source.errors.auth import AdminAuthAccessDeniedError, InactiveUserError
 from source.errors.category import CategoryNotFoundError
+from source.errors.discount import DiscountNotFoundError
 from source.errors.product import ProductNotFoundError
 from source.schemas.pydantic.discount import (
     AdminDiscountCreateRequest,
+    AdminDiscountCategoryResponse,
     AdminDiscountDetailResponse,
     AdminDiscountListItemResponse,
     AdminDiscountListQueryParams,
     AdminDiscountListResponse,
+    AdminDiscountProductResponse,
 )
 from source.services.admin_auth import STAFF_ROLES
 from source.services.redis import RedisService
@@ -89,6 +92,47 @@ class AdminDiscountService:
             ends_at=discount.ends_at,
             created_at=discount.created_date,
         )
+
+    async def get_discount_detail(
+        self,
+        *,
+        session,
+        redis_service: RedisService,
+        user,
+        discount_id: int,
+        permission_service,
+        discount_repository,
+        discount_product_repository,
+        discount_category_repository,
+        admin_discount_cache_service,
+    ) -> AdminDiscountDetailResponse:
+        self._check_read_permission(user=user, permission_service=permission_service)
+
+        cached_discount = await admin_discount_cache_service.get_detail(
+            redis_service=redis_service,
+            discount_id=discount_id,
+        )
+        if cached_discount is not None:
+            return cached_discount
+
+        discount = await discount_repository.admin_get_by_id(session=session, discount_id=discount_id)
+        if discount is None:
+            raise DiscountNotFoundError
+
+        products = await discount_product_repository.get_products(session=session, discount_id=discount.id)
+        categories = await discount_category_repository.get_categories(session=session, discount_id=discount.id)
+        response = self._build_discount_detail_response(
+            discount=discount,
+            products=products,
+            categories=categories,
+        )
+        await admin_discount_cache_service.set_detail(
+            redis_service=redis_service,
+            discount_id=discount.id,
+            response=response,
+            ttl_seconds=settings.discounts.admin_detail_cache_ttl_seconds,
+        )
+        return response
 
     async def create_discount(
         self,
@@ -186,7 +230,13 @@ class AdminDiscountService:
         await redis_service.delete_by_pattern("products:discounted:*")
         await redis_service.delete_by_pattern("cart:*")
 
-    def _build_discount_detail_response(self, *, discount) -> AdminDiscountDetailResponse:
+    def _build_discount_detail_response(
+        self,
+        *,
+        discount,
+        products=None,
+        categories=None,
+    ) -> AdminDiscountDetailResponse:
         return AdminDiscountDetailResponse(
             id=discount.id,
             name=discount.name,
@@ -196,4 +246,19 @@ class AdminDiscountService:
             is_active=discount.is_active,
             starts_at=discount.starts_at,
             ends_at=discount.ends_at,
+            products=[
+                AdminDiscountProductResponse(
+                    id=product.id,
+                    name=product.name,
+                    price=product.price,
+                )
+                for product in products or []
+            ],
+            categories=[
+                AdminDiscountCategoryResponse(
+                    id=category.id,
+                    name=category.name,
+                )
+                for category in categories or []
+            ],
         )

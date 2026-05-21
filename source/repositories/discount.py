@@ -4,6 +4,7 @@ from sqlalchemy import desc, exists, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from source.db.models.discount import Discount, DiscountCategory, DiscountProduct
+from source.db.models.category import Category
 from source.db.models.product import Product
 from source.schemas.pydantic.discount import ActiveDiscountsQueryParams, AdminDiscountListQueryParams, DiscountShortResponse
 
@@ -42,6 +43,20 @@ class DiscountRepository:
         subquery = self._admin_statement(query=query).subquery()
         result = await session.execute(select(func.count()).select_from(subquery))
         return int(result.scalar_one())
+
+    async def admin_get_by_id(
+        self,
+        *,
+        session: AsyncSession,
+        discount_id: int,
+    ) -> Discount | None:
+        result = await session.execute(
+            select(Discount).where(
+                Discount.id == discount_id,
+                Discount.is_deleted.is_(False),
+            ),
+        )
+        return result.scalar_one_or_none()
 
     async def get_active(
         self,
@@ -162,6 +177,18 @@ class DiscountProductRepository:
         await session.flush()
         return relations
 
+    async def get_products(self, *, session: AsyncSession, discount_id: int) -> list[Product]:
+        result = await session.execute(
+            select(Product)
+            .join(DiscountProduct, DiscountProduct.product_id == Product.id)
+            .where(
+                DiscountProduct.discount_id == discount_id,
+                Product.is_deleted.is_(False),
+            )
+            .order_by(Product.name.asc(), Product.id.asc()),
+        )
+        return list(result.scalars().all())
+
 
 class DiscountCategoryRepository:
     async def bulk_create(self, *, session: AsyncSession, discount_id: int, category_ids: list[int]) -> list[DiscountCategory]:
@@ -172,3 +199,15 @@ class DiscountCategoryRepository:
         session.add_all(relations)
         await session.flush()
         return relations
+
+    async def get_categories(self, *, session: AsyncSession, discount_id: int) -> list[Category]:
+        result = await session.execute(
+            select(Category)
+            .join(DiscountCategory, DiscountCategory.category_id == Category.id)
+            .where(
+                DiscountCategory.discount_id == discount_id,
+                Category.is_deleted.is_(False),
+            )
+            .order_by(Category.name.asc(), Category.id.asc()),
+        )
+        return list(result.scalars().all())
