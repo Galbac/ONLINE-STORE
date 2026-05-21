@@ -140,6 +140,60 @@ async def admin_upload_image(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Недостаточно прав") from error
 
 
+@router.delete("/admin/uploads/{file_id}", response_model=MessageResponse, status_code=status.HTTP_200_OK)
+@inject
+async def admin_delete_upload(
+    request: Request,
+    file_id: int,
+    current_user: User = Depends(require_permission("admin:uploads:delete")),
+    session: FromDishka[AsyncSession] = None,
+    redis_service: FromDishka[RedisService] = None,
+    commiter: FromDishka[Commiter] = None,
+    storage_service: FromDishka[StorageService] = None,
+    admin_upload_service: FromDishka[AdminUploadService] = None,
+    upload_cache_service: FromDishka[UploadCacheService] = None,
+    permission_service: FromDishka[PermissionService] = None,
+    upload_repository: FromDishka[UploadRepository] = None,
+    product_image_repository: FromDishka[ProductImageRepository] = None,
+    category_repository: FromDishka[CategoryRepository] = None,
+    audit_log_service: FromDishka[AuditLogService] = None,
+    admin_audit_log_repository: FromDishka[AdminAuditLogRepository] = None,
+) -> MessageResponse:
+    if file_id <= 0:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Неверный file_id")
+    try:
+        await admin_upload_service.delete_file(
+            session=session,
+            redis_service=redis_service,
+            user=current_user,
+            file_id=file_id,
+            storage_service=storage_service,
+            permission_service=permission_service,
+            upload_repository=upload_repository,
+            product_image_repository=product_image_repository,
+            category_repository=category_repository,
+            upload_cache_service=upload_cache_service,
+            audit_log_service=audit_log_service,
+            admin_audit_log_repository=admin_audit_log_repository,
+            ip_address=request.client.host if request.client is not None else None,
+            user_agent=request.headers.get("user-agent"),
+        )
+        await commiter.commit()
+        return MessageResponse(message="Файл удалён")
+    except UploadNotFoundError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Файл не найден") from error
+    except UploadInUseError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Файл используется и не может быть удалён") from error
+    except UploadStorageError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Ошибка удаления файла") from error
+    except (AdminAuthAccessDeniedError, InactiveUserError) as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Недостаточно прав") from error
+
+
 @router.delete("/uploads/{file_id}", response_model=MessageResponse, status_code=status.HTTP_200_OK)
 @inject
 async def delete_upload(

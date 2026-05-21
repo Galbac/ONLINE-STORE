@@ -1,7 +1,10 @@
+from datetime import datetime
+
 from fastapi import UploadFile
 
-from source.config.settings import MediaSettings
+from source.config.settings import MediaSettings, settings
 from source.errors.auth import AdminAuthAccessDeniedError, InactiveUserError
+from source.errors.upload import UploadInUseError, UploadNotFoundError
 from source.schemas.pydantic.upload import AdminUploadImageResponse
 from source.services.admin_auth import STAFF_ROLES
 from source.services.storage import StorageService
@@ -15,6 +18,14 @@ class AdminUploadService:
         if user.role not in STAFF_ROLES:
             raise AdminAuthAccessDeniedError
         if "admin:uploads:create" not in permission_service.get_user_permissions(role=user.role):
+            raise AdminAuthAccessDeniedError
+
+    def _check_delete_permission(self, *, user, permission_service) -> None:
+        if not user.is_active or user.is_deleted or user.is_blocked:
+            raise InactiveUserError
+        if user.role not in STAFF_ROLES:
+            raise AdminAuthAccessDeniedError
+        if "admin:uploads:delete" not in permission_service.get_user_permissions(role=user.role):
             raise AdminAuthAccessDeniedError
 
     async def upload_image(
@@ -76,6 +87,60 @@ class AdminUploadService:
             },
         )
         return self._build_response(upload)
+
+    async def delete_file(
+        self,
+        *,
+        session,
+        redis_service,
+        user,
+        file_id: int,
+        storage_service: StorageService,
+        permission_service,
+        upload_repository,
+        product_image_repository,
+        category_repository,
+        upload_cache_service,
+        audit_log_service,
+        admin_audit_log_repository,
+        ip_address: str | None = None,
+        user_agent: str | None = None,
+    ) -> None:
+        self._check_delete_permission(user=user, permission_service=permission_service)
+
+        upload = await upload_repository.get_by_id(session=session, file_id=file_id)
+        if upload is None or upload.is_deleted:
+            raise UploadNotFoundError
+
+        if await product_image_repository.exists_by_file_id(session=session, file_id=file_id):
+            raise UploadInUseError
+        if await category_repository.exists_by_image_file_id(session=session, file_id=file_id):
+            raise UploadInUseError
+
+        await storage_service.delete_file(storage_type=upload.storage_type, stored_filename=upload.stored_filename)
+        await upload_repository.soft_delete(
+            session=session,
+            upload=upload,
+            deleted_by=user.id,
+            deleted_at=datetime.now(settings.tz),
+        )
+        await audit_log_service.log_action(
+            session=session,
+            audit_log_repository=admin_audit_log_repository,
+            user_id=user.id,
+            login=getattr(user, "email", None) or getattr(user, "phone", None) or str(user.id),
+            event="admin_upload_file_delete",
+            status="success",
+            ip_address=ip_address,
+            user_agent=user_agent,
+            details={
+                "file_id": upload.id,
+                "stored_filename": upload.stored_filename,
+                "storage_type": upload.storage_type,
+                "entity_type": upload.entity_type,
+            },
+        )
+        await upload_cache_service.invalidate_detail(redis_service=redis_service, file_id=file_id)
 
     def _build_response(self, upload) -> AdminUploadImageResponse:
         return AdminUploadImageResponse(

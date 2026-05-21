@@ -10,12 +10,15 @@ from source.errors.auth import AdminAuthAccessDeniedError
 from source.errors.upload import (
     UploadFileMissingError,
     UploadFileTooLargeError,
+    UploadInUseError,
+    UploadNotFoundError,
     UploadUnsupportedExtensionError,
     UploadUnsupportedFormatError,
 )
 from source.services.admin_auth import AuditLogService, PermissionService
 from source.services.admin_upload import AdminUploadService
 from source.services.storage import StorageService
+from source.services.upload_cache import UploadCacheService
 
 PNG_BYTES = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"
 WEBP_BYTES = b"RIFF\x00\x00\x00\x00WEBPVP8 "
@@ -34,24 +37,34 @@ class FakeUploadFile:
 class FakeLocalProvider:
     def __init__(self) -> None:
         self.saved: list[tuple[str, bytes]] = []
+        self.deleted: list[str] = []
 
     async def save(self, *, stored_filename: str, content: bytes) -> str:
         self.saved.append((stored_filename, content))
         return f"/media/{stored_filename}"
 
+    async def delete(self, *, stored_filename: str) -> None:
+        self.deleted.append(stored_filename)
+
 
 class FakeExternalProvider:
     def __init__(self) -> None:
         self.saved: list[tuple[str, bytes]] = []
+        self.deleted: list[str] = []
 
     async def save(self, *, stored_filename: str, content: bytes) -> str:
         self.saved.append((stored_filename, content))
         return f"https://cdn.example.com/{stored_filename}"
 
+    async def delete(self, *, stored_filename: str) -> None:
+        self.deleted.append(stored_filename)
+
 
 class FakeUploadRepository:
-    def __init__(self) -> None:
+    def __init__(self, upload=None) -> None:
         self.created_payload: dict | None = None
+        self.upload = upload
+        self.soft_deleted = False
 
     async def create(self, **kwargs):
         self.created_payload = kwargs
@@ -69,6 +82,18 @@ class FakeUploadRepository:
             created_date=datetime(2026, 5, 12, 10, 0, tzinfo=settings.tz),
         )
 
+    async def get_by_id(self, *, session, file_id: int):
+        if self.upload is not None and self.upload.id == file_id:
+            return self.upload
+        return None
+
+    async def soft_delete(self, *, session, upload, deleted_by: int, deleted_at: datetime):
+        upload.is_deleted = True
+        upload.deleted_by = deleted_by
+        upload.deleted_at = deleted_at
+        self.soft_deleted = True
+        return upload
+
 
 class FakeAuditLogRepository:
     def __init__(self) -> None:
@@ -77,6 +102,30 @@ class FakeAuditLogRepository:
     async def create(self, *, session, **data):
         self.created_payload = data
         return SimpleNamespace(**data)
+
+
+class FakeRedisService:
+    def __init__(self) -> None:
+        self.deleted: list[str] = []
+
+    async def delete(self, key: str) -> None:
+        self.deleted.append(key)
+
+
+class FakeProductImageRepository:
+    def __init__(self, in_use: bool = False) -> None:
+        self.in_use = in_use
+
+    async def exists_by_file_id(self, *, session, file_id: int) -> bool:
+        return self.in_use
+
+
+class FakeCategoryRepository:
+    def __init__(self, in_use: bool = False) -> None:
+        self.in_use = in_use
+
+    async def exists_by_image_file_id(self, *, session, file_id: int) -> bool:
+        return self.in_use
 
 
 def build_media_settings(*, storage: str = "local", max_image_size_mb: int = 5) -> MediaSettings:
@@ -105,6 +154,30 @@ def build_user(*, role=UserRole.ADMIN):
     )
 
 
+def build_upload(
+    *,
+    file_id: int = 1001,
+    stored_filename: str = "product/safe.png",
+    storage_type: str = "local",
+    is_deleted: bool = False,
+):
+    return SimpleNamespace(
+        id=file_id,
+        original_filename="apple.png",
+        stored_filename=stored_filename,
+        mime_type="image/png",
+        size=10,
+        storage_type=storage_type,
+        url=f"/media/{stored_filename}",
+        entity_type="product",
+        uploaded_by=1,
+        is_deleted=is_deleted,
+        deleted_by=None,
+        deleted_at=None,
+        created_date=datetime(2026, 5, 12, 10, 0, tzinfo=settings.tz),
+    )
+
+
 async def upload_admin_image(
     *,
     file=None,
@@ -130,6 +203,40 @@ async def upload_admin_image(
         ),
         upload_repository=upload_repository or FakeUploadRepository(),
         permission_service=PermissionService(),
+        audit_log_service=AuditLogService(),
+        admin_audit_log_repository=audit_log_repository or FakeAuditLogRepository(),
+    )
+
+
+async def delete_admin_upload(
+    *,
+    upload=None,
+    user=None,
+    storage: str = "local",
+    local_provider=None,
+    external_provider=None,
+    product_image_repository=None,
+    category_repository=None,
+    redis_service=None,
+    upload_repository=None,
+    audit_log_repository=None,
+):
+    media_settings = build_media_settings(storage=storage)
+    return await AdminUploadService().delete_file(
+        session=object(),
+        redis_service=redis_service or FakeRedisService(),
+        user=user or build_user(),
+        file_id=1001,
+        storage_service=StorageService(
+            media_settings,
+            local_provider=local_provider or FakeLocalProvider(),
+            external_provider=external_provider,
+        ),
+        permission_service=PermissionService(),
+        upload_repository=upload_repository or FakeUploadRepository(upload or build_upload(storage_type=storage)),
+        product_image_repository=product_image_repository or FakeProductImageRepository(),
+        category_repository=category_repository or FakeCategoryRepository(),
+        upload_cache_service=UploadCacheService(),
         audit_log_service=AuditLogService(),
         admin_audit_log_repository=audit_log_repository or FakeAuditLogRepository(),
     )
@@ -223,4 +330,75 @@ async def test_admin_upload_image_audit_log_created() -> None:
     )
 
     assert audit_log_repository.created_payload["event"] == "admin_upload_image_create"
+    assert audit_log_repository.created_payload["details"]["file_id"] == 1001
+
+
+@pytest.mark.asyncio
+async def test_admin_delete_upload_local_success_soft_deletes_record() -> None:
+    local_provider = FakeLocalProvider()
+    upload = build_upload(storage_type="local")
+    repository = FakeUploadRepository(upload)
+
+    await delete_admin_upload(
+        upload=upload,
+        upload_repository=repository,
+        local_provider=local_provider,
+    )
+
+    assert local_provider.deleted == ["product/safe.png"]
+    assert repository.soft_deleted is True
+    assert upload.is_deleted is True
+    assert upload.deleted_by == 1
+
+
+@pytest.mark.asyncio
+async def test_admin_delete_upload_external_success() -> None:
+    external_provider = FakeExternalProvider()
+
+    await delete_admin_upload(
+        storage="external",
+        upload=build_upload(storage_type="external"),
+        external_provider=external_provider,
+    )
+
+    assert external_provider.deleted == ["product/safe.png"]
+
+
+@pytest.mark.asyncio
+async def test_admin_delete_upload_not_found_error() -> None:
+    with pytest.raises(UploadNotFoundError):
+        await delete_admin_upload(upload_repository=FakeUploadRepository(upload=None))
+
+
+@pytest.mark.asyncio
+async def test_admin_delete_upload_already_deleted_error() -> None:
+    with pytest.raises(UploadNotFoundError):
+        await delete_admin_upload(upload=build_upload(is_deleted=True))
+
+
+@pytest.mark.asyncio
+async def test_admin_delete_upload_product_in_use_error() -> None:
+    with pytest.raises(UploadInUseError):
+        await delete_admin_upload(product_image_repository=FakeProductImageRepository(in_use=True))
+
+
+@pytest.mark.asyncio
+async def test_admin_delete_upload_category_in_use_error() -> None:
+    with pytest.raises(UploadInUseError):
+        await delete_admin_upload(category_repository=FakeCategoryRepository(in_use=True))
+
+
+@pytest.mark.asyncio
+async def test_admin_delete_upload_without_permission_error() -> None:
+    with pytest.raises(AdminAuthAccessDeniedError):
+        await delete_admin_upload(user=build_user(role=UserRole.MANAGER))
+
+
+@pytest.mark.asyncio
+async def test_admin_delete_upload_audit_log_created() -> None:
+    audit_log_repository = FakeAuditLogRepository()
+
+    await delete_admin_upload(audit_log_repository=audit_log_repository)
+
+    assert audit_log_repository.created_payload["event"] == "admin_upload_file_delete"
     assert audit_log_repository.created_payload["details"]["file_id"] == 1001

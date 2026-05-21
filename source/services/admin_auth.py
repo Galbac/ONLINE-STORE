@@ -82,6 +82,7 @@ ADMIN_PERMISSIONS_BY_ROLE = {
         "admin:settings:read",
         "admin:settings:update",
         "admin:uploads:create",
+        "admin:uploads:delete",
         "admin:notifications:read",
         "admin:notifications:update",
         "admin:notifications:test",
