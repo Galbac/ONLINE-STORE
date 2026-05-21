@@ -60,6 +60,7 @@ from source.services.admin_dashboard_cache import AdminDashboardCacheService
 from source.services.admin_delivery import AdminDeliveryService
 from source.services.admin_delivery_cache import AdminDeliveryCacheService
 from source.services.admin_notification import AdminNotificationService
+from source.services.admin_one_c_integration_cache import AdminOneCIntegrationCacheService
 from source.services.admin_order import AdminOrderService
 from source.services.admin_order_cache import AdminOrderCacheService
 from source.services.admin_order_print import AdminOrderPrintService
@@ -561,6 +562,10 @@ class AppProvider(Provider):
     )
     admin_notification_service = provide(
         AdminNotificationService,
+        scope=Scope.REQUEST,
+    )
+    admin_one_c_integration_cache_service = provide(
+        AdminOneCIntegrationCacheService,
         scope=Scope.REQUEST,
     )
     admin_dashboard_cache_service = provide(

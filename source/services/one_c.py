@@ -11,6 +11,9 @@ from urllib.request import Request, urlopen
 from source.config.settings import settings
 from source.errors.auth import AdminAuthAccessDeniedError, InactiveUserError, OneCIntegrationDisabledError, OneCSyncAlreadyRunningError, OneCSyncError
 from source.schemas.pydantic.one_c import (
+    AdminOneCLogItemResponse,
+    AdminOneCLogsQueryParams,
+    AdminOneCLogsResponse,
     AdminOneCOrderSyncRequest,
     AdminOneCOrderSyncResponse,
     AdminOneCSyncRequest,
@@ -40,6 +43,7 @@ from source.schemas.pydantic.one_c import (
     OneCImportResultResponse,
 )
 from source.services.admin_auth import STAFF_ROLES
+from source.utils.query_hash import build_query_hash
 from source.utils.upload import detect_mime_type, generate_safe_filename, get_file_extension, validate_file_size
 from source.utils.slug import generate_slug, normalize_slug
 
@@ -1598,6 +1602,128 @@ class AdminOneCIntegrationService:
             raise AdminAuthAccessDeniedError
         if "admin:integration_1c:sync" not in permission_service.get_user_permissions(role=user.role):
             raise AdminAuthAccessDeniedError
+
+    def _check_read_permission(self, *, user, permission_service) -> list[str]:
+        if not user.is_active or user.is_deleted:
+            raise InactiveUserError
+        if user.role not in STAFF_ROLES:
+            raise AdminAuthAccessDeniedError
+        permissions = permission_service.get_user_permissions(role=user.role)
+        if "admin:integration_1c:read" not in permissions:
+            raise AdminAuthAccessDeniedError
+        return permissions
+
+    async def get_logs(
+        self,
+        *,
+        session,
+        redis_service,
+        user,
+        query: AdminOneCLogsQueryParams,
+        permission_service,
+        integration_log_repository,
+        admin_one_c_integration_cache_service,
+    ) -> AdminOneCLogsResponse:
+        permissions = self._check_read_permission(user=user, permission_service=permission_service)
+        can_read_raw = "admin:integration_1c:read_raw" in permissions
+        query_hash = build_query_hash({**query.model_dump(), "raw": can_read_raw})
+
+        cached_response = await admin_one_c_integration_cache_service.get_logs(
+            redis_service=redis_service,
+            query_hash=query_hash,
+        )
+        if cached_response is not None:
+            return cached_response
+
+        logs = await integration_log_repository.get_list(session=session, query=query)
+        total = await integration_log_repository.count(session=session, query=query)
+        response = AdminOneCLogsResponse(
+            items=[self._build_log_response(log=log, can_read_raw=can_read_raw) for log in logs],
+            total=total,
+            page=query.page,
+            limit=query.limit,
+            pages=(total + query.limit - 1) // query.limit,
+        )
+        await admin_one_c_integration_cache_service.set_logs(
+            redis_service=redis_service,
+            query_hash=query_hash,
+            response=response,
+            ttl_seconds=60,
+        )
+        return response
+
+    def _build_log_response(self, *, log, can_read_raw: bool) -> AdminOneCLogItemResponse:
+        request_payload = self._sanitize_payload(getattr(log, "request_payload", None))
+        response_payload = self._sanitize_payload(getattr(log, "response_payload", None))
+        response_payload_dict = response_payload if isinstance(response_payload, dict) else {}
+        errors_value = response_payload_dict.get("errors")
+        error_count = len(errors_value) if isinstance(errors_value, list) else (1 if getattr(log, "status", None) == "error" else 0)
+
+        return AdminOneCLogItemResponse(
+            id=log.id,
+            direction=self._normalize_log_direction(log=log),
+            entity_type=self._normalize_log_entity_type(entity_type=log.entity_type),
+            status=log.status,
+            message=self._build_log_message(log=log),
+            created_count=int(response_payload_dict.get("created") or 0),
+            updated_count=int(response_payload_dict.get("updated") or response_payload_dict.get("synced") or 0),
+            error_count=int(response_payload_dict.get("errors") if isinstance(response_payload_dict.get("errors"), int) else error_count),
+            created_at=log.created_date,
+            request_payload=request_payload if can_read_raw else None,
+            response_payload=response_payload if can_read_raw else None,
+        )
+
+    def _normalize_log_direction(self, *, log) -> str:
+        if log.entity_type in {"orders", "order"}:
+            return "outbound"
+        return "inbound"
+
+    def _normalize_log_entity_type(self, *, entity_type: str) -> str:
+        entity_type_map = {
+            "product_prices": "prices",
+            "prices": "prices",
+            "product_stocks": "stocks",
+            "stocks": "stocks",
+            "product_images": "images",
+            "images": "images",
+            "order": "orders",
+            "orders": "orders",
+            "categories": "categories",
+            "products": "products",
+        }
+        return entity_type_map.get(entity_type, entity_type)
+
+    def _build_log_message(self, *, log) -> str | None:
+        if log.error_message:
+            return self._sanitize_error_message(log.error_message)
+        action_messages = {
+            "manual_sync_started": "Синхронизация запущена",
+            "manual_sync_finished": "Синхронизация завершена",
+            "manual_sync_order": "Заказ отправлен в 1С",
+            "inbound_import": "Импорт из 1С",
+            "sync_order": "Заказ отправлен в 1С",
+            "inbound_mark_synced": "Заказ отмечен синхронизированным",
+            "inbound_sync_error": "Ошибка синхронизации заказа",
+        }
+        return action_messages.get(log.action, log.action)
+
+    def _sanitize_payload(self, payload):
+        if payload is None:
+            return None
+        if isinstance(payload, dict):
+            sanitized = {}
+            for key, value in payload.items():
+                key_lower = str(key).lower()
+                if key_lower in {"authorization", "password", "token", "api_token", "secret"} or "password" in key_lower or "token" in key_lower:
+                    sanitized[key] = "***"
+                else:
+                    sanitized[key] = self._sanitize_payload(value)
+            return sanitized
+        if isinstance(payload, list):
+            return [self._sanitize_payload(item) for item in payload]
+        if isinstance(payload, str):
+            return self._sanitize_error_message(payload)
+        return payload
 
     async def sync_products(
         self,

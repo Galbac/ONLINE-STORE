@@ -20,7 +20,7 @@ from source.repositories.product_price_history import ProductPriceHistoryReposit
 from source.repositories.stock_movement import StockMovementRepository
 from source.repositories.upload import UploadRepository
 from source.errors.auth import AdminAuthAccessDeniedError, InactiveUserError, OneCIntegrationDisabledError, OneCSyncAlreadyRunningError, OneCSyncError
-from source.schemas.pydantic.one_c import AdminOneCOrderSyncRequest, AdminOneCOrderSyncResponse, AdminOneCSyncRequest, AdminOneCSyncResponse, OneCCategoryImportRequest, OneCImageImportRequest, OneCImportResultResponse, OneCMarkOrderSyncedRequest, OneCOrderSyncErrorRequest, OneCOrderSyncResponse, OneCOrderSyncStatus, OneCOrdersPendingQueryParams, OneCOrdersPendingResponse, OneCPriceImportRequest, OneCProductImportRequest, OneCStockImportRequest
+from source.schemas.pydantic.one_c import AdminOneCLogsQueryParams, AdminOneCLogsResponse, AdminOneCOrderSyncRequest, AdminOneCOrderSyncResponse, AdminOneCSyncRequest, AdminOneCSyncResponse, OneCCategoryImportRequest, OneCImageImportRequest, OneCImportResultResponse, OneCMarkOrderSyncedRequest, OneCOrderSyncErrorRequest, OneCOrderSyncResponse, OneCOrderSyncStatus, OneCOrdersPendingQueryParams, OneCOrdersPendingResponse, OneCPriceImportRequest, OneCProductImportRequest, OneCStockImportRequest
 from source.services.admin_order_cache import AdminOrderCacheService
 from source.services.admin_dashboard_cache import AdminDashboardCacheService
 from source.services.admin_product_cache import AdminProductCacheService
@@ -29,6 +29,7 @@ from source.services.admin_auth import PermissionService
 from source.services.cart_cache import CartCacheService
 from source.services.category_cache import CategoryCacheService
 from source.services.discount_cache import DiscountCacheService
+from source.services.admin_one_c_integration_cache import AdminOneCIntegrationCacheService
 from source.services.one_c import AdminOneCIntegrationService, CategorySyncService, ImageDownloadService, IntegrationJobService, IntegrationLogService, OneCClient, OneCImportService, OneCOrderPayloadBuilder, OneCOrderService, ProductImageSyncService, ProductPriceSyncService, ProductStockSyncService, ProductSyncService, SlugService
 from source.services.order_cache import OrderCacheService
 from source.services.product_cache import ProductCacheService
@@ -37,6 +38,37 @@ from source.services.storage import StorageService
 from source.services.stock import StockMovementService
 
 router = APIRouter(tags=["integration"])
+
+
+@router.get(
+    "/admin/integration/1c/logs",
+    response_model=AdminOneCLogsResponse,
+    response_model_exclude_none=True,
+    status_code=status.HTTP_200_OK,
+)
+@inject
+async def admin_get_one_c_logs(
+    query: AdminOneCLogsQueryParams = Depends(),
+    current_user=Depends(require_permission("admin:integration_1c:read")),
+    session: FromDishka[AsyncSession] = None,
+    redis_service: FromDishka[RedisService] = None,
+    admin_one_c_integration_service: FromDishka[AdminOneCIntegrationService] = None,
+    permission_service: FromDishka[PermissionService] = None,
+    integration_log_repository: FromDishka[IntegrationLogRepository] = None,
+    admin_one_c_integration_cache_service: FromDishka[AdminOneCIntegrationCacheService] = None,
+) -> AdminOneCLogsResponse:
+    try:
+        return await admin_one_c_integration_service.get_logs(
+            session=session,
+            redis_service=redis_service,
+            user=current_user,
+            query=query,
+            permission_service=permission_service,
+            integration_log_repository=integration_log_repository,
+            admin_one_c_integration_cache_service=admin_one_c_integration_cache_service,
+        )
+    except (AdminAuthAccessDeniedError, InactiveUserError) as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Недостаточно прав") from error
 
 
 @router.post(

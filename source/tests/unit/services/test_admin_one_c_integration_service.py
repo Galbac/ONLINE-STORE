@@ -1,3 +1,4 @@
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -5,7 +6,7 @@ import pytest
 from source.config.settings import settings
 from source.db.models.choises.enum import UserRole
 from source.errors.auth import AdminAuthAccessDeniedError, OneCIntegrationDisabledError, OneCSyncAlreadyRunningError, OneCSyncError
-from source.schemas.pydantic.one_c import AdminOneCOrderSyncRequest, AdminOneCSyncRequest, OneCImportResultResponse, OneCPriceImportRequest, OneCProductImportRequest, OneCStockImportRequest
+from source.schemas.pydantic.one_c import AdminOneCLogsQueryParams, AdminOneCOrderSyncRequest, AdminOneCSyncRequest, OneCImportResultResponse, OneCPriceImportRequest, OneCProductImportRequest, OneCStockImportRequest
 from source.services.one_c import AdminOneCIntegrationService, IntegrationJobService
 
 
@@ -23,7 +24,7 @@ class FakeCommiter:
 
 class FakePermissionService:
     def __init__(self, permissions: list[str] | None = None) -> None:
-        self.permissions = permissions if permissions is not None else ["admin:integration_1c:sync"]
+        self.permissions = permissions if permissions is not None else ["admin:integration_1c:sync", "admin:integration_1c:read"]
 
     def get_user_permissions(self, *, role) -> list[str]:
         return self.permissions
@@ -116,12 +117,54 @@ class FakeIntegrationJobRepository:
 
 
 class FakeIntegrationLogRepository:
-    def __init__(self) -> None:
-        self.logs: list[dict] = []
+    def __init__(self, logs: list | None = None) -> None:
+        self.logs: list = logs if logs is not None else []
 
     async def create(self, *, session, **data):
         self.logs.append(data)
         return SimpleNamespace(id=len(self.logs), **data)
+
+    async def get_list(self, *, session, query: AdminOneCLogsQueryParams):
+        logs = self._filter(query=query)
+        return logs[(query.page - 1) * query.limit : query.page * query.limit]
+
+    async def count(self, *, session, query: AdminOneCLogsQueryParams):
+        return len(self._filter(query=query))
+
+    def _filter(self, *, query: AdminOneCLogsQueryParams):
+        logs = [log for log in self.logs if log.system == "1c"]
+        if query.direction == "inbound":
+            logs = [log for log in logs if log.entity_type not in {"orders", "order"}]
+        if query.direction == "outbound":
+            logs = [log for log in logs if log.entity_type in {"orders", "order"}]
+        if query.entity_type is not None:
+            entity_map = {
+                "categories": {"categories"},
+                "products": {"products"},
+                "prices": {"prices", "product_prices"},
+                "stocks": {"stocks", "product_stocks"},
+                "images": {"images", "product_images"},
+                "orders": {"orders", "order"},
+            }
+            logs = [log for log in logs if log.entity_type in entity_map[query.entity_type]]
+        if query.status is not None:
+            logs = [log for log in logs if log.status == query.status]
+        if query.date_from is not None:
+            logs = [log for log in logs if log.created_date >= query.date_from]
+        if query.date_to is not None:
+            logs = [log for log in logs if log.created_date <= query.date_to]
+        if query.q is not None:
+            q = query.q.lower()
+            logs = [
+                log
+                for log in logs
+                if q in log.action.lower()
+                or q in (log.error_message or "").lower()
+                or q in str(log.entity_id)
+                or q in str(log.request_payload).lower()
+                or q in str(log.response_payload).lower()
+            ]
+        return sorted(logs, key=lambda log: (log.created_date, log.id), reverse=True)
 
 
 class FakeCacheService:
@@ -154,6 +197,19 @@ class FakeAdminOrderCacheService:
 
     async def invalidate_all(self, *, redis_service) -> None:
         self.invalidated_all += 1
+
+
+class FakeAdminOneCIntegrationCacheService:
+    def __init__(self) -> None:
+        self.values: dict[str, object] = {}
+        self.set_calls: list[dict] = []
+
+    async def get_logs(self, *, redis_service, query_hash: str):
+        return self.values.get(query_hash)
+
+    async def set_logs(self, *, redis_service, query_hash: str, response, ttl_seconds: int) -> None:
+        self.values[query_hash] = response
+        self.set_calls.append({"query_hash": query_hash, "ttl_seconds": ttl_seconds})
 
 
 class FakeOrderPayloadBuilder:
@@ -248,6 +304,31 @@ def build_order(*, order_id: int, sync_status: str = "pending"):
         address_id=None,
         pickup_point_id=None,
         delivery_time_slot_id=None,
+    )
+
+
+def build_integration_log(
+    *,
+    log_id: int,
+    entity_type: str = "products",
+    status: str = "success",
+    action: str = "inbound_import",
+    error_message: str | None = None,
+    request_payload: dict | None = None,
+    response_payload: dict | None = None,
+    created_date: datetime | None = None,
+):
+    return SimpleNamespace(
+        id=log_id,
+        system="1c",
+        entity_type=entity_type,
+        entity_id=log_id,
+        action=action,
+        status=status,
+        error_message=error_message,
+        request_payload=request_payload,
+        response_payload=response_payload,
+        created_date=created_date or datetime(2026, 5, 12, 10, 0, 0) + timedelta(minutes=log_id),
     )
 
 
@@ -370,6 +451,25 @@ def build_order_dependencies(**overrides):
         "product_repository": FakeProductRepository(),
         "admin_order_cache_service": FakeAdminOrderCacheService(),
         "order_cache_service": FakeOrderCacheService(),
+    }
+    deps.update(overrides)
+    return deps
+
+
+def build_logs_dependencies(**overrides):
+    logs = [
+        build_integration_log(log_id=1, entity_type="products", status="success", response_payload={"created": 20, "updated": 100, "errors": []}),
+        build_integration_log(log_id=2, entity_type="product_prices", status="partial", response_payload={"updated": 10, "errors": [{"message": "bad price"}]}),
+        build_integration_log(log_id=3, entity_type="orders", status="error", action="manual_sync_order", error_message="1C timeout", request_payload={"external_id": "order-ext-3"}),
+    ]
+    deps = {
+        "session": object(),
+        "redis_service": object(),
+        "user": build_user(),
+        "query": AdminOneCLogsQueryParams(),
+        "permission_service": FakePermissionService(permissions=["admin:integration_1c:read"]),
+        "integration_log_repository": FakeIntegrationLogRepository(logs),
+        "admin_one_c_integration_cache_service": FakeAdminOneCIntegrationCacheService(),
     }
     deps.update(overrides)
     return deps
@@ -716,3 +816,138 @@ async def test_admin_one_c_sync_orders_creates_job_and_logs() -> None:
         "manual_sync_finished",
     ]
     assert deps["integration_log_repository"].logs[1]["entity_id"] == 101
+
+
+@pytest.mark.asyncio
+async def test_admin_one_c_get_logs_success() -> None:
+    service = AdminOneCIntegrationService()
+    deps = build_logs_dependencies()
+
+    response = await service.get_logs(**deps)
+
+    assert response.total == 3
+    assert response.page == 1
+    assert response.limit == 50
+    assert response.pages == 1
+    assert response.items[0].id == 3
+    assert response.items[0].direction == "outbound"
+    assert response.items[1].entity_type == "prices"
+    assert response.items[2].created_count == 20
+    assert response.items[2].updated_count == 100
+
+
+@pytest.mark.asyncio
+async def test_admin_one_c_get_logs_filters_direction() -> None:
+    service = AdminOneCIntegrationService()
+    deps = build_logs_dependencies(query=AdminOneCLogsQueryParams(direction="outbound"))
+
+    response = await service.get_logs(**deps)
+
+    assert response.total == 1
+    assert response.items[0].entity_type == "orders"
+
+
+@pytest.mark.asyncio
+async def test_admin_one_c_get_logs_filters_entity_type() -> None:
+    service = AdminOneCIntegrationService()
+    deps = build_logs_dependencies(query=AdminOneCLogsQueryParams(entity_type="prices"))
+
+    response = await service.get_logs(**deps)
+
+    assert response.total == 1
+    assert response.items[0].entity_type == "prices"
+
+
+@pytest.mark.asyncio
+async def test_admin_one_c_get_logs_filters_status() -> None:
+    service = AdminOneCIntegrationService()
+    deps = build_logs_dependencies(query=AdminOneCLogsQueryParams(status="partial"))
+
+    response = await service.get_logs(**deps)
+
+    assert response.total == 1
+    assert response.items[0].status == "partial"
+
+
+@pytest.mark.asyncio
+async def test_admin_one_c_get_logs_filters_date_range() -> None:
+    service = AdminOneCIntegrationService()
+    deps = build_logs_dependencies(
+        query=AdminOneCLogsQueryParams(
+            date_from=datetime(2026, 5, 12, 10, 2, 0),
+            date_to=datetime(2026, 5, 12, 10, 2, 30),
+        ),
+    )
+
+    response = await service.get_logs(**deps)
+
+    assert response.total == 1
+    assert response.items[0].id == 2
+
+
+@pytest.mark.asyncio
+async def test_admin_one_c_get_logs_searches_q() -> None:
+    service = AdminOneCIntegrationService()
+    deps = build_logs_dependencies(query=AdminOneCLogsQueryParams(q="order-ext-3"))
+
+    response = await service.get_logs(**deps)
+
+    assert response.total == 1
+    assert response.items[0].id == 3
+
+
+@pytest.mark.asyncio
+async def test_admin_one_c_get_logs_paginates() -> None:
+    service = AdminOneCIntegrationService()
+    deps = build_logs_dependencies(query=AdminOneCLogsQueryParams(page=2, limit=2))
+
+    response = await service.get_logs(**deps)
+
+    assert response.total == 3
+    assert response.pages == 2
+    assert [item.id for item in response.items] == [1]
+
+
+@pytest.mark.asyncio
+async def test_admin_one_c_get_logs_without_permission_error() -> None:
+    service = AdminOneCIntegrationService()
+    deps = build_logs_dependencies(permission_service=FakePermissionService(permissions=[]))
+
+    with pytest.raises(AdminAuthAccessDeniedError):
+        await service.get_logs(**deps)
+
+
+@pytest.mark.asyncio
+async def test_admin_one_c_get_logs_does_not_return_secrets() -> None:
+    service = AdminOneCIntegrationService()
+    deps = build_logs_dependencies(
+        permission_service=FakePermissionService(permissions=["admin:integration_1c:read", "admin:integration_1c:read_raw"]),
+        integration_log_repository=FakeIntegrationLogRepository(
+            [
+                build_integration_log(
+                    log_id=10,
+                    request_payload={"headers": {"Authorization": "Bearer secret-token"}, "password": "secret-password"},
+                    response_payload={"api_token": "secret-token", "updated": 1},
+                ),
+            ],
+        ),
+    )
+
+    response = await service.get_logs(**deps)
+
+    dumped = response.model_dump()
+    assert "secret-token" not in str(dumped)
+    assert "secret-password" not in str(dumped)
+    assert response.items[0].request_payload["headers"]["Authorization"] == "***"
+    assert response.items[0].response_payload["api_token"] == "***"
+
+
+@pytest.mark.asyncio
+async def test_admin_one_c_get_logs_hides_raw_without_permission() -> None:
+    service = AdminOneCIntegrationService()
+    deps = build_logs_dependencies()
+
+    response = await service.get_logs(**deps)
+
+    assert response.items[0].request_payload is None
+    assert response.items[0].response_payload is None

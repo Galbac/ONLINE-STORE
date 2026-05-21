@@ -192,6 +192,60 @@ class AdminOneCOrderSyncResponse(BaseModel):
     errors: int
 
 
+OneCLogDirection = Literal["inbound", "outbound"]
+OneCLogEntityType = Literal["categories", "products", "prices", "stocks", "images", "orders"]
+OneCLogStatus = Literal["success", "partial", "error", "started"]
+
+
+class AdminOneCLogsQueryParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    page: int = Field(default=1, ge=1)
+    limit: int = Field(default=50, ge=1, le=100)
+    direction: OneCLogDirection | None = None
+    entity_type: OneCLogEntityType | None = None
+    status: OneCLogStatus | None = None
+    date_from: datetime | None = None
+    date_to: datetime | None = None
+    q: str | None = Field(default=None, max_length=255)
+
+    @field_validator("q", mode="before")
+    @classmethod
+    def normalize_query(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        normalized_value = " ".join(value.strip().split())
+        return normalized_value or None
+
+    @model_validator(mode="after")
+    def validate_date_range(self) -> "AdminOneCLogsQueryParams":
+        if self.date_from is not None and self.date_to is not None and self.date_from > self.date_to:
+            raise ValueError("date_from не может быть больше date_to")
+        return self
+
+
+class AdminOneCLogItemResponse(BaseModel):
+    id: int
+    direction: OneCLogDirection
+    entity_type: OneCLogEntityType
+    status: OneCLogStatus
+    message: str | None = None
+    created_count: int = 0
+    updated_count: int = 0
+    error_count: int = 0
+    created_at: datetime
+    request_payload: dict | None = None
+    response_payload: dict | None = None
+
+
+class AdminOneCLogsResponse(BaseModel):
+    items: list[AdminOneCLogItemResponse]
+    total: int
+    page: int
+    limit: int
+    pages: int
+
+
 class OneCOrdersPendingQueryParams(BaseModel):
     limit: int = Field(default=50, ge=1, le=200)
     status: OneCOrderSyncStatus | None = None
