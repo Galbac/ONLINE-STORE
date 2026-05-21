@@ -43,6 +43,22 @@ class NotificationListResponse(BaseModel):
     pages: int
 
 
+class AdminNotificationSettingsResponse(BaseModel):
+    email_enabled: bool
+    email_from: EmailStr | None = None
+    email_sender_name: str
+    telegram_enabled: bool
+    telegram_admin_chat_id: str | None = None
+    notify_admin_new_order: bool
+    notify_admin_payment_error: bool
+    notify_admin_1c_error: bool
+    notify_customer_order_created: bool
+    notify_customer_order_status: bool
+    notify_customer_payment: bool
+    notify_customer_delivery: bool
+    updated_at: datetime
+
+
 class TestEmailRequest(BaseModel):
     __test__: ClassVar[bool] = False
 

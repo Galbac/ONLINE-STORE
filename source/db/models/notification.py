@@ -25,3 +25,20 @@ class NotificationLog(IdBigIntPkMixin, CreateUpdateMixin, Base):
     status: Mapped[str] = mapped_column(String(30), index=True, nullable=False)
     error_message: Mapped[str | None] = mapped_column(Text)
     created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), index=True)
+
+
+class NotificationSettings(IdBigIntPkMixin, CreateUpdateMixin, Base):
+    __tablename__ = "notification_settings"
+
+    email_enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true", nullable=False)
+    email_from: Mapped[str | None] = mapped_column(String(255))
+    email_sender_name: Mapped[str] = mapped_column(String(255), default="Супермаркет", server_default="Супермаркет", nullable=False)
+    telegram_enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true", nullable=False)
+    telegram_admin_chat_id: Mapped[str | None] = mapped_column(String(100))
+    notify_admin_new_order: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true", nullable=False)
+    notify_admin_payment_error: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true", nullable=False)
+    notify_admin_1c_error: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true", nullable=False)
+    notify_customer_order_created: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true", nullable=False)
+    notify_customer_order_status: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true", nullable=False)
+    notify_customer_payment: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true", nullable=False)
+    notify_customer_delivery: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true", nullable=False)

@@ -30,7 +30,7 @@ from source.repositories.integration_log import IntegrationLogRepository
 from source.repositories.order import OrderRepository
 from source.repositories.order_item import OrderItemRepository
 from source.repositories.order_status_history import OrderStatusHistoryRepository
-from source.repositories.notification import NotificationLogRepository, NotificationRepository
+from source.repositories.notification import NotificationLogRepository, NotificationRepository, NotificationSettingsRepository
 from source.repositories.payment import PaymentRepository
 from source.repositories.payment_webhook_log import PaymentWebhookLogRepository
 from source.repositories.refund import RefundRepository
@@ -57,6 +57,7 @@ from source.services.admin_dashboard import AdminDashboardService
 from source.services.admin_dashboard_cache import AdminDashboardCacheService
 from source.services.admin_delivery import AdminDeliveryService
 from source.services.admin_delivery_cache import AdminDeliveryCacheService
+from source.services.admin_notification import AdminNotificationService
 from source.services.admin_order import AdminOrderService
 from source.services.admin_order_print import AdminOrderPrintService
 from source.services.admin_product import AdminProductService
@@ -77,6 +78,7 @@ from source.services.notifications import EmailService, TelegramNotificationServ
 from source.services.delivery_cache import DeliveryCacheService
 from source.services.notifications import NotificationService
 from source.services.notification_cache import NotificationCacheService
+from source.services.notification_settings_cache import NotificationSettingsCacheService
 from source.services.delivery import DeliveryService, DeliveryTimeSlotService, DeliveryZoneService
 from source.services.discount import DiscountService
 from source.services.discount_cache import DiscountCacheService
@@ -249,6 +251,10 @@ class AppProvider(Provider):
     )
     notification_log_repository = provide(
         NotificationLogRepository,
+        scope=Scope.REQUEST,
+    )
+    notification_settings_repository = provide(
+        NotificationSettingsRepository,
         scope=Scope.REQUEST,
     )
     refund_repository = provide(
@@ -451,6 +457,10 @@ class AppProvider(Provider):
         NotificationCacheService,
         scope=Scope.REQUEST,
     )
+    notification_settings_cache_service = provide(
+        NotificationSettingsCacheService,
+        scope=Scope.REQUEST,
+    )
     admin_auth_service = provide(
         AdminAuthService,
         scope=Scope.REQUEST,
@@ -461,6 +471,10 @@ class AppProvider(Provider):
     )
     admin_dashboard_service = provide(
         AdminDashboardService,
+        scope=Scope.REQUEST,
+    )
+    admin_notification_service = provide(
+        AdminNotificationService,
         scope=Scope.REQUEST,
     )
     admin_dashboard_cache_service = provide(

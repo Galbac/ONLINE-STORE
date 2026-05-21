@@ -4,7 +4,8 @@ from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from source.config.settings import settings
-from source.db.models.notification import Notification, NotificationLog
+from source.config.settings import settings
+from source.db.models.notification import Notification, NotificationLog, NotificationSettings
 from source.schemas.pydantic.notifications import NotificationQueryParams, NotificationResponse
 
 
@@ -91,3 +92,26 @@ class NotificationLogRepository:
         await session.flush()
         await session.refresh(log)
         return log
+
+
+class NotificationSettingsRepository:
+    async def get(self, *, session: AsyncSession) -> NotificationSettings | None:
+        result = await session.execute(select(NotificationSettings).order_by(NotificationSettings.id.asc()).limit(1))
+        return result.scalar_one_or_none()
+
+    async def get_or_create_default(self, *, session: AsyncSession) -> tuple[NotificationSettings, bool]:
+        notification_settings = await self.get(session=session)
+        if notification_settings is not None:
+            return notification_settings, False
+
+        notification_settings = NotificationSettings(
+            email_enabled=settings.email_notifications.enabled,
+            email_from=settings.email_notifications.from_email or None,
+            email_sender_name="Супермаркет",
+            telegram_enabled=settings.telegram.enabled,
+            telegram_admin_chat_id=settings.telegram.admin_chat_id or None,
+        )
+        session.add(notification_settings)
+        await session.flush()
+        await session.refresh(notification_settings)
+        return notification_settings, True

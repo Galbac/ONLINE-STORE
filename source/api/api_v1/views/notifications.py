@@ -2,11 +2,11 @@ from dishka.integrations.fastapi import FromDishka, inject
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from source.api.dependencies import get_current_user, require_admin_or_manager
+from source.api.dependencies import get_current_user, require_admin_or_manager, require_permission
 from source.common.commiter import Commiter
 from source.config.settings import settings
 from source.db.models.user import User
-from source.errors.auth import InactiveUserError
+from source.errors.auth import AdminAuthAccessDeniedError, InactiveUserError
 from source.errors.notification import (
     NotificationAccessDeniedError,
     NotificationEmailDisabledError,
@@ -15,8 +15,9 @@ from source.errors.notification import (
     NotificationTelegramChatIdMissingError,
     NotificationTelegramDisabledError,
 )
-from source.repositories.notification import NotificationLogRepository, NotificationRepository
+from source.repositories.notification import NotificationLogRepository, NotificationRepository, NotificationSettingsRepository
 from source.schemas.pydantic.notifications import (
+    AdminNotificationSettingsResponse,
     MessageResponse,
     NotificationListResponse,
     NotificationQueryParams,
@@ -25,10 +26,43 @@ from source.schemas.pydantic.notifications import (
     TestTelegramRequest,
 )
 from source.services.notification_cache import NotificationCacheService
+from source.services.notification_settings_cache import NotificationSettingsCacheService
+from source.services.admin_auth import PermissionService
+from source.services.admin_notification import AdminNotificationService
 from source.services.notifications import EmailService, NotificationService, TelegramNotificationService
 from source.services.redis import RedisService
 
 router = APIRouter(tags=["notifications"])
+
+
+@router.get(
+    "/admin/notifications/settings",
+    response_model=AdminNotificationSettingsResponse,
+    status_code=status.HTTP_200_OK,
+)
+@inject
+async def get_admin_notification_settings(
+    current_user: User = Depends(require_permission("admin:notifications:read")),
+    session: FromDishka[AsyncSession] = None,
+    redis_service: FromDishka[RedisService] = None,
+    commiter: FromDishka[Commiter] = None,
+    admin_notification_service: FromDishka[AdminNotificationService] = None,
+    permission_service: FromDishka[PermissionService] = None,
+    notification_settings_repository: FromDishka[NotificationSettingsRepository] = None,
+    notification_settings_cache_service: FromDishka[NotificationSettingsCacheService] = None,
+) -> AdminNotificationSettingsResponse:
+    try:
+        return await admin_notification_service.get_settings(
+            session=session,
+            redis_service=redis_service,
+            user=current_user,
+            commiter=commiter,
+            permission_service=permission_service,
+            notification_settings_repository=notification_settings_repository,
+            notification_settings_cache_service=notification_settings_cache_service,
+        )
+    except (AdminAuthAccessDeniedError, InactiveUserError) as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Недостаточно прав") from error
 
 
 @router.get("/notifications", response_model=NotificationListResponse, status_code=status.HTTP_200_OK)
