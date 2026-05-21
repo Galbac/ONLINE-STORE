@@ -103,6 +103,20 @@ class AdminTestEmailRequest(TestEmailRequest):
     model_config = ConfigDict(extra="forbid")
 
 
+class AdminTestTelegramRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    chat_id: str | None = Field(default=None, min_length=1, max_length=100)
+    message: str | None = Field(default=None, max_length=1000)
+
+    @field_validator("chat_id", "message", mode="before")
+    @classmethod
+    def normalize_optional_string(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        return " ".join(value.strip().split())
+
+
 class TestTelegramRequest(BaseModel):
     __test__: ClassVar[bool] = False
 

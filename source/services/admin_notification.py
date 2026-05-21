@@ -1,10 +1,21 @@
 from source.config.settings import settings
 from source.errors.auth import AdminAuthAccessDeniedError, InactiveUserError
-from source.errors.notification import NotificationEmailDisabledError, NotificationSendError
+from source.errors.notification import (
+    NotificationEmailDisabledError,
+    NotificationSendError,
+    NotificationTelegramChatIdMissingError,
+    NotificationTelegramDisabledError,
+)
 from source.errors.settings import EmptyNotificationSettingsUpdateError
-from source.schemas.pydantic.notifications import AdminNotificationSettingsResponse, AdminNotificationSettingsUpdateRequest, AdminTestEmailRequest, MessageResponse
+from source.schemas.pydantic.notifications import (
+    AdminNotificationSettingsResponse,
+    AdminNotificationSettingsUpdateRequest,
+    AdminTestEmailRequest,
+    AdminTestTelegramRequest,
+    MessageResponse,
+)
 from source.services.admin_auth import STAFF_ROLES
-from source.services.notifications import EmailService
+from source.services.notifications import EmailService, TelegramNotificationService
 from source.services.notification_settings_cache import NotificationSettingsCacheService
 from source.services.redis import RedisService
 
@@ -198,6 +209,91 @@ class AdminNotificationService:
         await commiter.commit()
         return MessageResponse(message="Тестовое email-уведомление отправлено", email=data.email)
 
+    async def send_test_telegram(
+        self,
+        *,
+        session,
+        user,
+        data: AdminTestTelegramRequest,
+        commiter,
+        permission_service,
+        telegram_service: TelegramNotificationService,
+        notification_settings_repository,
+        notification_log_repository,
+    ) -> MessageResponse:
+        self._check_test_permission(user=user, permission_service=permission_service)
+
+        message = data.message or "Это тестовое Telegram-уведомление из админ-панели интернет-магазина."
+        notification_settings, _created = await notification_settings_repository.get_or_create_default(session=session)
+        chat_id = data.chat_id or notification_settings.telegram_admin_chat_id or settings.telegram.admin_chat_id
+        if not chat_id:
+            raise NotificationTelegramChatIdMissingError
+
+        if not settings.telegram.enabled or not notification_settings.telegram_enabled:
+            await self._log_test_telegram(
+                session=session,
+                notification_log_repository=notification_log_repository,
+                user=user,
+                chat_id=chat_id,
+                message=message,
+                status="error",
+                error_message="Telegram-уведомления отключены",
+            )
+            await commiter.commit()
+            raise NotificationTelegramDisabledError
+
+        if not settings.telegram.bot_token:
+            await self._log_test_telegram(
+                session=session,
+                notification_log_repository=notification_log_repository,
+                user=user,
+                chat_id=chat_id,
+                message=message,
+                status="error",
+                error_message="Telegram bot token is not configured",
+            )
+            await commiter.commit()
+            raise NotificationSendError
+
+        try:
+            await telegram_service.send_message(chat_id=chat_id, message=message)
+        except NotificationTelegramDisabledError:
+            await self._log_test_telegram(
+                session=session,
+                notification_log_repository=notification_log_repository,
+                user=user,
+                chat_id=chat_id,
+                message=message,
+                status="error",
+                error_message="Telegram-уведомления отключены",
+            )
+            await commiter.commit()
+            raise
+        except Exception as error:
+            await self._log_test_telegram(
+                session=session,
+                notification_log_repository=notification_log_repository,
+                user=user,
+                chat_id=chat_id,
+                message=message,
+                status="error",
+                error_message=str(error),
+            )
+            await commiter.commit()
+            raise NotificationSendError from error
+
+        await self._log_test_telegram(
+            session=session,
+            notification_log_repository=notification_log_repository,
+            user=user,
+            chat_id=chat_id,
+            message=message,
+            status="success",
+            error_message=None,
+        )
+        await commiter.commit()
+        return MessageResponse(message="Тестовое Telegram-уведомление отправлено", chat_id=chat_id)
+
     async def _log_test_email(
         self,
         *,
@@ -215,6 +311,28 @@ class AdminNotificationService:
             channel="email",
             recipient=email,
             subject=subject,
+            message=message,
+            status=status,
+            error_message=error_message,
+            created_by=user.id,
+        )
+
+    async def _log_test_telegram(
+        self,
+        *,
+        session,
+        notification_log_repository,
+        user,
+        chat_id: str,
+        message: str,
+        status: str,
+        error_message: str | None,
+    ) -> None:
+        await notification_log_repository.create(
+            session=session,
+            channel="telegram",
+            recipient=chat_id,
+            subject=None,
             message=message,
             status=status,
             error_message=error_message,

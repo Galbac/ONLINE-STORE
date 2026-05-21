@@ -9,11 +9,16 @@ from source.db.models.choises.enum import UserRole
 from source.errors.auth import AdminAuthAccessDeniedError
 from source.errors.settings import EmptyNotificationSettingsUpdateError
 from source.schemas.pydantic.notifications import AdminNotificationSettingsResponse, AdminNotificationSettingsUpdateRequest
-from source.schemas.pydantic.notifications import AdminTestEmailRequest
+from source.schemas.pydantic.notifications import AdminTestEmailRequest, AdminTestTelegramRequest
 from source.services.admin_auth import AuditLogService, PermissionService
 from source.services.admin_notification import AdminNotificationService
 from source.services.notification_settings_cache import NotificationSettingsCacheService
-from source.errors.notification import NotificationEmailDisabledError, NotificationSendError
+from source.errors.notification import (
+    NotificationEmailDisabledError,
+    NotificationSendError,
+    NotificationTelegramChatIdMissingError,
+    NotificationTelegramDisabledError,
+)
 
 
 class FakeRedisService:
@@ -92,6 +97,17 @@ class FakeEmailService:
         if self.fail is not None:
             raise self.fail
         self.sent.append({"email": email, "subject": subject, "message": message})
+
+
+class FakeTelegramService:
+    def __init__(self, *, fail: Exception | None = None) -> None:
+        self.fail = fail
+        self.sent: list[dict] = []
+
+    async def send_message(self, *, chat_id: str, message: str) -> None:
+        if self.fail is not None:
+            raise self.fail
+        self.sent.append({"chat_id": chat_id, "message": message})
 
 
 def build_user(*, role=UserRole.ADMIN):
@@ -180,6 +196,27 @@ async def send_test_email(
         permission_service=PermissionService(),
         email_service=email_service or FakeEmailService(),
         notification_settings_repository=repository or FakeNotificationSettingsRepository(build_notification_settings(email_enabled=True)),
+        notification_log_repository=notification_log_repository or FakeNotificationLogRepository(),
+    )
+
+
+async def send_test_telegram(
+    *,
+    data=None,
+    repository=None,
+    user=None,
+    commiter=None,
+    telegram_service=None,
+    notification_log_repository=None,
+):
+    return await AdminNotificationService().send_test_telegram(
+        session=object(),
+        user=user or build_user(),
+        data=data or AdminTestTelegramRequest(chat_id="123456789"),
+        commiter=commiter or FakeCommiter(),
+        permission_service=PermissionService(),
+        telegram_service=telegram_service or FakeTelegramService(),
+        notification_settings_repository=repository or FakeNotificationSettingsRepository(build_notification_settings(telegram_enabled=True)),
         notification_log_repository=notification_log_repository or FakeNotificationLogRepository(),
     )
 
@@ -439,3 +476,132 @@ async def test_admin_test_email_response_does_not_return_smtp_password(monkeypat
     payload = response.model_dump()
     assert "password" not in payload
     assert "smtp" not in payload
+
+
+@pytest.mark.asyncio
+async def test_admin_test_telegram_success_to_body_chat_id(monkeypatch) -> None:
+    monkeypatch.setattr(settings.telegram, "enabled", True)
+    monkeypatch.setattr(settings.telegram, "bot_token", "secret-token")
+    telegram_service = FakeTelegramService()
+    log_repository = FakeNotificationLogRepository()
+
+    response = await send_test_telegram(
+        data=AdminTestTelegramRequest(chat_id="123456789", message="Проверка"),
+        telegram_service=telegram_service,
+        notification_log_repository=log_repository,
+    )
+
+    assert response.message == "Тестовое Telegram-уведомление отправлено"
+    assert response.chat_id == "123456789"
+    assert telegram_service.sent[0] == {"chat_id": "123456789", "message": "Проверка"}
+    assert log_repository.logs[0]["status"] == "success"
+
+
+@pytest.mark.asyncio
+async def test_admin_test_telegram_success_to_settings_chat_id(monkeypatch) -> None:
+    monkeypatch.setattr(settings.telegram, "enabled", True)
+    monkeypatch.setattr(settings.telegram, "bot_token", "secret-token")
+    telegram_service = FakeTelegramService()
+
+    response = await send_test_telegram(
+        data=AdminTestTelegramRequest(),
+        repository=FakeNotificationSettingsRepository(build_notification_settings(telegram_admin_chat_id="-100123")),
+        telegram_service=telegram_service,
+    )
+
+    assert response.chat_id == "-100123"
+    assert telegram_service.sent[0]["chat_id"] == "-100123"
+
+
+@pytest.mark.asyncio
+async def test_admin_test_telegram_success_to_env_chat_id(monkeypatch) -> None:
+    monkeypatch.setattr(settings.telegram, "enabled", True)
+    monkeypatch.setattr(settings.telegram, "bot_token", "secret-token")
+    monkeypatch.setattr(settings.telegram, "admin_chat_id", "987654321")
+    telegram_service = FakeTelegramService()
+
+    response = await send_test_telegram(
+        data=AdminTestTelegramRequest(),
+        repository=FakeNotificationSettingsRepository(build_notification_settings(telegram_admin_chat_id=None)),
+        telegram_service=telegram_service,
+    )
+
+    assert response.chat_id == "987654321"
+    assert telegram_service.sent[0]["chat_id"] == "987654321"
+
+
+@pytest.mark.asyncio
+async def test_admin_test_telegram_missing_chat_id_error(monkeypatch) -> None:
+    monkeypatch.setattr(settings.telegram, "admin_chat_id", "")
+
+    with pytest.raises(NotificationTelegramChatIdMissingError):
+        await send_test_telegram(
+            data=AdminTestTelegramRequest(),
+            repository=FakeNotificationSettingsRepository(build_notification_settings(telegram_admin_chat_id=None)),
+        )
+
+
+@pytest.mark.asyncio
+async def test_admin_test_telegram_env_disabled_error(monkeypatch) -> None:
+    monkeypatch.setattr(settings.telegram, "enabled", False)
+    monkeypatch.setattr(settings.telegram, "bot_token", "secret-token")
+    log_repository = FakeNotificationLogRepository()
+
+    with pytest.raises(NotificationTelegramDisabledError):
+        await send_test_telegram(notification_log_repository=log_repository)
+
+    assert log_repository.logs[0]["status"] == "error"
+    assert log_repository.logs[0]["error_message"] == "Telegram-уведомления отключены"
+
+
+@pytest.mark.asyncio
+async def test_admin_test_telegram_settings_disabled_error(monkeypatch) -> None:
+    monkeypatch.setattr(settings.telegram, "enabled", True)
+    monkeypatch.setattr(settings.telegram, "bot_token", "secret-token")
+    log_repository = FakeNotificationLogRepository()
+
+    with pytest.raises(NotificationTelegramDisabledError):
+        await send_test_telegram(
+            repository=FakeNotificationSettingsRepository(build_notification_settings(telegram_enabled=False)),
+            notification_log_repository=log_repository,
+        )
+
+    assert log_repository.logs[0]["status"] == "error"
+
+
+@pytest.mark.asyncio
+async def test_admin_test_telegram_without_permission_error(monkeypatch) -> None:
+    monkeypatch.setattr(settings.telegram, "enabled", True)
+    monkeypatch.setattr(settings.telegram, "bot_token", "secret-token")
+
+    with pytest.raises(AdminAuthAccessDeniedError):
+        await send_test_telegram(user=build_user(role=UserRole.MANAGER))
+
+
+@pytest.mark.asyncio
+async def test_admin_test_telegram_bot_token_not_returned_or_logged(monkeypatch) -> None:
+    monkeypatch.setattr(settings.telegram, "enabled", True)
+    monkeypatch.setattr(settings.telegram, "bot_token", "secret-token")
+    log_repository = FakeNotificationLogRepository()
+
+    response = await send_test_telegram(notification_log_repository=log_repository)
+
+    assert "secret-token" not in response.model_dump_json()
+    assert "secret-token" not in str(log_repository.logs)
+    assert "bot_token" not in response.model_dump()
+
+
+@pytest.mark.asyncio
+async def test_admin_test_telegram_error_log_created(monkeypatch) -> None:
+    monkeypatch.setattr(settings.telegram, "enabled", True)
+    monkeypatch.setattr(settings.telegram, "bot_token", "secret-token")
+    log_repository = FakeNotificationLogRepository()
+
+    with pytest.raises(NotificationSendError):
+        await send_test_telegram(
+            telegram_service=FakeTelegramService(fail=RuntimeError("telegram failed")),
+            notification_log_repository=log_repository,
+        )
+
+    assert log_repository.logs[0]["status"] == "error"
+    assert log_repository.logs[0]["error_message"] == "telegram failed"
