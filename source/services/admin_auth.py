@@ -81,6 +81,7 @@ ADMIN_PERMISSIONS_BY_ROLE = {
         "admin:roles:read",
         "admin:settings:read",
         "admin:settings:update",
+        "admin:uploads:create",
     ],
     UserRole.MANAGER: [
         "admin:dashboard:read",
@@ -120,6 +121,7 @@ ADMIN_PERMISSIONS_BY_ROLE = {
         "admin:categories:delete",
         "admin:products:read",
         "admin:products:manage",
+        "admin:uploads:create",
     ],
     UserRole.PICKER: ["admin:dashboard:read", "admin:orders:pick", "admin:orders:print"],
     UserRole.COURIER: ["admin:dashboard:read", "admin:orders:deliver"],

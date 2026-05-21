@@ -67,6 +67,7 @@ from source.services.admin_staff import AdminStaffService
 from source.services.admin_staff_cache import AdminStaffCacheService
 from source.services.admin_user import AdminUserService
 from source.services.admin_settings import AdminSettingsService
+from source.services.admin_upload import AdminUploadService
 from source.services.auth import AuthService
 from source.services.cart import CartCalculatorService, CartService
 from source.services.cart_cache import CartCacheService
@@ -528,6 +529,10 @@ class AppProvider(Provider):
     )
     admin_staff_cache_service = provide(
         AdminStaffCacheService,
+        scope=Scope.REQUEST,
+    )
+    admin_upload_service = provide(
+        AdminUploadService,
         scope=Scope.REQUEST,
     )
     role_service = provide(

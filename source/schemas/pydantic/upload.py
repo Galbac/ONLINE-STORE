@@ -16,3 +16,7 @@ class UploadFileResponse(BaseModel):
 
 class UploadImageResponse(UploadFileResponse):
     pass
+
+
+class AdminUploadImageResponse(UploadFileResponse):
+    stored_filename: str

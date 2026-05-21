@@ -1,4 +1,4 @@
-from pathlib import Path
+from urllib.parse import quote
 
 from source.config.settings import MediaSettings
 from source.errors.upload import UploadStorageError
@@ -30,10 +30,12 @@ class ExternalStorageProvider:
         self.media_settings = media_settings
 
     async def save(self, *, stored_filename: str, content: bytes) -> str:
-        raise UploadStorageError
+        if not self.media_settings.base_url:
+            raise UploadStorageError
+        return f"{self.media_settings.base_url.rstrip('/')}/{quote(stored_filename)}"
 
     async def delete(self, *, stored_filename: str) -> None:
-        raise UploadStorageError
+        return None
 
 
 class StorageService:

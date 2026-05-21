@@ -21,6 +21,9 @@ from source.services.storage import StorageService
 from source.services.upload import UploadService
 from source.services.upload_cache import UploadCacheService
 
+PNG_BYTES = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"
+WEBP_BYTES = b"RIFF\x00\x00\x00\x00WEBPVP8 "
+
 
 class FakeUploadFile:
     def __init__(self, *, filename: str | None, content_type: str, content: bytes) -> None:
@@ -186,7 +189,7 @@ async def test_upload_image_local_success_creates_record() -> None:
         storage_service=StorageService(build_media_settings(), local_provider=local_provider),
         upload_repository=repository,
         user=build_user(),
-        file=FakeUploadFile(filename="apple.png", content_type="image/png", content=b"data"),
+        file=FakeUploadFile(filename="apple.png", content_type="image/png", content=PNG_BYTES),
         entity_type="product",
     )
 
@@ -206,7 +209,7 @@ async def test_upload_image_external_success() -> None:
         storage_service=StorageService(build_media_settings(storage="external"), external_provider=external_provider),
         upload_repository=FakeUploadRepository(),
         user=build_user(),
-        file=FakeUploadFile(filename="apple.webp", content_type="image/webp", content=b"data"),
+        file=FakeUploadFile(filename="apple.webp", content_type="image/webp", content=WEBP_BYTES),
         entity_type="product",
     )
 
@@ -252,7 +255,7 @@ async def test_upload_image_too_large_error() -> None:
             storage_service=StorageService(build_media_settings(), local_provider=FakeLocalProvider()),
             upload_repository=FakeUploadRepository(),
             user=build_user(),
-            file=FakeUploadFile(filename="apple.png", content_type="image/png", content=b"data"),
+            file=FakeUploadFile(filename="apple.png", content_type="image/png", content=PNG_BYTES),
             entity_type=None,
         )
 

@@ -459,15 +459,24 @@ class MediaSettings(BaseSettings):
         default="image/jpeg,image/png,image/webp",
         alias="MEDIA_ALLOWED_IMAGE_TYPES",
     )
+    allowed_image_extensions: str = Field(
+        default=".jpg,.jpeg,.png,.webp",
+        alias="MEDIA_ALLOWED_IMAGE_EXTENSIONS",
+    )
     base_url: str = Field(default="", alias="MEDIA_BASE_URL")
     storage_access_key: str = Field(default="", alias="STORAGE_ACCESS_KEY")
     storage_secret_key: str = Field(default="", alias="STORAGE_SECRET_KEY")
     storage_bucket: str = Field(default="", alias="STORAGE_BUCKET")
+    storage_region: str = Field(default="", alias="STORAGE_REGION")
     detail_cache_ttl_seconds: int = Field(default=300, alias="UPLOAD_DETAIL_CACHE_TTL_SECONDS")
 
     @property
     def allowed_image_type_set(self) -> set[str]:
         return {item.strip() for item in self.allowed_image_types.split(",") if item.strip()}
+
+    @property
+    def allowed_image_extension_set(self) -> set[str]:
+        return {item.strip().lower() for item in self.allowed_image_extensions.split(",") if item.strip()}
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

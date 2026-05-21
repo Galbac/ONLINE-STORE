@@ -31,6 +31,7 @@ class UploadService:
         content = await validate_image_file(
             file=file,
             allowed_mime_types=media_settings.allowed_image_type_set,
+            allowed_extensions=media_settings.allowed_image_extension_set,
             max_size_bytes=media_settings.max_image_size_mb * 1024 * 1024,
         )
         extension = get_file_extension(file.filename if file is not None else None)
