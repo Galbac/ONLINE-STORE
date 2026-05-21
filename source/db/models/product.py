@@ -30,6 +30,8 @@ class Product(IdBigIntPkMixin, CreateUpdateMixin, Base):
     currency: Mapped[str] = mapped_column(String(3), default="RUB", server_default="RUB", nullable=False)
     price_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     stock_quantity: Mapped[Decimal] = mapped_column(Numeric(12, 3), default=0, server_default="0", nullable=False)
+    reserved_quantity: Mapped[Decimal] = mapped_column(Numeric(12, 3), default=0, server_default="0", nullable=False)
+    stock_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     quantity_step: Mapped[Decimal] = mapped_column(Numeric(12, 3), default=1, server_default="1", nullable=False)
     min_quantity: Mapped[Decimal] = mapped_column(Numeric(12, 3), default=1, server_default="1", nullable=False)
     low_stock_threshold: Mapped[Decimal] = mapped_column(Numeric(12, 3), default=5, server_default="5", nullable=False)

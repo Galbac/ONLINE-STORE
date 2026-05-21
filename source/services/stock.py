@@ -133,6 +133,15 @@ class StockService:
 
 
 class StockMovementService:
+    async def create_bulk(
+        self,
+        *,
+        session,
+        stock_movement_repository,
+        items: list[dict],
+    ):
+        return await stock_movement_repository.bulk_create(session=session, items=items)
+
     async def create_log(
         self,
         *,

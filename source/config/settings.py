@@ -343,6 +343,7 @@ class OneCSettings(BaseSettings):
     api_token: str = Field(default="", alias="ONE_C_API_TOKEN")
     import_max_batch_size: int = Field(default=1000, alias="ONE_C_IMPORT_MAX_BATCH_SIZE")
     health_timeout_seconds: int = Field(default=5, alias="ONE_C_HEALTH_TIMEOUT_SECONDS")
+    auto_availability_from_stock: bool = Field(default=True, alias="AUTO_AVAILABILITY_FROM_STOCK")
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

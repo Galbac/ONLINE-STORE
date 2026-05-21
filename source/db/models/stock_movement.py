@@ -1,6 +1,7 @@
 from decimal import Decimal
+from datetime import datetime
 
-from sqlalchemy import BigInteger, ForeignKey, Numeric, String, Text
+from sqlalchemy import BigInteger, DateTime, ForeignKey, Numeric, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from source.db.models.base import Base
@@ -15,5 +16,10 @@ class StockMovement(IdBigIntPkMixin, CreateUpdateMixin, Base):
     quantity: Mapped[Decimal] = mapped_column(Numeric(12, 3), nullable=False)
     previous_stock_quantity: Mapped[Decimal] = mapped_column(Numeric(12, 3), nullable=False)
     new_stock_quantity: Mapped[Decimal] = mapped_column(Numeric(12, 3), nullable=False)
+    old_quantity: Mapped[Decimal | None] = mapped_column(Numeric(12, 3))
+    new_quantity: Mapped[Decimal | None] = mapped_column(Numeric(12, 3))
     low_stock_threshold: Mapped[Decimal] = mapped_column(Numeric(12, 3), nullable=False)
+    source: Mapped[str | None] = mapped_column(String(50), index=True)
+    warehouse_external_1c_id: Mapped[str | None] = mapped_column(String(100), index=True)
+    created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     reason: Mapped[str | None] = mapped_column(Text)

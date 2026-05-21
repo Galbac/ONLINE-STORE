@@ -87,7 +87,7 @@ from source.services.favorite import FavoriteService
 from source.services.favorite_cache import FavoriteCacheService
 from source.services.health import HealthService
 from source.services.health_cache import HealthCacheService
-from source.services.one_c import CategorySyncService, IntegrationLogService, OneCImportService, OneCIntegrationService, ProductPriceSyncService, ProductSyncService, SlugService
+from source.services.one_c import CategorySyncService, IntegrationLogService, OneCImportService, OneCIntegrationService, ProductPriceSyncService, ProductStockSyncService, ProductSyncService, SlugService
 from source.services.order import OrderService
 from source.services.order_cache import OrderCacheService
 from source.services.order_status import OrderStatusService
@@ -471,6 +471,10 @@ class AppProvider(Provider):
     )
     product_price_sync_service = provide(
         ProductPriceSyncService,
+        scope=Scope.REQUEST,
+    )
+    product_stock_sync_service = provide(
+        ProductStockSyncService,
         scope=Scope.REQUEST,
     )
     slug_service = provide(

@@ -14,6 +14,8 @@ from source.schemas.pydantic.one_c import (
     OneCPriceImportRequest,
     OneCProductImportItem,
     OneCProductImportRequest,
+    OneCStockImportItem,
+    OneCStockImportRequest,
     OneCImportResultResponse,
 )
 from source.utils.slug import generate_slug, normalize_slug
@@ -542,6 +544,131 @@ class ProductPriceSyncService:
         return errors
 
 
+class ProductStockSyncService:
+    async def update_stocks_from_1c(
+        self,
+        *,
+        session,
+        data: OneCStockImportRequest,
+        product_repository,
+        stock_movement_service,
+        stock_movement_repository,
+    ) -> OneCImportResultResponse:
+        now = datetime.now(settings.tz)
+        product_external_ids = {item.product_external_1c_id for item in data.items}
+        products = await product_repository.get_by_external_1c_ids(
+            session=session,
+            external_1c_ids=product_external_ids,
+        )
+        products_by_external_id = {
+            product.external_1c_id: product
+            for product in products
+            if product.external_1c_id is not None
+        }
+
+        errors: list[OneCImportItemErrorResponse] = []
+        skipped = 0
+        updated_products = []
+        movement_payloads: list[dict] = []
+        seen_external_ids: set[str] = set()
+
+        for item in data.items:
+            item_errors = self._validate_item(item=item)
+            if item_errors:
+                skipped += 1
+                errors.extend(item_errors)
+                continue
+            if item.product_external_1c_id in seen_external_ids:
+                skipped += 1
+                errors.append(
+                    OneCImportItemErrorResponse(
+                        product_external_1c_id=item.product_external_1c_id,
+                        message="Дублирующийся product_external_1c_id в batch",
+                        field="product_external_1c_id",
+                    ),
+                )
+                continue
+            seen_external_ids.add(item.product_external_1c_id)
+
+            product = products_by_external_id.get(item.product_external_1c_id)
+            if product is None:
+                skipped += 1
+                errors.append(
+                    OneCImportItemErrorResponse(
+                        product_external_1c_id=item.product_external_1c_id,
+                        message="Товар не найден",
+                        field="product_external_1c_id",
+                    ),
+                )
+                continue
+
+            previous_stock_quantity = product.stock_quantity
+            if previous_stock_quantity != item.stock_quantity:
+                movement_payloads.append(
+                    {
+                        "product_id": product.id,
+                        "user_id": None,
+                        "operation": "set",
+                        "quantity": item.stock_quantity,
+                        "previous_stock_quantity": previous_stock_quantity,
+                        "new_stock_quantity": item.stock_quantity,
+                        "old_quantity": previous_stock_quantity,
+                        "new_quantity": item.stock_quantity,
+                        "low_stock_threshold": product.low_stock_threshold,
+                        "source": "1c",
+                        "warehouse_external_1c_id": item.warehouse_external_1c_id,
+                        "created_at": now,
+                        "reason": "1C stock import",
+                    },
+                )
+
+            product.stock_quantity = item.stock_quantity
+            product.reserved_quantity = item.reserved_quantity if item.reserved_quantity is not None else 0
+            product.stock_updated_at = now
+            product.last_sync_at = now
+            if settings.one_c.auto_availability_from_stock:
+                if item.stock_quantity <= 0:
+                    product.is_available = False
+                elif product.is_active:
+                    product.is_available = True
+            updated_products.append(product)
+
+        if updated_products:
+            await product_repository.bulk_update_stocks(session=session, products=updated_products)
+        if movement_payloads:
+            await stock_movement_service.create_bulk(
+                session=session,
+                stock_movement_repository=stock_movement_repository,
+                items=movement_payloads,
+            )
+
+        return OneCImportResultResponse(
+            updated=len({product.id for product in updated_products if product.id is not None}),
+            skipped=skipped,
+            errors=errors,
+        )
+
+    def _validate_item(self, *, item: OneCStockImportItem) -> list[OneCImportItemErrorResponse]:
+        errors: list[OneCImportItemErrorResponse] = []
+        if item.stock_quantity < 0:
+            errors.append(
+                OneCImportItemErrorResponse(
+                    product_external_1c_id=item.product_external_1c_id,
+                    message="Остаток не может быть отрицательным",
+                    field="stock_quantity",
+                ),
+            )
+        if item.reserved_quantity is not None and item.reserved_quantity < 0:
+            errors.append(
+                OneCImportItemErrorResponse(
+                    product_external_1c_id=item.product_external_1c_id,
+                    message="Резерв не может быть отрицательным",
+                    field="reserved_quantity",
+                ),
+            )
+        return errors
+
+
 class IntegrationLogService:
     async def create_log(
         self,
@@ -678,5 +805,47 @@ class OneCImportService:
 
         await product_cache_service.invalidate_all(redis_service=redis_service)
         await cart_cache_service.invalidate_all(redis_service=redis_service)
+        await admin_product_cache_service.invalidate_all(redis_service=redis_service)
+        return result
+
+    async def import_stocks(
+        self,
+        *,
+        session,
+        redis_service,
+        data: OneCStockImportRequest,
+        commiter,
+        product_repository,
+        stock_movement_repository,
+        integration_log_repository,
+        product_stock_sync_service: ProductStockSyncService,
+        stock_movement_service,
+        integration_log_service: IntegrationLogService,
+        product_cache_service,
+        cart_cache_service,
+        admin_dashboard_cache_service,
+        admin_product_cache_service,
+    ) -> OneCImportResultResponse:
+        result = await product_stock_sync_service.update_stocks_from_1c(
+            session=session,
+            data=data,
+            product_repository=product_repository,
+            stock_movement_service=stock_movement_service,
+            stock_movement_repository=stock_movement_repository,
+        )
+        status = "partial" if result.errors else "success"
+        await integration_log_service.create_log(
+            session=session,
+            integration_log_repository=integration_log_repository,
+            status=status,
+            request_payload=data.model_dump(),
+            response_payload=result.model_dump(),
+            entity_type="product_stocks",
+        )
+        await commiter.commit()
+
+        await product_cache_service.invalidate_by_stock_changes(redis_service=redis_service, products=[])
+        await cart_cache_service.invalidate_all(redis_service=redis_service)
+        await admin_dashboard_cache_service.invalidate_low_stock(redis_service=redis_service)
         await admin_product_cache_service.invalidate_all(redis_service=redis_service)
         return result

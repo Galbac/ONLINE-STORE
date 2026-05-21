@@ -14,21 +14,29 @@ from source.schemas.pydantic.one_c import (
     OneCPriceImportRequest,
     OneCProductImportItem,
     OneCProductImportRequest,
+    OneCStockImportItem,
+    OneCStockImportRequest,
 )
+from source.services.admin_dashboard_cache import AdminDashboardCacheService
 from source.services.admin_product_cache import AdminProductCacheService
 from source.services.admin_category_cache import AdminCategoryCacheService
 from source.services.cart_cache import CartCacheService
 from source.services.category_cache import CategoryCacheService
-from source.services.one_c import CategorySyncService, IntegrationLogService, OneCImportService, ProductPriceSyncService, ProductSyncService, SlugService
+from source.services.one_c import CategorySyncService, IntegrationLogService, OneCImportService, ProductPriceSyncService, ProductStockSyncService, ProductSyncService, SlugService
 from source.services.product_cache import ProductCacheService
+from source.services.stock import StockMovementService
 
 
 class FakeRedisService:
     def __init__(self) -> None:
         self.deleted_patterns: list[str] = []
+        self.deleted: list[str] = []
 
     async def delete_by_pattern(self, pattern: str) -> None:
         self.deleted_patterns.append(pattern)
+
+    async def delete(self, key: str) -> None:
+        self.deleted.append(key)
 
 
 class FakeCommiter:
@@ -108,8 +116,20 @@ class FakeProductRepository:
     async def bulk_update_prices(self, *, session, products: list):
         return products
 
+    async def bulk_update_stocks(self, *, session, products: list):
+        return products
+
 
 class FakeProductPriceHistoryRepository:
+    def __init__(self) -> None:
+        self.items: list[dict] = []
+
+    async def bulk_create(self, *, session, items: list[dict]):
+        self.items.extend(items)
+        return [SimpleNamespace(id=index + 1, **item) for index, item in enumerate(items)]
+
+
+class FakeStockMovementRepository:
     def __init__(self) -> None:
         self.items: list[dict] = []
 
@@ -169,6 +189,10 @@ def build_product(
     old_price=None,
     currency: str = "RUB",
     price_updated_at=None,
+    stock_quantity="0",
+    reserved_quantity="0",
+    stock_updated_at=None,
+    low_stock_threshold="5",
     is_active: bool = True,
     is_available: bool = True,
     sync_status: str | None = "synced",
@@ -194,6 +218,10 @@ def build_product(
         old_price=old_price,
         currency=currency,
         price_updated_at=price_updated_at,
+        stock_quantity=stock_quantity,
+        reserved_quantity=reserved_quantity,
+        stock_updated_at=stock_updated_at,
+        low_stock_threshold=low_stock_threshold,
         is_active=is_active,
         is_available=is_available,
         sync_status=sync_status,
@@ -244,6 +272,21 @@ def build_price_item(**kwargs) -> OneCPriceImportItem:
     }
     data.update(kwargs)
     return OneCPriceImportItem(**data)
+
+
+def build_stock_request(*items) -> OneCStockImportRequest:
+    return OneCStockImportRequest(items=list(items))
+
+
+def build_stock_item(**kwargs) -> OneCStockImportItem:
+    data = {
+        "product_external_1c_id": "prod-001",
+        "stock_quantity": "30.5",
+        "reserved_quantity": "2.0",
+        "warehouse_external_1c_id": "wh-001",
+    }
+    data.update(kwargs)
+    return OneCStockImportItem(**data)
 
 
 async def import_categories(*, data, repository=None, redis_service=None, integration_log_repository=None, commiter=None):
@@ -309,6 +352,33 @@ async def import_prices(
         integration_log_service=IntegrationLogService(),
         product_cache_service=ProductCacheService(),
         cart_cache_service=CartCacheService(),
+        admin_product_cache_service=AdminProductCacheService(),
+    )
+
+
+async def import_stocks(
+    *,
+    data,
+    product_repository=None,
+    stock_movement_repository=None,
+    redis_service=None,
+    integration_log_repository=None,
+    commiter=None,
+):
+    return await OneCImportService().import_stocks(
+        session=object(),
+        redis_service=redis_service or FakeRedisService(),
+        data=data,
+        commiter=commiter or FakeCommiter(),
+        product_repository=product_repository or FakeProductRepository([build_product(stock_quantity="10.0")]),
+        stock_movement_repository=stock_movement_repository or FakeStockMovementRepository(),
+        integration_log_repository=integration_log_repository or FakeIntegrationLogRepository(),
+        product_stock_sync_service=ProductStockSyncService(),
+        stock_movement_service=StockMovementService(),
+        integration_log_service=IntegrationLogService(),
+        product_cache_service=ProductCacheService(),
+        cart_cache_service=CartCacheService(),
+        admin_dashboard_cache_service=AdminDashboardCacheService(),
         admin_product_cache_service=AdminProductCacheService(),
     )
 
@@ -759,4 +829,147 @@ async def test_one_c_import_prices_creates_integration_log() -> None:
     log = integration_log_repository.logs[0]
     assert log["system"] == "1c"
     assert log["entity_type"] == "product_prices"
+    assert log["status"] == "success"
+
+
+@pytest.mark.asyncio
+async def test_one_c_import_stocks_updates_stock() -> None:
+    product = build_product(stock_quantity="10.0")
+
+    response = await import_stocks(
+        product_repository=FakeProductRepository([product]),
+        data=build_stock_request(build_stock_item(stock_quantity="30.5", reserved_quantity="2.0")),
+    )
+
+    assert response.updated == 1
+    assert product.stock_quantity == build_stock_item(stock_quantity="30.5").stock_quantity
+    assert product.reserved_quantity == build_stock_item(reserved_quantity="2.0").reserved_quantity
+    assert product.stock_updated_at is not None
+    assert product.last_sync_at is not None
+
+
+@pytest.mark.asyncio
+async def test_one_c_import_stocks_negative_stock_quantity_returns_error() -> None:
+    response = await import_stocks(
+        data=build_stock_request(build_stock_item(stock_quantity="-1")),
+    )
+
+    assert response.updated == 0
+    assert response.skipped == 1
+    assert response.errors[0].field == "stock_quantity"
+    assert response.errors[0].message == "Остаток не может быть отрицательным"
+
+
+@pytest.mark.asyncio
+async def test_one_c_import_stocks_negative_reserved_quantity_returns_error() -> None:
+    response = await import_stocks(
+        data=build_stock_request(build_stock_item(reserved_quantity="-1")),
+    )
+
+    assert response.updated == 0
+    assert response.skipped == 1
+    assert response.errors[0].field == "reserved_quantity"
+    assert response.errors[0].message == "Резерв не может быть отрицательным"
+
+
+@pytest.mark.asyncio
+async def test_one_c_import_stocks_unknown_product_returns_error() -> None:
+    response = await import_stocks(
+        product_repository=FakeProductRepository([]),
+        data=build_stock_request(build_stock_item(product_external_1c_id="prod-404")),
+    )
+
+    assert response.updated == 0
+    assert response.skipped == 1
+    assert response.errors[0].product_external_1c_id == "prod-404"
+    assert response.errors[0].message == "Товар не найден"
+
+
+@pytest.mark.asyncio
+async def test_one_c_import_stocks_updates_availability_when_enabled(monkeypatch) -> None:
+    monkeypatch.setattr(settings.one_c, "auto_availability_from_stock", True)
+    product = build_product(stock_quantity="10.0", is_available=True, is_active=True)
+
+    await import_stocks(
+        product_repository=FakeProductRepository([product]),
+        data=build_stock_request(build_stock_item(stock_quantity="0")),
+    )
+
+    assert product.is_available is False
+
+    await import_stocks(
+        product_repository=FakeProductRepository([product]),
+        data=build_stock_request(build_stock_item(stock_quantity="5")),
+    )
+
+    assert product.is_available is True
+
+
+@pytest.mark.asyncio
+async def test_one_c_import_stocks_creates_stock_movement() -> None:
+    product = build_product(product_id=10, stock_quantity="10.0", low_stock_threshold="3")
+    stock_movement_repository = FakeStockMovementRepository()
+
+    await import_stocks(
+        product_repository=FakeProductRepository([product]),
+        stock_movement_repository=stock_movement_repository,
+        data=build_stock_request(build_stock_item(stock_quantity="30.5", warehouse_external_1c_id="wh-001")),
+    )
+
+    movement = stock_movement_repository.items[0]
+    assert movement["product_id"] == 10
+    assert movement["old_quantity"] == "10.0"
+    assert movement["new_quantity"] == build_stock_item(stock_quantity="30.5").stock_quantity
+    assert movement["source"] == "1c"
+    assert movement["warehouse_external_1c_id"] == "wh-001"
+
+
+@pytest.mark.asyncio
+async def test_one_c_import_stocks_does_not_create_movement_without_stock_change() -> None:
+    stock_quantity = build_stock_item(stock_quantity="30.5").stock_quantity
+    product = build_product(stock_quantity=stock_quantity)
+    stock_movement_repository = FakeStockMovementRepository()
+
+    await import_stocks(
+        product_repository=FakeProductRepository([product]),
+        stock_movement_repository=stock_movement_repository,
+        data=build_stock_request(build_stock_item(stock_quantity="30.5")),
+    )
+
+    assert stock_movement_repository.items == []
+
+
+@pytest.mark.asyncio
+async def test_one_c_import_stocks_invalidates_cache() -> None:
+    redis_service = FakeRedisService()
+
+    await import_stocks(
+        redis_service=redis_service,
+        data=build_stock_request(build_stock_item(stock_quantity="30.5")),
+    )
+
+    assert "products:list:*" in redis_service.deleted_patterns
+    assert "products:detail:*" in redis_service.deleted_patterns
+    assert "products:slug:*" in redis_service.deleted_patterns
+    assert "products:search:*" in redis_service.deleted_patterns
+    assert "products:popular:*" in redis_service.deleted_patterns
+    assert "products:discounted:*" in redis_service.deleted_patterns
+    assert "cart:*" in redis_service.deleted_patterns
+    assert "cart:summary:*" in redis_service.deleted_patterns
+    assert "admin:dashboard:low_stock:*" in redis_service.deleted_patterns
+    assert "admin:products:list:*" in redis_service.deleted_patterns
+
+
+@pytest.mark.asyncio
+async def test_one_c_import_stocks_creates_integration_log() -> None:
+    integration_log_repository = FakeIntegrationLogRepository()
+
+    await import_stocks(
+        integration_log_repository=integration_log_repository,
+        data=build_stock_request(build_stock_item(stock_quantity="30.5")),
+    )
+
+    log = integration_log_repository.logs[0]
+    assert log["system"] == "1c"
+    assert log["entity_type"] == "product_stocks"
     assert log["status"] == "success"

@@ -249,6 +249,14 @@ class ProductRepository:
     ) -> list[Product]:
         return await self.bulk_update(session=session, products=products)
 
+    async def bulk_update_stocks(
+        self,
+        *,
+        session: AsyncSession,
+        products: list[Product],
+    ) -> list[Product]:
+        return await self.bulk_update(session=session, products=products)
+
     def _base_statement(self, *, query: ProductListQueryParams, category_ids: set[int] | None):
         statement = (
             select(Product, Category)

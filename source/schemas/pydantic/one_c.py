@@ -94,6 +94,29 @@ class OneCPriceImportRequest(BaseModel):
     items: list[OneCPriceImportItem]
 
 
+class OneCStockImportItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    product_external_1c_id: str = Field(min_length=1, max_length=100)
+    stock_quantity: Decimal = Field(max_digits=12, decimal_places=3)
+    reserved_quantity: Decimal | None = Field(default=None, max_digits=12, decimal_places=3)
+    warehouse_external_1c_id: str | None = Field(default=None, max_length=100)
+
+    @field_validator("product_external_1c_id", "warehouse_external_1c_id", mode="before")
+    @classmethod
+    def normalize_string(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        normalized_value = " ".join(value.strip().split())
+        return normalized_value or None
+
+
+class OneCStockImportRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    items: list[OneCStockImportItem]
+
+
 class OneCImportItemErrorResponse(BaseModel):
     external_1c_id: str | None = None
     product_external_1c_id: str | None = None
