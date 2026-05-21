@@ -20,6 +20,7 @@ from source.errors.delivery import (
     EmptyPickupPointUpdateError,
     PickupPointAlreadyExistsError,
     PickupPointAdminNotFoundError,
+    PickupPointActiveOrdersError,
 )
 from source.errors.discount import DiscountConflictError, DiscountExpiredError, DiscountNotFoundError, EmptyDiscountUpdateError
 from source.errors.auth import (
@@ -585,6 +586,71 @@ async def update_admin_delivery_pickup_point(
     except PickupPointAlreadyExistsError as error:
         await commiter.rollback()
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Точка самовывоза с таким адресом уже существует") from error
+    except Exception as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Внутренняя ошибка сервера") from error
+
+
+@router.delete(
+    "/delivery/pickup-points/{point_id}",
+    response_model=AdminDeliveryMessageResponse,
+    status_code=status.HTTP_200_OK,
+)
+@inject
+async def delete_admin_delivery_pickup_point(
+    request: Request,
+    point_id: int = Path(...),
+    token_payload: dict = Depends(verify_access_token),
+    current_user: User = Depends(require_permission("admin:delivery:delete")),
+    session: FromDishka[AsyncSession] = None,
+    commiter: FromDishka[Commiter] = None,
+    redis_service: FromDishka[RedisService] = None,
+    admin_delivery_service: FromDishka[AdminDeliveryService] = None,
+    admin_delivery_cache_service: FromDishka[AdminDeliveryCacheService] = None,
+    delivery_cache_service: FromDishka[DeliveryCacheService] = None,
+    permission_service: FromDishka[PermissionService] = None,
+    pickup_point_repository: FromDishka[PickupPointRepository] = None,
+    order_repository: FromDishka[OrderRepository] = None,
+    audit_log_service: FromDishka[AuditLogService] = None,
+    admin_audit_log_repository: FromDishka[AdminAuditLogRepository] = None,
+) -> AdminDeliveryMessageResponse:
+    if token_payload.get("token_type") != "access":
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь не авторизован")
+    try:
+        return await admin_delivery_service.delete_pickup_point(
+            session=session,
+            redis_service=redis_service,
+            user=current_user,
+            point_id=point_id,
+            commiter=commiter,
+            permission_service=permission_service,
+            admin_delivery_cache_service=admin_delivery_cache_service,
+            delivery_cache_service=delivery_cache_service,
+            pickup_point_repository=pickup_point_repository,
+            order_repository=order_repository,
+            audit_log_service=audit_log_service,
+            admin_audit_log_repository=admin_audit_log_repository,
+            ip_address=request.client.host if request.client else None,
+            user_agent=request.headers.get("user-agent"),
+        )
+    except ValueError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)) from error
+    except InvalidCredentialsError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь не авторизован") from error
+    except AdminAuthAccessDeniedError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Недостаточно прав") from error
+    except InactiveUserError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Пользователь заблокирован") from error
+    except PickupPointAdminNotFoundError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Точка самовывоза не найдена") from error
+    except PickupPointActiveOrdersError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Точка самовывоза используется в активных заказах") from error
     except Exception as error:
         await commiter.rollback()
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Внутренняя ошибка сервера") from error

@@ -64,3 +64,7 @@ class PickupPointAdminNotFoundError(Exception):
 
 class EmptyPickupPointUpdateError(Exception):
     pass
+
+
+class PickupPointActiveOrdersError(Exception):
+    pass

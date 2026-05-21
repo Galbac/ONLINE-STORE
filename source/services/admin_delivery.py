@@ -8,6 +8,7 @@ from source.errors.delivery import (
     EmptyDeliveryZoneUpdateError,
     PickupPointAlreadyExistsError,
     PickupPointAdminNotFoundError,
+    PickupPointActiveOrdersError,
     EmptyPickupPointUpdateError,
 )
 from source.schemas.pydantic.delivery import (
@@ -316,6 +317,65 @@ class AdminDeliveryService:
         await delivery_cache_service.invalidate_options(redis_service=redis_service)
 
         return self._build_pickup_point_response(pickup_point=updated_pickup_point)
+
+    async def delete_pickup_point(
+        self,
+        *,
+        session,
+        redis_service: RedisService,
+        user,
+        point_id: int,
+        commiter,
+        permission_service,
+        admin_delivery_cache_service: AdminDeliveryCacheService,
+        delivery_cache_service: DeliveryCacheService,
+        pickup_point_repository,
+        order_repository,
+        audit_log_service,
+        admin_audit_log_repository,
+        ip_address: str | None = None,
+        user_agent: str | None = None,
+    ) -> MessageResponse:
+        self._check_delete_permission(user=user, permission_service=permission_service)
+        if point_id <= 0:
+            raise ValueError("Неверный point_id")
+
+        pickup_point = await pickup_point_repository.get_by_id(session=session, pickup_point_id=point_id)
+        if pickup_point is None or pickup_point.is_deleted:
+            raise PickupPointAdminNotFoundError
+
+        if await order_repository.exists_active_by_pickup_point_id(session=session, pickup_point_id=pickup_point.id):
+            raise PickupPointActiveOrdersError
+
+        deleted_pickup_point = await pickup_point_repository.soft_delete(
+            session=session,
+            pickup_point=pickup_point,
+            deleted_by=user.id,
+        )
+        await audit_log_service.log_action(
+            session=session,
+            audit_log_repository=admin_audit_log_repository,
+            user_id=user.id,
+            login=getattr(user, "email", None) or getattr(user, "phone", None) or str(user.id),
+            event="delete_pickup_point",
+            status="success",
+            ip_address=ip_address,
+            user_agent=user_agent,
+            details={
+                "actor_id": user.id,
+                "pickup_point_id": deleted_pickup_point.id,
+                "name": deleted_pickup_point.name,
+                "city": deleted_pickup_point.city,
+                "address": deleted_pickup_point.address,
+            },
+        )
+        await commiter.commit()
+
+        await admin_delivery_cache_service.invalidate_pickup_points(redis_service=redis_service)
+        await delivery_cache_service.invalidate_pickup_point(redis_service=redis_service, point_id=deleted_pickup_point.id)
+        await delivery_cache_service.invalidate_options(redis_service=redis_service)
+
+        return MessageResponse(message="Точка самовывоза удалена")
 
     async def create_zone(
         self,

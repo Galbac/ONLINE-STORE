@@ -6,6 +6,7 @@ from fastapi import HTTPException
 from source.api.api_v1.views.admin_dashboard import (
     create_admin_delivery_zone,
     create_admin_delivery_pickup_point,
+    delete_admin_delivery_pickup_point,
     delete_admin_delivery_zone,
     get_admin_delivery_pickup_points,
     get_admin_delivery_settings,
@@ -110,6 +111,9 @@ class FakeOrderRepository:
     async def exists_active_by_delivery_zone_id(self, *, session, delivery_zone_id: int) -> bool:
         return False
 
+    async def exists_active_by_pickup_point_id(self, *, session, pickup_point_id: int) -> bool:
+        return False
+
 
 class FakePickupPointRepository:
     async def get_by_city_and_address(self, *, session, city: str, address: str):
@@ -137,6 +141,9 @@ class FakePickupPointRepository:
         return None
 
     async def update(self, *, session, pickup_point, data: dict):
+        return pickup_point
+
+    async def soft_delete(self, *, session, pickup_point, deleted_by: int):
         return pickup_point
 
     async def get_list(self, *, session, query):
@@ -253,6 +260,29 @@ async def test_admin_delivery_pickup_point_update_without_permission_returns_403
             delivery_cache_service=DeliveryCacheService(),
             permission_service=PermissionService(),
             pickup_point_repository=FakePickupPointRepository(),
+            audit_log_service=AuditLogService(),
+            admin_audit_log_repository=FakeAuditLogRepository(),
+        )
+
+    assert exc_info.value.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_admin_delivery_pickup_point_delete_without_permission_returns_403() -> None:
+    with pytest.raises(HTTPException) as exc_info:
+        await delete_admin_delivery_pickup_point.__dishka_orig_func__(
+            request=SimpleNamespace(client=None, headers={}),
+            point_id=1,
+            token_payload={"token_type": "access"},
+            current_user=build_user(role=UserRole.CONTENT_MANAGER),
+            commiter=FakeCommiter(),
+            redis_service=FakeRedisService(),
+            admin_delivery_service=AdminDeliveryService(),
+            admin_delivery_cache_service=AdminDeliveryCacheService(),
+            delivery_cache_service=DeliveryCacheService(),
+            permission_service=PermissionService(),
+            pickup_point_repository=FakePickupPointRepository(),
+            order_repository=FakeOrderRepository(),
             audit_log_service=AuditLogService(),
             admin_audit_log_repository=FakeAuditLogRepository(),
         )

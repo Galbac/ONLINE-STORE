@@ -15,6 +15,7 @@ from source.schemas.pydantic.user import AdminUserOrdersQueryParams
 
 ACTIVE_ORDER_STATUSES = ("new", "paid", "assembling", "delivering", "in_progress")
 DELIVERY_ZONE_ACTIVE_ORDER_STATUSES = ("new", "confirmed", "assembling", "delivering", "pending_payment")
+PICKUP_POINT_ACTIVE_ORDER_STATUSES = ("new", "confirmed", "assembling", "ready_for_pickup")
 
 
 class OrderRepository:
@@ -45,6 +46,22 @@ class OrderRepository:
             .where(
                 Order.delivery_zone_id == delivery_zone_id,
                 Order.status.in_(DELIVERY_ZONE_ACTIVE_ORDER_STATUSES),
+            )
+            .limit(1),
+        )
+        return result.scalar_one_or_none() is not None
+
+    async def exists_active_by_pickup_point_id(
+        self,
+        *,
+        session: AsyncSession,
+        pickup_point_id: int,
+    ) -> bool:
+        result = await session.execute(
+            select(Order.id)
+            .where(
+                Order.pickup_point_id == pickup_point_id,
+                Order.status.in_(PICKUP_POINT_ACTIVE_ORDER_STATUSES),
             )
             .limit(1),
         )

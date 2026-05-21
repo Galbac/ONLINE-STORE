@@ -1,6 +1,9 @@
+from datetime import datetime
+
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from source.config.settings import settings
 from source.db.models.pickup_point import PickupPoint
 from source.schemas.pydantic.delivery import AdminPickupPointCreateRequest, AdminPickupPointListQueryParams, PickupPointListQueryParams
 
@@ -56,6 +59,22 @@ class PickupPointRepository:
     ) -> PickupPoint:
         for field, value in data.items():
             setattr(pickup_point, field, value)
+        await session.flush()
+        await session.refresh(pickup_point)
+        return pickup_point
+
+    async def soft_delete(
+        self,
+        *,
+        session: AsyncSession,
+        pickup_point: PickupPoint,
+        deleted_by: int,
+    ) -> PickupPoint:
+        pickup_point.is_deleted = True
+        pickup_point.is_active = False
+        pickup_point.deleted_at = datetime.now(settings.tz)
+        pickup_point.deleted_by = deleted_by
+        session.add(pickup_point)
         await session.flush()
         await session.refresh(pickup_point)
         return pickup_point

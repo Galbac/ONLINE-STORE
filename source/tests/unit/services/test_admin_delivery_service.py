@@ -19,6 +19,7 @@ from source.errors.delivery import (
     EmptyPickupPointUpdateError,
     PickupPointAlreadyExistsError,
     PickupPointAdminNotFoundError,
+    PickupPointActiveOrdersError,
 )
 from source.schemas.pydantic.delivery import (
     AdminDeliverySettingsResponse,
@@ -193,13 +194,19 @@ class FakeAuditLogRepository:
 
 
 class FakeOrderRepository:
-    def __init__(self, *, exists_active: bool = False) -> None:
+    def __init__(self, *, exists_active: bool = False, exists_active_pickup: bool = False) -> None:
         self.exists_active = exists_active
+        self.exists_active_pickup = exists_active_pickup
         self.checked_delivery_zone_ids = []
+        self.checked_pickup_point_ids = []
 
     async def exists_active_by_delivery_zone_id(self, *, session, delivery_zone_id: int) -> bool:
         self.checked_delivery_zone_ids.append(delivery_zone_id)
         return self.exists_active
+
+    async def exists_active_by_pickup_point_id(self, *, session, pickup_point_id: int) -> bool:
+        self.checked_pickup_point_ids.append(pickup_point_id)
+        return self.exists_active_pickup
 
 
 class FakePickupPointRepository:
@@ -250,6 +257,13 @@ class FakePickupPointRepository:
         for field, value in data.items():
             setattr(pickup_point, field, value)
         pickup_point.updated_date = datetime(2026, 5, 12, 11, 0, 0)
+        return pickup_point
+
+    async def soft_delete(self, *, session, pickup_point, deleted_by: int):
+        pickup_point.is_deleted = True
+        pickup_point.is_active = False
+        pickup_point.deleted_at = datetime(2026, 5, 12, 11, 0, 0)
+        pickup_point.deleted_by = deleted_by
         return pickup_point
 
     async def get_list(self, *, session, query: AdminPickupPointListQueryParams):
@@ -371,6 +385,7 @@ def build_pickup_point(
         is_deleted=is_deleted,
         sort_order=sort_order,
         deleted_at=None,
+        deleted_by=None,
         created_date=datetime(2026, 5, 12, 10, 0, 0),
         updated_date=datetime(2026, 5, 12, 10, 0, 0),
     )
@@ -544,6 +559,56 @@ async def update_pickup_point(
         response=response,
         redis_service=redis_service,
         repository=repository,
+        commiter=commiter,
+        audit_log_repository=audit_log_repository,
+    )
+
+
+async def delete_pickup_point(
+    *,
+    point_id: int = 1,
+    redis_service=None,
+    role=UserRole.ADMIN,
+    repository=None,
+    order_repository=None,
+    commiter=None,
+    audit_log_repository=None,
+):
+    redis_service = redis_service or FakeRedisService()
+    repository = repository or FakePickupPointRepository(
+        pickup_points=[
+            build_pickup_point(
+                point_id=1,
+                name="Магазин на Тверской",
+                city="Москва",
+                address="ул. Тверская, 10",
+            ),
+        ],
+    )
+    order_repository = order_repository or FakeOrderRepository()
+    commiter = commiter or FakeCommiter()
+    audit_log_repository = audit_log_repository or FakeAuditLogRepository()
+    response = await AdminDeliveryService().delete_pickup_point(
+        session=None,
+        redis_service=redis_service,
+        user=build_user(role=role),
+        point_id=point_id,
+        commiter=commiter,
+        permission_service=PermissionService(),
+        admin_delivery_cache_service=AdminDeliveryCacheService(),
+        delivery_cache_service=DeliveryCacheService(),
+        pickup_point_repository=repository,
+        order_repository=order_repository,
+        audit_log_service=AuditLogService(),
+        admin_audit_log_repository=audit_log_repository,
+        ip_address="127.0.0.1",
+        user_agent="pytest",
+    )
+    return SimpleNamespace(
+        response=response,
+        redis_service=redis_service,
+        repository=repository,
+        order_repository=order_repository,
         commiter=commiter,
         audit_log_repository=audit_log_repository,
     )
@@ -1287,6 +1352,85 @@ async def test_admin_pickup_point_update_audit_log_created() -> None:
         "old": "Пн-Вс 09:00-22:00",
         "new": "Пн-Вс 09:00-23:00",
     }
+
+
+@pytest.mark.asyncio
+async def test_admin_pickup_point_delete_success() -> None:
+    result = await delete_pickup_point()
+
+    assert result.response.message == "Точка самовывоза удалена"
+    assert result.commiter.committed is True
+    assert result.order_repository.checked_pickup_point_ids == [1]
+
+
+@pytest.mark.asyncio
+async def test_admin_pickup_point_delete_not_found_error() -> None:
+    repository = FakePickupPointRepository(pickup_points=[])
+
+    with pytest.raises(PickupPointAdminNotFoundError):
+        await delete_pickup_point(repository=repository)
+
+
+@pytest.mark.asyncio
+async def test_admin_pickup_point_delete_already_deleted_error() -> None:
+    repository = FakePickupPointRepository(
+        pickup_points=[
+            build_pickup_point(
+                point_id=1,
+                name="Удалённый пункт",
+                city="Москва",
+                address="ул. Старая, 1",
+                is_deleted=True,
+            ),
+        ],
+    )
+
+    with pytest.raises(PickupPointAdminNotFoundError):
+        await delete_pickup_point(repository=repository)
+
+
+@pytest.mark.asyncio
+async def test_admin_pickup_point_delete_active_orders_error() -> None:
+    with pytest.raises(PickupPointActiveOrdersError):
+        await delete_pickup_point(order_repository=FakeOrderRepository(exists_active_pickup=True))
+
+
+@pytest.mark.asyncio
+async def test_admin_pickup_point_delete_sets_is_deleted_true() -> None:
+    result = await delete_pickup_point()
+
+    assert result.repository.pickup_points[0].is_deleted is True
+    assert result.repository.pickup_points[0].deleted_by == 1
+    assert result.repository.pickup_points[0].deleted_at == datetime(2026, 5, 12, 11, 0, 0)
+
+
+@pytest.mark.asyncio
+async def test_admin_pickup_point_delete_sets_is_active_false() -> None:
+    result = await delete_pickup_point()
+
+    assert result.repository.pickup_points[0].is_active is False
+
+
+@pytest.mark.asyncio
+async def test_admin_pickup_point_delete_invalidates_cache() -> None:
+    result = await delete_pickup_point()
+
+    assert "admin:delivery:pickup_points:*" in result.redis_service.deleted
+    assert "delivery:pickup_points:*" in result.redis_service.deleted
+    assert "delivery:pickup_point:1" in result.redis_service.deleted
+    assert "delivery:options" in result.redis_service.deleted
+
+
+@pytest.mark.asyncio
+async def test_admin_pickup_point_delete_audit_log_created() -> None:
+    result = await delete_pickup_point()
+
+    assert result.audit_log_repository.logs[0]["event"] == "delete_pickup_point"
+    assert result.audit_log_repository.logs[0]["user_id"] == 1
+    assert result.audit_log_repository.logs[0]["ip_address"] == "127.0.0.1"
+    assert result.audit_log_repository.logs[0]["user_agent"] == "pytest"
+    assert result.audit_log_repository.logs[0]["details"]["actor_id"] == 1
+    assert result.audit_log_repository.logs[0]["details"]["pickup_point_id"] == 1
 
 
 @pytest.mark.asyncio
