@@ -11,7 +11,12 @@ from source.common.commiter import Commiter
 from source.db.models.user import User
 from source.errors.category import CategoryCycleError, CategoryNotFoundError, CategorySlugAlreadyExistsError
 from source.errors.category import CategoryHasActiveChildrenError, CategoryHasActiveProductsError
-from source.errors.delivery import DeliveryZoneAlreadyExistsError, EmptyDeliverySettingsUpdateError
+from source.errors.delivery import (
+    DeliveryZoneAlreadyExistsError,
+    DeliveryZoneNotFoundError,
+    EmptyDeliverySettingsUpdateError,
+    EmptyDeliveryZoneUpdateError,
+)
 from source.errors.discount import DiscountConflictError, DiscountExpiredError, DiscountNotFoundError, EmptyDiscountUpdateError
 from source.errors.auth import (
     AdminAuthAccessDeniedError,
@@ -111,6 +116,7 @@ from source.schemas.pydantic.delivery import (
     AdminDeliveryZoneListQueryParams,
     AdminDeliveryZoneListResponse,
     AdminDeliveryZoneResponse,
+    AdminDeliveryZoneUpdateRequest,
 )
 from source.schemas.pydantic.admin_role import AdminRoleListResponse
 from source.schemas.pydantic.admin_category import (
@@ -284,6 +290,82 @@ async def create_admin_delivery_zone(
     except InactiveUserError as error:
         await commiter.rollback()
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Пользователь заблокирован") from error
+    except DeliveryZoneAlreadyExistsError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Зона доставки с таким названием уже существует") from error
+    except Exception as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Внутренняя ошибка сервера") from error
+
+
+@router.patch(
+    "/delivery/zones/{zone_id}",
+    response_model=AdminDeliveryZoneResponse,
+    response_model_exclude={"is_deleted", "created_at"},
+    status_code=status.HTTP_200_OK,
+)
+@inject
+async def update_admin_delivery_zone(
+    request: Request,
+    zone_id: int = Path(...),
+    payload: dict = Body(...),
+    token_payload: dict = Depends(verify_access_token),
+    current_user: User = Depends(require_permission("admin:delivery:update")),
+    session: FromDishka[AsyncSession] = None,
+    commiter: FromDishka[Commiter] = None,
+    redis_service: FromDishka[RedisService] = None,
+    admin_delivery_service: FromDishka[AdminDeliveryService] = None,
+    admin_delivery_cache_service: FromDishka[AdminDeliveryCacheService] = None,
+    delivery_cache_service: FromDishka[DeliveryCacheService] = None,
+    permission_service: FromDishka[PermissionService] = None,
+    delivery_zone_repository: FromDishka[DeliveryZoneRepository] = None,
+    audit_log_service: FromDishka[AuditLogService] = None,
+    admin_audit_log_repository: FromDishka[AdminAuditLogRepository] = None,
+) -> AdminDeliveryZoneResponse:
+    if token_payload.get("token_type") != "access":
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь не авторизован")
+    try:
+        return await admin_delivery_service.update_zone(
+            session=session,
+            redis_service=redis_service,
+            user=current_user,
+            zone_id=zone_id,
+            data=AdminDeliveryZoneUpdateRequest.model_validate(payload),
+            commiter=commiter,
+            permission_service=permission_service,
+            admin_delivery_cache_service=admin_delivery_cache_service,
+            delivery_cache_service=delivery_cache_service,
+            delivery_zone_repository=delivery_zone_repository,
+            audit_log_service=audit_log_service,
+            admin_audit_log_repository=admin_audit_log_repository,
+            ip_address=request.client.host if request.client else None,
+            user_agent=request.headers.get("user-agent"),
+        )
+    except ValidationError as error:
+        await commiter.rollback()
+        detail = "Неверные входные данные"
+        first_error = error.errors()[0] if error.errors() else None
+        if first_error is not None and isinstance(first_error.get("msg"), str):
+            detail = first_error["msg"].replace("Value error, ", "", 1)
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=detail) from error
+    except EmptyDeliveryZoneUpdateError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Не передано ни одного поля для обновления") from error
+    except ValueError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)) from error
+    except InvalidCredentialsError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь не авторизован") from error
+    except AdminAuthAccessDeniedError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Недостаточно прав") from error
+    except InactiveUserError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Пользователь заблокирован") from error
+    except DeliveryZoneNotFoundError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Зона доставки не найдена") from error
     except DeliveryZoneAlreadyExistsError as error:
         await commiter.rollback()
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Зона доставки с таким названием уже существует") from error

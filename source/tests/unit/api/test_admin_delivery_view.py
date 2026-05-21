@@ -7,6 +7,7 @@ from source.api.api_v1.views.admin_dashboard import (
     create_admin_delivery_zone,
     get_admin_delivery_settings,
     get_admin_delivery_zones,
+    update_admin_delivery_zone,
     update_admin_delivery_settings,
 )
 from source.db.models.choises.enum import UserRole
@@ -80,6 +81,12 @@ class FakeDeliveryZoneRepository:
             updated_date=None,
         )
 
+    async def get_by_id(self, *, session, zone_id: int):
+        return None
+
+    async def update(self, *, session, zone, data: dict):
+        return zone
+
     async def get_list(self, *, session, query):
         return []
 
@@ -146,6 +153,29 @@ async def test_admin_delivery_zone_create_without_permission_returns_403() -> No
                 "delivery_price": "250.00",
                 "min_order_amount": "1000.00",
             },
+            token_payload={"token_type": "access"},
+            current_user=build_user(role=UserRole.CONTENT_MANAGER),
+            commiter=FakeCommiter(),
+            redis_service=FakeRedisService(),
+            admin_delivery_service=AdminDeliveryService(),
+            admin_delivery_cache_service=AdminDeliveryCacheService(),
+            delivery_cache_service=DeliveryCacheService(),
+            permission_service=PermissionService(),
+            delivery_zone_repository=FakeDeliveryZoneRepository(),
+            audit_log_service=AuditLogService(),
+            admin_audit_log_repository=FakeAuditLogRepository(),
+        )
+
+    assert exc_info.value.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_admin_delivery_zone_update_without_permission_returns_403() -> None:
+    with pytest.raises(HTTPException) as exc_info:
+        await update_admin_delivery_zone.__dishka_orig_func__(
+            request=SimpleNamespace(client=None, headers={}),
+            zone_id=1,
+            payload={"name": "Новая зона"},
             token_payload={"token_type": "access"},
             current_user=build_user(role=UserRole.CONTENT_MANAGER),
             commiter=FakeCommiter(),

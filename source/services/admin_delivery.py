@@ -1,6 +1,11 @@
 from source.config.settings import settings
 from source.errors.auth import AdminAuthAccessDeniedError, InactiveUserError
-from source.errors.delivery import DeliveryZoneAlreadyExistsError, EmptyDeliverySettingsUpdateError
+from source.errors.delivery import (
+    DeliveryZoneAlreadyExistsError,
+    DeliveryZoneNotFoundError,
+    EmptyDeliverySettingsUpdateError,
+    EmptyDeliveryZoneUpdateError,
+)
 from source.schemas.pydantic.delivery import (
     AdminDeliverySettingsResponse,
     AdminDeliverySettingsUpdateRequest,
@@ -8,6 +13,7 @@ from source.schemas.pydantic.delivery import (
     AdminDeliveryZoneListQueryParams,
     AdminDeliveryZoneListResponse,
     AdminDeliveryZoneResponse,
+    AdminDeliveryZoneUpdateRequest,
 )
 from source.services.admin_auth import STAFF_ROLES
 from source.services.admin_delivery_cache import AdminDeliveryCacheService
@@ -172,6 +178,86 @@ class AdminDeliveryService:
 
         return self._build_zone_response(zone=created_zone)
 
+    async def update_zone(
+        self,
+        *,
+        session,
+        redis_service: RedisService,
+        user,
+        zone_id: int,
+        data: AdminDeliveryZoneUpdateRequest,
+        commiter,
+        permission_service,
+        admin_delivery_cache_service: AdminDeliveryCacheService,
+        delivery_cache_service: DeliveryCacheService,
+        delivery_zone_repository,
+        audit_log_service,
+        admin_audit_log_repository,
+        ip_address: str | None = None,
+        user_agent: str | None = None,
+    ) -> AdminDeliveryZoneResponse:
+        self._check_update_permission(user=user, permission_service=permission_service)
+        if zone_id <= 0:
+            raise ValueError("Неверный zone_id")
+
+        update_fields = data.model_dump(exclude_unset=True)
+        if not update_fields:
+            raise EmptyDeliveryZoneUpdateError
+
+        zone = await delivery_zone_repository.get_by_id(session=session, zone_id=zone_id)
+        if zone is None or zone.is_deleted:
+            raise DeliveryZoneNotFoundError
+
+        self._validate_zone_update(zone=zone, update_fields=update_fields)
+
+        next_name = update_fields.get("name", zone.name)
+        next_city = update_fields.get("city", zone.city)
+        if next_name != zone.name or next_city != zone.city:
+            existing_zone = await delivery_zone_repository.get_by_name_and_city(
+                session=session,
+                name=next_name,
+                city=next_city,
+            )
+            if existing_zone is not None and existing_zone.id != zone.id:
+                raise DeliveryZoneAlreadyExistsError
+
+        before = {field: getattr(zone, field) for field in update_fields}
+        updated_zone = await delivery_zone_repository.update(
+            session=session,
+            zone=zone,
+            data=update_fields,
+        )
+        changes = {
+            field: {
+                "old": str(before[field]) if before[field] is not None else None,
+                "new": str(getattr(updated_zone, field)) if getattr(updated_zone, field) is not None else None,
+            }
+            for field in update_fields
+            if before[field] != getattr(updated_zone, field)
+        }
+        await audit_log_service.log_action(
+            session=session,
+            audit_log_repository=admin_audit_log_repository,
+            user_id=user.id,
+            login=getattr(user, "email", None) or getattr(user, "phone", None) or str(user.id),
+            event="update_delivery_zone",
+            status="success",
+            ip_address=ip_address,
+            user_agent=user_agent,
+            details={
+                "actor_id": user.id,
+                "zone_id": updated_zone.id,
+                "changes": changes,
+            },
+        )
+        await commiter.commit()
+
+        await admin_delivery_cache_service.invalidate_zones(redis_service=redis_service)
+        await delivery_cache_service.invalidate_calculate(redis_service=redis_service)
+        await delivery_cache_service.invalidate_options(redis_service=redis_service)
+
+        return self._build_zone_response(zone=updated_zone)
+
     async def update_settings(
         self,
         *,
@@ -293,6 +379,25 @@ class AdminDeliveryService:
         if data.sort_order < 0:
             raise ValueError("sort_order не может быть отрицательным")
         if data.free_delivery_from is not None and data.free_delivery_from < data.min_order_amount:
+            raise ValueError("Сумма бесплатной доставки не может быть меньше минимальной суммы заказа")
+
+    def _validate_zone_update(self, *, zone, update_fields: dict) -> None:
+        delivery_price = update_fields.get("delivery_price")
+        if delivery_price is not None and delivery_price < 0:
+            raise ValueError("Стоимость доставки не может быть отрицательной")
+        min_order_amount = update_fields.get("min_order_amount")
+        if min_order_amount is not None and min_order_amount < 0:
+            raise ValueError("Минимальная сумма заказа не может быть отрицательной")
+        free_delivery_from = update_fields.get("free_delivery_from")
+        if free_delivery_from is not None and free_delivery_from < 0:
+            raise ValueError("Сумма бесплатной доставки не может быть отрицательной")
+        sort_order = update_fields.get("sort_order")
+        if sort_order is not None and sort_order < 0:
+            raise ValueError("sort_order не может быть отрицательным")
+
+        next_min_order_amount = update_fields.get("min_order_amount", zone.min_order_amount)
+        next_free_delivery_from = update_fields.get("free_delivery_from", zone.free_delivery_from)
+        if next_free_delivery_from is not None and next_min_order_amount is not None and next_free_delivery_from < next_min_order_amount:
             raise ValueError("Сумма бесплатной доставки не может быть меньше минимальной суммы заказа")
 
     async def _invalidate_cache(

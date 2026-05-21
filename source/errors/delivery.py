@@ -40,3 +40,11 @@ class EmptyDeliverySettingsUpdateError(Exception):
 
 class DeliveryZoneAlreadyExistsError(Exception):
     pass
+
+
+class DeliveryZoneNotFoundError(Exception):
+    pass
+
+
+class EmptyDeliveryZoneUpdateError(Exception):
+    pass

@@ -6,6 +6,15 @@ from source.schemas.pydantic.delivery import AdminDeliveryZoneCreateRequest, Adm
 
 
 class DeliveryZoneRepository:
+    async def get_by_id(
+        self,
+        *,
+        session: AsyncSession,
+        zone_id: int,
+    ) -> DeliveryZone | None:
+        result = await session.execute(select(DeliveryZone).where(DeliveryZone.id == zone_id))
+        return result.scalar_one_or_none()
+
     async def get_by_name_and_city(
         self,
         *,
@@ -41,6 +50,19 @@ class DeliveryZoneRepository:
             sort_order=data.sort_order,
         )
         session.add(zone)
+        await session.flush()
+        await session.refresh(zone)
+        return zone
+
+    async def update(
+        self,
+        *,
+        session: AsyncSession,
+        zone: DeliveryZone,
+        data: dict,
+    ) -> DeliveryZone:
+        for field, value in data.items():
+            setattr(zone, field, value)
         await session.flush()
         await session.refresh(zone)
         return zone

@@ -10,13 +10,19 @@ from source.api.dependencies import resolve_access_token
 from source.config.settings import settings
 from source.db.models.choises.enum import UserRole
 from source.errors.auth import AdminAuthAccessDeniedError
-from source.errors.delivery import DeliveryZoneAlreadyExistsError, EmptyDeliverySettingsUpdateError
+from source.errors.delivery import (
+    DeliveryZoneAlreadyExistsError,
+    DeliveryZoneNotFoundError,
+    EmptyDeliverySettingsUpdateError,
+    EmptyDeliveryZoneUpdateError,
+)
 from source.schemas.pydantic.delivery import (
     AdminDeliverySettingsResponse,
     AdminDeliverySettingsUpdateRequest,
     AdminDeliveryZoneCreateRequest,
     AdminDeliveryZoneListQueryParams,
     AdminDeliveryZoneListResponse,
+    AdminDeliveryZoneUpdateRequest,
 )
 from source.services.admin_auth import AuditLogService, PermissionService
 from source.services.admin_delivery import AdminDeliveryService
@@ -83,6 +89,13 @@ class FakeDeliveryZoneRepository:
         self.get_list_calls = 0
         self.count_calls = 0
         self.created = []
+        self.updated = []
+
+    async def get_by_id(self, *, session, zone_id: int):
+        for zone in self.zones:
+            if zone.id == zone_id:
+                return zone
+        return None
 
     async def get_by_name_and_city(self, *, session, name: str, city: str):
         if self.existing_zone is not None:
@@ -105,6 +118,13 @@ class FakeDeliveryZoneRepository:
             sort_order=data.sort_order,
         )
         self.created.append(zone)
+        return zone
+
+    async def update(self, *, session, zone, data: dict):
+        self.updated.append(data)
+        for field, value in data.items():
+            setattr(zone, field, value)
+        zone.updated_date = datetime(2026, 5, 12, 11, 0, 0)
         return zone
 
     async def get_list(self, *, session, query: AdminDeliveryZoneListQueryParams):
@@ -299,6 +319,47 @@ async def create_zone(
             is_active=True,
             sort_order=10,
         ),
+        commiter=commiter,
+        permission_service=PermissionService(),
+        admin_delivery_cache_service=AdminDeliveryCacheService(),
+        delivery_cache_service=DeliveryCacheService(),
+        delivery_zone_repository=repository,
+        audit_log_service=AuditLogService(),
+        admin_audit_log_repository=audit_log_repository,
+        ip_address="127.0.0.1",
+        user_agent="pytest",
+    )
+    return SimpleNamespace(
+        response=response,
+        redis_service=redis_service,
+        repository=repository,
+        commiter=commiter,
+        audit_log_repository=audit_log_repository,
+    )
+
+
+async def update_zone(
+    *,
+    zone_id: int = 1,
+    data: AdminDeliveryZoneUpdateRequest | None = None,
+    redis_service=None,
+    role=UserRole.ADMIN,
+    repository=None,
+    commiter=None,
+    audit_log_repository=None,
+):
+    redis_service = redis_service or FakeRedisService()
+    repository = repository or FakeDeliveryZoneRepository(
+        zones=[build_delivery_zone(zone_id=1, name="Центральная зона", city="Москва")],
+    )
+    commiter = commiter or FakeCommiter()
+    audit_log_repository = audit_log_repository or FakeAuditLogRepository()
+    response = await AdminDeliveryService().update_zone(
+        session=None,
+        redis_service=redis_service,
+        user=build_user(role=role),
+        zone_id=zone_id,
+        data=data or AdminDeliveryZoneUpdateRequest(name=" Новая зона "),
         commiter=commiter,
         permission_service=PermissionService(),
         admin_delivery_cache_service=AdminDeliveryCacheService(),
@@ -711,3 +772,105 @@ async def test_admin_delivery_zone_create_audit_log_created() -> None:
     assert result.audit_log_repository.logs[0]["user_agent"] == "pytest"
     assert result.audit_log_repository.logs[0]["details"]["actor_id"] == 1
     assert result.audit_log_repository.logs[0]["details"]["zone_id"] == 99
+
+
+@pytest.mark.asyncio
+async def test_admin_delivery_zone_update_name_success() -> None:
+    result = await update_zone(data=AdminDeliveryZoneUpdateRequest(name=" Новая зона "))
+
+    assert result.response.name == "Новая зона"
+    assert result.repository.updated[0] == {"name": "Новая зона"}
+    assert result.commiter.committed is True
+
+
+@pytest.mark.asyncio
+async def test_admin_delivery_zone_update_delivery_price_success() -> None:
+    result = await update_zone(data=AdminDeliveryZoneUpdateRequest(delivery_price=Decimal("300.00")))
+
+    assert result.response.delivery_price == Decimal("300.00")
+    assert result.repository.updated[0] == {"delivery_price": Decimal("300.00")}
+
+
+@pytest.mark.asyncio
+async def test_admin_delivery_zone_update_is_active_false_success() -> None:
+    result = await update_zone(data=AdminDeliveryZoneUpdateRequest(is_active=False))
+
+    assert result.response.is_active is False
+    assert result.repository.updated[0] == {"is_active": False}
+
+
+@pytest.mark.asyncio
+async def test_admin_delivery_zone_update_invalid_zone_id_error() -> None:
+    with pytest.raises(ValueError, match="Неверный zone_id"):
+        await update_zone(zone_id=0)
+
+
+@pytest.mark.asyncio
+async def test_admin_delivery_zone_update_not_found_error() -> None:
+    repository = FakeDeliveryZoneRepository(zones=[])
+
+    with pytest.raises(DeliveryZoneNotFoundError):
+        await update_zone(repository=repository)
+
+
+@pytest.mark.asyncio
+async def test_admin_delivery_zone_update_deleted_zone_error() -> None:
+    repository = FakeDeliveryZoneRepository(
+        zones=[build_delivery_zone(zone_id=1, name="Удалённая зона", city="Москва", is_deleted=True)],
+    )
+
+    with pytest.raises(DeliveryZoneNotFoundError):
+        await update_zone(repository=repository)
+
+
+@pytest.mark.asyncio
+async def test_admin_delivery_zone_update_empty_body_error() -> None:
+    with pytest.raises(EmptyDeliveryZoneUpdateError):
+        await update_zone(data=AdminDeliveryZoneUpdateRequest())
+
+
+def test_admin_delivery_zone_update_negative_price_error() -> None:
+    with pytest.raises(ValidationError, match="Стоимость доставки"):
+        AdminDeliveryZoneUpdateRequest(delivery_price=Decimal("-1.00"))
+
+
+@pytest.mark.asyncio
+async def test_admin_delivery_zone_update_free_delivery_less_than_min_error() -> None:
+    with pytest.raises(ValueError, match="Сумма бесплатной доставки"):
+        await update_zone(data=AdminDeliveryZoneUpdateRequest(free_delivery_from=Decimal("900.00")))
+
+
+@pytest.mark.asyncio
+async def test_admin_delivery_zone_update_duplicate_name_city_error() -> None:
+    repository = FakeDeliveryZoneRepository(
+        zones=[build_delivery_zone(zone_id=1, name="Центральная зона", city="Москва")],
+        existing_zone=build_delivery_zone(zone_id=2, name="Новая зона", city="Москва"),
+    )
+
+    with pytest.raises(DeliveryZoneAlreadyExistsError):
+        await update_zone(repository=repository, data=AdminDeliveryZoneUpdateRequest(name="Новая зона"))
+
+
+@pytest.mark.asyncio
+async def test_admin_delivery_zone_update_invalidates_cache() -> None:
+    result = await update_zone()
+
+    assert "admin:delivery:zones:*" in result.redis_service.deleted
+    assert "delivery:calculate:*" in result.redis_service.deleted
+    assert "delivery:options" in result.redis_service.deleted
+
+
+@pytest.mark.asyncio
+async def test_admin_delivery_zone_update_audit_log_created() -> None:
+    result = await update_zone(data=AdminDeliveryZoneUpdateRequest(delivery_price=Decimal("300.00")))
+
+    assert result.audit_log_repository.logs[0]["event"] == "update_delivery_zone"
+    assert result.audit_log_repository.logs[0]["user_id"] == 1
+    assert result.audit_log_repository.logs[0]["ip_address"] == "127.0.0.1"
+    assert result.audit_log_repository.logs[0]["user_agent"] == "pytest"
+    assert result.audit_log_repository.logs[0]["details"]["actor_id"] == 1
+    assert result.audit_log_repository.logs[0]["details"]["zone_id"] == 1
+    assert result.audit_log_repository.logs[0]["details"]["changes"]["delivery_price"] == {
+        "old": "250.00",
+        "new": "300.00",
+    }

@@ -125,6 +125,42 @@ class AdminDeliveryZoneCreateRequest(BaseModel):
         return self
 
 
+class AdminDeliveryZoneUpdateRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+    city: str | None = Field(default=None, min_length=1, max_length=100)
+    description: str | None = None
+    delivery_price: Decimal | None = None
+    free_delivery_from: Decimal | None = None
+    min_order_amount: Decimal | None = None
+    is_active: bool | None = None
+    sort_order: int | None = None
+
+    @model_validator(mode="after")
+    def normalize_and_validate(self) -> "AdminDeliveryZoneUpdateRequest":
+        for field in ("name", "city", "delivery_price", "min_order_amount", "is_active", "sort_order"):
+            if field in self.model_fields_set and getattr(self, field) is None:
+                raise ValueError(f"{field} cannot be null")
+        if self.name is not None:
+            self.name = self.name.strip()
+            if not self.name:
+                raise ValueError("name is required")
+        if self.city is not None:
+            self.city = self.city.strip()
+            if not self.city:
+                raise ValueError("city is required")
+        if self.description is not None:
+            self.description = self.description.strip() or None
+        if self.delivery_price is not None and self.delivery_price < 0:
+            raise ValueError("Стоимость доставки не может быть отрицательной")
+        if self.min_order_amount is not None and self.min_order_amount < 0:
+            raise ValueError("Минимальная сумма заказа не может быть отрицательной")
+        if self.free_delivery_from is not None and self.free_delivery_from < 0:
+            raise ValueError("Сумма бесплатной доставки не может быть отрицательной")
+        if self.sort_order is not None and self.sort_order < 0:
+            raise ValueError("sort_order не может быть отрицательным")
+        return self
+
+
 class AdminDeliveryZoneResponse(BaseModel):
     id: int
     name: str
