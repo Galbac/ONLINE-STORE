@@ -84,6 +84,7 @@ from source.services.discount import DiscountService
 from source.services.discount_cache import DiscountCacheService
 from source.services.favorite import FavoriteService
 from source.services.favorite_cache import FavoriteCacheService
+from source.services.health import HealthService
 from source.services.one_c import CategorySyncService, IntegrationLogService, OneCImportService, OneCIntegrationService
 from source.services.order import OrderService
 from source.services.order_cache import OrderCacheService
@@ -107,6 +108,7 @@ from source.services.storage import StorageService
 from source.services.settings_cache import SettingsCacheService
 from source.services.upload import UploadService
 from source.services.upload_cache import UploadCacheService
+from source.utils.health import DatabaseHealthChecker
 
 
 class AppProvider(Provider):
@@ -423,6 +425,14 @@ class AppProvider(Provider):
     )
     favorite_cache_service = provide(
         FavoriteCacheService,
+        scope=Scope.REQUEST,
+    )
+    health_service = provide(
+        HealthService,
+        scope=Scope.REQUEST,
+    )
+    database_health_checker = provide(
+        DatabaseHealthChecker,
         scope=Scope.REQUEST,
     )
     upload_service = provide(

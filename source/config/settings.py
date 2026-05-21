@@ -26,6 +26,9 @@ class AppSettings(BaseSettings):
     version: str = Field(default="0.1.0", alias="APP_VERSION")
     environment: str = Field(default="development", alias="APP_ENV")
     health_show_environment: bool = Field(default=False, alias="HEALTH_SHOW_ENVIRONMENT")
+    health_db_timeout_seconds: int = Field(default=3, alias="HEALTH_DB_TIMEOUT_SECONDS")
+    health_protect_internal_endpoints: bool = Field(default=False, alias="HEALTH_PROTECT_INTERNAL_ENDPOINTS")
+    health_internal_token: str = Field(default="", alias="HEALTH_INTERNAL_TOKEN")
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
