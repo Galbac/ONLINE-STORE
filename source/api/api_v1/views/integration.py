@@ -8,17 +8,20 @@ from source.config.settings import Settings
 from source.repositories.category import CategoryRepository
 from source.repositories.integration_log import IntegrationLogRepository
 from source.repositories.product import ProductRepository
+from source.repositories.product_image import ProductImageRepository
 from source.repositories.product_price_history import ProductPriceHistoryRepository
 from source.repositories.stock_movement import StockMovementRepository
-from source.schemas.pydantic.one_c import OneCCategoryImportRequest, OneCImportResultResponse, OneCPriceImportRequest, OneCProductImportRequest, OneCStockImportRequest
+from source.repositories.upload import UploadRepository
+from source.schemas.pydantic.one_c import OneCCategoryImportRequest, OneCImageImportRequest, OneCImportResultResponse, OneCPriceImportRequest, OneCProductImportRequest, OneCStockImportRequest
 from source.services.admin_dashboard_cache import AdminDashboardCacheService
 from source.services.admin_product_cache import AdminProductCacheService
 from source.services.admin_category_cache import AdminCategoryCacheService
 from source.services.cart_cache import CartCacheService
 from source.services.category_cache import CategoryCacheService
-from source.services.one_c import CategorySyncService, IntegrationLogService, OneCImportService, ProductPriceSyncService, ProductStockSyncService, ProductSyncService, SlugService
+from source.services.one_c import CategorySyncService, ImageDownloadService, IntegrationLogService, OneCImportService, ProductImageSyncService, ProductPriceSyncService, ProductStockSyncService, ProductSyncService, SlugService
 from source.services.product_cache import ProductCacheService
 from source.services.redis import RedisService
+from source.services.storage import StorageService
 from source.services.stock import StockMovementService
 
 router = APIRouter(tags=["integration"])
@@ -219,6 +222,61 @@ async def import_one_c_stocks(
             product_cache_service=product_cache_service,
             cart_cache_service=cart_cache_service,
             admin_dashboard_cache_service=admin_dashboard_cache_service,
+            admin_product_cache_service=admin_product_cache_service,
+        )
+    except Exception:
+        await commiter.rollback()
+        raise
+
+
+@router.post(
+    "/integration/1c/images",
+    response_model=OneCImportResultResponse,
+    response_model_exclude_none=True,
+    status_code=status.HTTP_200_OK,
+)
+@inject
+async def import_one_c_images(
+    body: OneCImageImportRequest,
+    _token: None = Depends(verify_one_c_token),
+    session: FromDishka[AsyncSession] = None,
+    redis_service: FromDishka[RedisService] = None,
+    commiter: FromDishka[Commiter] = None,
+    config: FromDishka[Settings] = None,
+    one_c_import_service: FromDishka[OneCImportService] = None,
+    product_image_sync_service: FromDishka[ProductImageSyncService] = None,
+    image_download_service: FromDishka[ImageDownloadService] = None,
+    storage_service: FromDishka[StorageService] = None,
+    integration_log_service: FromDishka[IntegrationLogService] = None,
+    product_repository: FromDishka[ProductRepository] = None,
+    product_image_repository: FromDishka[ProductImageRepository] = None,
+    upload_repository: FromDishka[UploadRepository] = None,
+    integration_log_repository: FromDishka[IntegrationLogRepository] = None,
+    product_cache_service: FromDishka[ProductCacheService] = None,
+    admin_product_cache_service: FromDishka[AdminProductCacheService] = None,
+) -> OneCImportResultResponse:
+    if not config.one_c.import_images_enabled:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Импорт изображений из 1С отключён")
+    if not body.items:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="items пустой")
+    if len(body.items) > config.one_c.import_max_batch_size:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Превышен максимальный batch size")
+
+    try:
+        return await one_c_import_service.import_images(
+            session=session,
+            redis_service=redis_service,
+            data=body,
+            commiter=commiter,
+            product_repository=product_repository,
+            product_image_repository=product_image_repository,
+            upload_repository=upload_repository,
+            integration_log_repository=integration_log_repository,
+            product_image_sync_service=product_image_sync_service,
+            image_download_service=image_download_service,
+            storage_service=storage_service,
+            integration_log_service=integration_log_service,
+            product_cache_service=product_cache_service,
             admin_product_cache_service=admin_product_cache_service,
         )
     except Exception:

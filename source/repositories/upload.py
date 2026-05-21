@@ -18,7 +18,7 @@ class UploadRepository:
         storage_type: str,
         url: str,
         entity_type: str | None,
-        uploaded_by: int,
+        uploaded_by: int | None,
     ) -> Upload:
         upload = Upload(
             original_filename=original_filename,

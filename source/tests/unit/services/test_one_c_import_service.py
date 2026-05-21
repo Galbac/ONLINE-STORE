@@ -1,4 +1,5 @@
 from datetime import datetime
+import base64
 from types import SimpleNamespace
 
 import pytest
@@ -10,6 +11,8 @@ from source.config.settings import settings
 from source.schemas.pydantic.one_c import (
     OneCCategoryImportItem,
     OneCCategoryImportRequest,
+    OneCImageImportItem,
+    OneCImageImportRequest,
     OneCPriceImportItem,
     OneCPriceImportRequest,
     OneCProductImportItem,
@@ -22,7 +25,7 @@ from source.services.admin_product_cache import AdminProductCacheService
 from source.services.admin_category_cache import AdminCategoryCacheService
 from source.services.cart_cache import CartCacheService
 from source.services.category_cache import CategoryCacheService
-from source.services.one_c import CategorySyncService, IntegrationLogService, OneCImportService, ProductPriceSyncService, ProductStockSyncService, ProductSyncService, SlugService
+from source.services.one_c import CategorySyncService, ImageDownloadService, IntegrationLogService, OneCImportService, ProductImageSyncService, ProductPriceSyncService, ProductStockSyncService, ProductSyncService, SlugService
 from source.services.product_cache import ProductCacheService
 from source.services.stock import StockMovementService
 
@@ -129,6 +132,96 @@ class FakeProductPriceHistoryRepository:
         return [SimpleNamespace(id=index + 1, **item) for index, item in enumerate(items)]
 
 
+class FakeProductImageRepository:
+    def __init__(self, images=None) -> None:
+        self.images = images or []
+        self.next_id = max([image.id for image in self.images], default=0) + 1
+
+    async def get_active_models_by_product_id(self, *, session, product_id: int):
+        return [
+            image
+            for image in self.images
+            if image.product_id == product_id and not image.is_deleted
+        ]
+
+    async def get_by_external_1c_id(self, *, session, image_external_1c_id: str):
+        return next(
+            (
+                image
+                for image in self.images
+                if image.image_external_1c_id == image_external_1c_id and not image.is_deleted
+            ),
+            None,
+        )
+
+    async def unset_main_by_product_id(self, *, session, product_id: int):
+        for image in self.images:
+            if image.product_id == product_id and not image.is_deleted:
+                image.is_main = False
+
+    async def create(
+        self,
+        *,
+        session,
+        product_id: int,
+        file_id: int | None,
+        url: str,
+        sort_order: int,
+        is_main: bool,
+        image_external_1c_id: str | None = None,
+        external_url: str | None = None,
+    ):
+        image = build_product_image(
+            image_id=self.next_id,
+            product_id=product_id,
+            file_id=file_id,
+            url=url,
+            sort_order=sort_order,
+            is_main=is_main,
+            image_external_1c_id=image_external_1c_id,
+            external_url=external_url,
+        )
+        self.next_id += 1
+        self.images.append(image)
+        return image
+
+    async def update(self, *, session, image, sort_order: int, is_main: bool):
+        image.sort_order = sort_order
+        image.is_main = is_main
+        return image
+
+
+class FakeUploadRepository:
+    def __init__(self) -> None:
+        self.items: list[dict] = []
+        self.next_id = 1
+
+    async def create(self, *, session, **data):
+        upload = SimpleNamespace(id=self.next_id, **data)
+        self.next_id += 1
+        self.items.append(data)
+        return upload
+
+
+class FakeStorageService:
+    def __init__(self) -> None:
+        self.saved: list[dict] = []
+
+    async def save_file(self, *, stored_filename: str, content: bytes):
+        self.saved.append({"stored_filename": stored_filename, "content": content})
+        return f"/media/{stored_filename}", "local"
+
+
+class FakeImageDownloadService:
+    def __init__(self, *, content: bytes | None = None, mime_type: str = "image/png", filename: str = "apple.png") -> None:
+        self.content = content or build_png_content()
+        self.mime_type = mime_type
+        self.filename = filename
+
+    async def download(self, *, image_url: str, max_size_bytes: int):
+        return self.content, self.mime_type, self.filename
+
+
 class FakeStockMovementRepository:
     def __init__(self) -> None:
         self.items: list[dict] = []
@@ -233,6 +326,35 @@ def build_product(
     )
 
 
+def build_product_image(
+    *,
+    image_id: int = 1,
+    product_id: int = 1,
+    file_id: int | None = None,
+    image_external_1c_id: str | None = "img-001",
+    external_url: str | None = None,
+    url: str = "https://cdn.example.com/apple.png",
+    sort_order: int = 0,
+    is_main: bool = False,
+    is_deleted: bool = False,
+):
+    return SimpleNamespace(
+        id=image_id,
+        product_id=product_id,
+        file_id=file_id,
+        image_external_1c_id=image_external_1c_id,
+        external_url=external_url,
+        url=url,
+        sort_order=sort_order,
+        is_main=is_main,
+        is_deleted=is_deleted,
+    )
+
+
+def build_png_content() -> bytes:
+    return b"\x89PNG\r\n\x1a\n" + b"0" * 16
+
+
 def build_request(*items) -> OneCCategoryImportRequest:
     return OneCCategoryImportRequest(items=list(items))
 
@@ -287,6 +409,22 @@ def build_stock_item(**kwargs) -> OneCStockImportItem:
     }
     data.update(kwargs)
     return OneCStockImportItem(**data)
+
+
+def build_image_request(*items) -> OneCImageImportRequest:
+    return OneCImageImportRequest(items=list(items))
+
+
+def build_image_item(**kwargs) -> OneCImageImportItem:
+    data = {
+        "product_external_1c_id": "prod-001",
+        "image_external_1c_id": "img-001",
+        "image_url": "https://1c.example.com/images/apple.png",
+        "sort_order": 1,
+        "is_main": True,
+    }
+    data.update(kwargs)
+    return OneCImageImportItem(**data)
 
 
 async def import_categories(*, data, repository=None, redis_service=None, integration_log_repository=None, commiter=None):
@@ -379,6 +517,36 @@ async def import_stocks(
         product_cache_service=ProductCacheService(),
         cart_cache_service=CartCacheService(),
         admin_dashboard_cache_service=AdminDashboardCacheService(),
+        admin_product_cache_service=AdminProductCacheService(),
+    )
+
+
+async def import_images(
+    *,
+    data,
+    product_repository=None,
+    product_image_repository=None,
+    upload_repository=None,
+    storage_service=None,
+    image_download_service=None,
+    redis_service=None,
+    integration_log_repository=None,
+    commiter=None,
+):
+    return await OneCImportService().import_images(
+        session=object(),
+        redis_service=redis_service or FakeRedisService(),
+        data=data,
+        commiter=commiter or FakeCommiter(),
+        product_repository=product_repository or FakeProductRepository([build_product()]),
+        product_image_repository=product_image_repository or FakeProductImageRepository(),
+        upload_repository=upload_repository or FakeUploadRepository(),
+        integration_log_repository=integration_log_repository or FakeIntegrationLogRepository(),
+        product_image_sync_service=ProductImageSyncService(),
+        image_download_service=image_download_service or FakeImageDownloadService(),
+        storage_service=storage_service or FakeStorageService(),
+        integration_log_service=IntegrationLogService(),
+        product_cache_service=ProductCacheService(),
         admin_product_cache_service=AdminProductCacheService(),
     )
 
@@ -972,4 +1140,184 @@ async def test_one_c_import_stocks_creates_integration_log() -> None:
     log = integration_log_repository.logs[0]
     assert log["system"] == "1c"
     assert log["entity_type"] == "product_stocks"
+    assert log["status"] == "success"
+
+
+@pytest.mark.asyncio
+async def test_one_c_import_images_imports_image_url_without_download(monkeypatch) -> None:
+    monkeypatch.setattr(settings.one_c, "download_images", False)
+    product_image_repository = FakeProductImageRepository()
+
+    response = await import_images(
+        product_image_repository=product_image_repository,
+        data=build_image_request(build_image_item()),
+    )
+
+    assert response.created == 1
+    image = product_image_repository.images[0]
+    assert image.file_id is None
+    assert image.external_url == "https://1c.example.com/images/apple.png"
+    assert image.url == "https://1c.example.com/images/apple.png"
+    assert image.is_main is True
+
+
+@pytest.mark.asyncio
+async def test_one_c_import_images_imports_image_url_with_download(monkeypatch) -> None:
+    monkeypatch.setattr(settings.one_c, "download_images", True)
+    product_image_repository = FakeProductImageRepository()
+    upload_repository = FakeUploadRepository()
+    storage_service = FakeStorageService()
+
+    response = await import_images(
+        product_image_repository=product_image_repository,
+        upload_repository=upload_repository,
+        storage_service=storage_service,
+        image_download_service=FakeImageDownloadService(),
+        data=build_image_request(build_image_item()),
+    )
+
+    assert response.created == 1
+    assert product_image_repository.images[0].file_id == 1
+    assert upload_repository.items[0]["mime_type"] == "image/png"
+    assert storage_service.saved
+
+
+@pytest.mark.asyncio
+async def test_one_c_import_images_imports_base64(monkeypatch) -> None:
+    monkeypatch.setattr(settings.one_c, "download_images", False)
+    content_base64 = base64.b64encode(build_png_content()).decode("ascii")
+    upload_repository = FakeUploadRepository()
+
+    response = await import_images(
+        upload_repository=upload_repository,
+        data=build_image_request(
+            build_image_item(
+                image_url=None,
+                filename="apple.png",
+                content_base64=content_base64,
+            ),
+        ),
+    )
+
+    assert response.created == 1
+    assert upload_repository.items[0]["original_filename"] == "apple.png"
+    assert upload_repository.items[0]["uploaded_by"] is None
+
+
+@pytest.mark.asyncio
+async def test_one_c_import_images_unknown_product_returns_error() -> None:
+    response = await import_images(
+        product_repository=FakeProductRepository([]),
+        data=build_image_request(build_image_item(product_external_1c_id="prod-404")),
+    )
+
+    assert response.created == 0
+    assert response.skipped == 1
+    assert response.errors[0].product_external_1c_id == "prod-404"
+    assert response.errors[0].message == "Товар не найден"
+
+
+@pytest.mark.asyncio
+async def test_one_c_import_images_bad_base64_returns_error() -> None:
+    response = await import_images(
+        data=build_image_request(
+            build_image_item(
+                image_url=None,
+                filename="apple.png",
+                content_base64="bad-base64",
+            ),
+        ),
+    )
+
+    assert response.created == 0
+    assert response.skipped == 1
+    assert response.errors[0].message == "Некорректный base64"
+
+
+@pytest.mark.asyncio
+async def test_one_c_import_images_large_file_returns_error(monkeypatch) -> None:
+    monkeypatch.setattr(settings.media, "max_image_size_mb", 0)
+    content_base64 = base64.b64encode(build_png_content()).decode("ascii")
+
+    response = await import_images(
+        data=build_image_request(
+            build_image_item(
+                image_url=None,
+                filename="apple.png",
+                content_base64=content_base64,
+            ),
+        ),
+    )
+
+    assert response.created == 0
+    assert response.skipped == 1
+    assert response.errors[0].message == "Файл слишком большой"
+
+
+@pytest.mark.asyncio
+async def test_one_c_import_images_main_unsets_other_main(monkeypatch) -> None:
+    monkeypatch.setattr(settings.one_c, "download_images", False)
+    product_image_repository = FakeProductImageRepository(
+        [build_product_image(image_id=1, product_id=1, image_external_1c_id="old", is_main=True)],
+    )
+
+    await import_images(
+        product_image_repository=product_image_repository,
+        data=build_image_request(build_image_item(image_external_1c_id="new", is_main=True)),
+    )
+
+    old_image = next(image for image in product_image_repository.images if image.image_external_1c_id == "old")
+    new_image = next(image for image in product_image_repository.images if image.image_external_1c_id == "new")
+    assert old_image.is_main is False
+    assert new_image.is_main is True
+
+
+@pytest.mark.asyncio
+async def test_one_c_import_images_repeated_external_id_updates_without_duplicate(monkeypatch) -> None:
+    monkeypatch.setattr(settings.one_c, "download_images", False)
+    existing = build_product_image(image_id=1, product_id=1, image_external_1c_id="img-001", sort_order=1, is_main=False)
+    product_image_repository = FakeProductImageRepository([existing])
+
+    response = await import_images(
+        product_image_repository=product_image_repository,
+        data=build_image_request(build_image_item(sort_order=5, is_main=True)),
+    )
+
+    assert response.created == 0
+    assert response.updated == 1
+    assert len(product_image_repository.images) == 1
+    assert existing.sort_order == 5
+    assert existing.is_main is True
+
+
+@pytest.mark.asyncio
+async def test_one_c_import_images_invalidates_cache(monkeypatch) -> None:
+    monkeypatch.setattr(settings.one_c, "download_images", False)
+    redis_service = FakeRedisService()
+
+    await import_images(
+        redis_service=redis_service,
+        data=build_image_request(build_image_item()),
+    )
+
+    assert "products:detail:1:*" in redis_service.deleted_patterns
+    assert "products:slug:yabloki:*" in redis_service.deleted_patterns
+    assert "products:list:*" in redis_service.deleted_patterns
+    assert "admin:products:list:*" in redis_service.deleted_patterns
+    assert "admin:products:detail:1" in redis_service.deleted
+
+
+@pytest.mark.asyncio
+async def test_one_c_import_images_creates_integration_log(monkeypatch) -> None:
+    monkeypatch.setattr(settings.one_c, "download_images", False)
+    integration_log_repository = FakeIntegrationLogRepository()
+
+    await import_images(
+        integration_log_repository=integration_log_repository,
+        data=build_image_request(build_image_item()),
+    )
+
+    log = integration_log_repository.logs[0]
+    assert log["system"] == "1c"
+    assert log["entity_type"] == "product_images"
     assert log["status"] == "success"

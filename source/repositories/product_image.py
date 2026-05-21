@@ -35,6 +35,36 @@ class ProductImageRepository:
             for image in result.scalars().all()
         ]
 
+    async def get_active_models_by_product_id(
+        self,
+        *,
+        session: AsyncSession,
+        product_id: int,
+    ) -> list[ProductImage]:
+        result = await session.execute(
+            select(ProductImage)
+            .where(
+                ProductImage.product_id == product_id,
+                ProductImage.is_deleted.is_(False),
+            )
+            .order_by(ProductImage.sort_order.asc(), ProductImage.id.asc()),
+        )
+        return list(result.scalars().all())
+
+    async def get_by_external_1c_id(
+        self,
+        *,
+        session: AsyncSession,
+        image_external_1c_id: str,
+    ) -> ProductImage | None:
+        result = await session.execute(
+            select(ProductImage).where(
+                ProductImage.image_external_1c_id == image_external_1c_id,
+                ProductImage.is_deleted.is_(False),
+            ),
+        )
+        return result.scalar_one_or_none()
+
     async def count_by_product_id(
         self,
         *,
@@ -75,14 +105,33 @@ class ProductImageRepository:
         url: str,
         sort_order: int,
         is_main: bool,
+        image_external_1c_id: str | None = None,
+        external_url: str | None = None,
     ) -> ProductImage:
         image = ProductImage(
             product_id=product_id,
             file_id=file_id,
+            image_external_1c_id=image_external_1c_id,
+            external_url=external_url,
             url=url,
             sort_order=sort_order,
             is_main=is_main,
         )
+        session.add(image)
+        await session.flush()
+        await session.refresh(image)
+        return image
+
+    async def update(
+        self,
+        *,
+        session: AsyncSession,
+        image: ProductImage,
+        sort_order: int,
+        is_main: bool,
+    ) -> ProductImage:
+        image.sort_order = sort_order
+        image.is_main = is_main
         session.add(image)
         await session.flush()
         await session.refresh(image)

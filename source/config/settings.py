@@ -344,6 +344,9 @@ class OneCSettings(BaseSettings):
     import_max_batch_size: int = Field(default=1000, alias="ONE_C_IMPORT_MAX_BATCH_SIZE")
     health_timeout_seconds: int = Field(default=5, alias="ONE_C_HEALTH_TIMEOUT_SECONDS")
     auto_availability_from_stock: bool = Field(default=True, alias="AUTO_AVAILABILITY_FROM_STOCK")
+    import_images_enabled: bool = Field(default=True, alias="ONE_C_IMPORT_IMAGES_ENABLED")
+    download_images: bool = Field(default=False, alias="ONE_C_DOWNLOAD_IMAGES")
+    product_images_source: str = Field(default="1c", alias="PRODUCT_IMAGES_SOURCE")
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

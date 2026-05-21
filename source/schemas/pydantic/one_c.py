@@ -117,6 +117,32 @@ class OneCStockImportRequest(BaseModel):
     items: list[OneCStockImportItem]
 
 
+class OneCImageImportItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    product_external_1c_id: str = Field(min_length=1, max_length=100)
+    image_external_1c_id: str | None = Field(default=None, max_length=100)
+    image_url: str | None = Field(default=None, max_length=1000)
+    filename: str | None = Field(default=None, max_length=255)
+    content_base64: str | None = None
+    sort_order: int = 0
+    is_main: bool = False
+
+    @field_validator("product_external_1c_id", "image_external_1c_id", "image_url", "filename", mode="before")
+    @classmethod
+    def normalize_string(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        normalized_value = " ".join(value.strip().split())
+        return normalized_value or None
+
+
+class OneCImageImportRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    items: list[OneCImageImportItem]
+
+
 class OneCImportItemErrorResponse(BaseModel):
     external_1c_id: str | None = None
     product_external_1c_id: str | None = None

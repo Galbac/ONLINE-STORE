@@ -1,7 +1,11 @@
+import base64
+import binascii
 import json
 from decimal import Decimal
 from datetime import datetime
+from pathlib import Path
 from urllib.error import HTTPError, URLError
+from urllib.parse import unquote, urlparse
 from urllib.request import Request, urlopen
 
 from source.config.settings import settings
@@ -9,6 +13,8 @@ from source.errors.auth import OneCSyncError
 from source.schemas.pydantic.one_c import (
     OneCCategoryImportItem,
     OneCCategoryImportRequest,
+    OneCImageImportItem,
+    OneCImageImportRequest,
     OneCImportItemErrorResponse,
     OneCPriceImportItem,
     OneCPriceImportRequest,
@@ -18,6 +24,7 @@ from source.schemas.pydantic.one_c import (
     OneCStockImportRequest,
     OneCImportResultResponse,
 )
+from source.utils.upload import detect_mime_type, generate_safe_filename, get_file_extension, validate_file_size
 from source.utils.slug import generate_slug, normalize_slug
 
 
@@ -669,6 +676,221 @@ class ProductStockSyncService:
         return errors
 
 
+class ImageDownloadService:
+    async def download(self, *, image_url: str, max_size_bytes: int) -> tuple[bytes, str | None, str | None]:
+        request = Request(image_url, method="GET")
+        try:
+            with urlopen(request, timeout=20) as response:
+                content = response.read(max_size_bytes + 1)
+                content_type = response.headers.get_content_type()
+        except (HTTPError, URLError, OSError) as error:
+            raise ValueError("Не удалось скачать изображение") from error
+        filename = Path(unquote(urlparse(image_url).path)).name or None
+        return content, content_type, filename
+
+
+class ProductImageSyncService:
+    def __init__(self) -> None:
+        self.changed_products: list = []
+
+    async def import_images_from_1c(
+        self,
+        *,
+        session,
+        data: OneCImageImportRequest,
+        product_repository,
+        product_image_repository,
+        upload_repository,
+        storage_service,
+        image_download_service: ImageDownloadService,
+    ) -> OneCImportResultResponse:
+        self.changed_products = []
+        product_external_ids = {item.product_external_1c_id for item in data.items}
+        products = await product_repository.get_by_external_1c_ids(
+            session=session,
+            external_1c_ids=product_external_ids,
+        )
+        products_by_external_id = {
+            product.external_1c_id: product
+            for product in products
+            if product.external_1c_id is not None
+        }
+
+        errors: list[OneCImportItemErrorResponse] = []
+        created = 0
+        updated = 0
+        skipped = 0
+
+        for item in data.items:
+            item_errors = self._validate_item(item=item)
+            if item_errors:
+                skipped += 1
+                errors.extend(item_errors)
+                continue
+
+            product = products_by_external_id.get(item.product_external_1c_id)
+            if product is None:
+                skipped += 1
+                errors.append(
+                    OneCImportItemErrorResponse(
+                        product_external_1c_id=item.product_external_1c_id,
+                        message="Товар не найден",
+                        field="product_external_1c_id",
+                    ),
+                )
+                continue
+
+            existing_image = None
+            if item.image_external_1c_id is not None:
+                existing_image = await product_image_repository.get_by_external_1c_id(
+                    session=session,
+                    image_external_1c_id=item.image_external_1c_id,
+                )
+            product_images = await product_image_repository.get_active_models_by_product_id(
+                session=session,
+                product_id=product.id,
+            )
+            has_main_image = any(image.is_main for image in product_images)
+            should_be_main = item.is_main or not has_main_image
+            if should_be_main:
+                await product_image_repository.unset_main_by_product_id(session=session, product_id=product.id)
+
+            if existing_image is not None:
+                await product_image_repository.update(
+                    session=session,
+                    image=existing_image,
+                    sort_order=item.sort_order,
+                    is_main=should_be_main,
+                )
+                updated += 1
+                self.changed_products.append(product)
+                continue
+
+            try:
+                file_id, image_url, external_url = await self._resolve_image_storage(
+                    session=session,
+                    item=item,
+                    upload_repository=upload_repository,
+                    storage_service=storage_service,
+                    image_download_service=image_download_service,
+                )
+            except ValueError as error:
+                skipped += 1
+                errors.append(
+                    OneCImportItemErrorResponse(
+                        product_external_1c_id=item.product_external_1c_id,
+                        message=str(error),
+                    ),
+                )
+                continue
+
+            await product_image_repository.create(
+                session=session,
+                product_id=product.id,
+                file_id=file_id,
+                url=image_url,
+                sort_order=item.sort_order,
+                is_main=should_be_main,
+                image_external_1c_id=item.image_external_1c_id,
+                external_url=external_url,
+            )
+            created += 1
+            self.changed_products.append(product)
+
+        return OneCImportResultResponse(
+            created=created,
+            updated=updated,
+            skipped=skipped,
+            errors=errors,
+        )
+
+    def _validate_item(self, *, item: OneCImageImportItem) -> list[OneCImportItemErrorResponse]:
+        errors: list[OneCImportItemErrorResponse] = []
+        if item.sort_order < 0:
+            errors.append(
+                OneCImportItemErrorResponse(
+                    product_external_1c_id=item.product_external_1c_id,
+                    message="sort_order не может быть отрицательным",
+                    field="sort_order",
+                ),
+            )
+        if item.image_url is None and item.content_base64 is None:
+            errors.append(
+                OneCImportItemErrorResponse(
+                    product_external_1c_id=item.product_external_1c_id,
+                    message="Нужно передать image_url или content_base64",
+                ),
+            )
+        if item.content_base64 is not None and item.filename is None:
+            errors.append(
+                OneCImportItemErrorResponse(
+                    product_external_1c_id=item.product_external_1c_id,
+                    message="filename обязателен для content_base64",
+                    field="filename",
+                ),
+            )
+        return errors
+
+    async def _resolve_image_storage(
+        self,
+        *,
+        session,
+        item: OneCImageImportItem,
+        upload_repository,
+        storage_service,
+        image_download_service: ImageDownloadService,
+    ) -> tuple[int | None, str, str | None]:
+        if item.image_url is not None and not settings.one_c.download_images:
+            return None, item.image_url, item.image_url
+
+        if item.content_base64 is not None:
+            try:
+                content = base64.b64decode(item.content_base64, validate=True)
+            except (binascii.Error, ValueError) as error:
+                raise ValueError("Некорректный base64") from error
+            filename = item.filename
+            mime_type = detect_mime_type(content)
+        else:
+            content, header_mime_type, downloaded_filename = await image_download_service.download(
+                image_url=item.image_url,
+                max_size_bytes=settings.media.max_image_size_mb * 1024 * 1024,
+            )
+            filename = item.filename or downloaded_filename
+            detected_mime_type = detect_mime_type(content)
+            mime_type = detected_mime_type or header_mime_type
+
+        if filename is None:
+            raise ValueError("filename обязателен")
+        max_size_bytes = settings.media.max_image_size_mb * 1024 * 1024
+        try:
+            validate_file_size(content=content, max_size_bytes=max_size_bytes)
+        except Exception as error:
+            raise ValueError("Файл слишком большой") from error
+        if mime_type not in settings.media.allowed_image_type_set:
+            raise ValueError("Тип изображения не поддерживается")
+        detected_mime_type = detect_mime_type(content)
+        if detected_mime_type is None or detected_mime_type != mime_type:
+            raise ValueError("Некорректное изображение")
+        extension = get_file_extension(filename)
+        if extension not in settings.media.allowed_image_extension_set:
+            raise ValueError("Расширение изображения не поддерживается")
+
+        stored_filename = generate_safe_filename(extension=extension, entity_type="product")
+        saved_url, storage_type = await storage_service.save_file(stored_filename=stored_filename, content=content)
+        upload = await upload_repository.create(
+            session=session,
+            original_filename=filename,
+            stored_filename=stored_filename,
+            mime_type=mime_type,
+            size=len(content),
+            storage_type=storage_type,
+            url=saved_url,
+            entity_type="product",
+            uploaded_by=None,
+        )
+        return upload.id, saved_url, None
+
+
 class IntegrationLogService:
     async def create_log(
         self,
@@ -848,4 +1070,59 @@ class OneCImportService:
         await cart_cache_service.invalidate_all(redis_service=redis_service)
         await admin_dashboard_cache_service.invalidate_low_stock(redis_service=redis_service)
         await admin_product_cache_service.invalidate_all(redis_service=redis_service)
+        return result
+
+    async def import_images(
+        self,
+        *,
+        session,
+        redis_service,
+        data: OneCImageImportRequest,
+        commiter,
+        product_repository,
+        product_image_repository,
+        upload_repository,
+        integration_log_repository,
+        product_image_sync_service: ProductImageSyncService,
+        image_download_service: ImageDownloadService,
+        storage_service,
+        integration_log_service: IntegrationLogService,
+        product_cache_service,
+        admin_product_cache_service,
+    ) -> OneCImportResultResponse:
+        result = await product_image_sync_service.import_images_from_1c(
+            session=session,
+            data=data,
+            product_repository=product_repository,
+            product_image_repository=product_image_repository,
+            upload_repository=upload_repository,
+            storage_service=storage_service,
+            image_download_service=image_download_service,
+        )
+        status = "partial" if result.errors else "success"
+        await integration_log_service.create_log(
+            session=session,
+            integration_log_repository=integration_log_repository,
+            status=status,
+            request_payload=data.model_dump(exclude={"items": {"__all__": {"content_base64"}}}),
+            response_payload=result.model_dump(),
+            entity_type="product_images",
+        )
+        await commiter.commit()
+
+        changed_by_product_id = {
+            product.id: product
+            for product in product_image_sync_service.changed_products
+            if product.id is not None
+        }
+        for product in changed_by_product_id.values():
+            await product_cache_service.invalidate_product(
+                redis_service=redis_service,
+                product_id=product.id,
+                slug=product.slug,
+            )
+            await admin_product_cache_service.invalidate_product(
+                redis_service=redis_service,
+                product_id=product.id,
+            )
         return result
