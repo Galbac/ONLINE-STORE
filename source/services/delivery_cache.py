@@ -69,6 +69,9 @@ class DeliveryCacheService:
     def _build_calculate_key(self, *, query_hash: str) -> str:
         return f"{self._calculate_key_prefix}:{query_hash}"
 
+    async def invalidate_calculate(self, *, redis_service: RedisService) -> None:
+        await redis_service.delete_by_pattern(f"{self._calculate_key_prefix}:*")
+
     async def get_pickup_points(
         self,
         *,

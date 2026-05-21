@@ -9,7 +9,7 @@ from source.utils.delivery import normalize_address_part
 class DeliveryOptionItemResponse(BaseModel):
     enabled: bool
     title: str
-    description: str
+    description: str | None = None
     min_order_amount: Decimal | None = None
     base_price: Decimal | None = None
     free_from_amount: Decimal | None = None
@@ -32,9 +32,41 @@ class AdminDeliverySettingsResponse(BaseModel):
     time_slots_enabled: bool
     delivery_comment: str | None = None
     pickup_comment: str | None = None
-    default_city: str
+    default_city: str | None = None
     currency: str
     updated_at: datetime | None = None
+
+
+class AdminDeliverySettingsUpdateRequest(BaseModel):
+    delivery_enabled: bool | None = None
+    pickup_enabled: bool | None = None
+    min_order_amount: Decimal | None = None
+    base_delivery_price: Decimal | None = None
+    free_delivery_from: Decimal | None = None
+    time_slots_enabled: bool | None = None
+    delivery_comment: str | None = Field(default=None, max_length=1000)
+    pickup_comment: str | None = Field(default=None, max_length=1000)
+    default_city: str | None = Field(default=None, max_length=100)
+    currency: str | None = Field(default=None, min_length=3, max_length=3)
+
+    @field_validator("delivery_comment", "pickup_comment", "default_city", mode="before")
+    @classmethod
+    def normalize_optional_string(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        if isinstance(value, str):
+            normalized_value = " ".join(value.strip().split())
+            return normalized_value or None
+        return value
+
+    @field_validator("currency", mode="before")
+    @classmethod
+    def normalize_currency(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        if isinstance(value, str):
+            return value.strip().upper()
+        return value
 
 
 class DeliveryCalculateRequest(BaseModel):

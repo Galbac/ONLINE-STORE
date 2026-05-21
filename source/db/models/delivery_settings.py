@@ -13,11 +13,10 @@ class DeliverySettings(IdBigIntPkMixin, CreateUpdateMixin, Base):
 
     delivery_enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true", nullable=False)
     delivery_title: Mapped[str] = mapped_column(String(255), default="Доставка", server_default="Доставка", nullable=False)
-    delivery_description: Mapped[str] = mapped_column(
+    delivery_description: Mapped[str | None] = mapped_column(
         Text,
         default="Доставка по городу",
         server_default="Доставка по городу",
-        nullable=False,
     )
     min_order_amount: Mapped[Decimal] = mapped_column(
         Numeric(12, 2),
@@ -39,12 +38,11 @@ class DeliverySettings(IdBigIntPkMixin, CreateUpdateMixin, Base):
     has_time_slots: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true", nullable=False)
     pickup_enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true", nullable=False)
     pickup_title: Mapped[str] = mapped_column(String(255), default="Самовывоз", server_default="Самовывоз", nullable=False)
-    pickup_description: Mapped[str] = mapped_column(
+    pickup_description: Mapped[str | None] = mapped_column(
         Text,
         default="Можно забрать заказ из магазина",
         server_default="Можно забрать заказ из магазина",
-        nullable=False,
     )
     pickup_price: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=Decimal("0"), server_default="0", nullable=False)
-    default_city: Mapped[str] = mapped_column(String(100), default="Москва", server_default="Москва", nullable=False)
+    default_city: Mapped[str | None] = mapped_column(String(100), default="Москва", server_default="Москва")
     currency: Mapped[str] = mapped_column(String(3), default="RUB", server_default="RUB", nullable=False)

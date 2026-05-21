@@ -32,3 +32,7 @@ class DeliveryDateInPastError(Exception):
 
 class DeliveryTimeSlotUnavailableError(Exception):
     pass
+
+
+class EmptyDeliverySettingsUpdateError(Exception):
+    pass

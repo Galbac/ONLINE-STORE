@@ -1,8 +1,10 @@
 from source.config.settings import settings
 from source.errors.auth import AdminAuthAccessDeniedError, InactiveUserError
-from source.schemas.pydantic.delivery import AdminDeliverySettingsResponse
+from source.errors.delivery import EmptyDeliverySettingsUpdateError
+from source.schemas.pydantic.delivery import AdminDeliverySettingsResponse, AdminDeliverySettingsUpdateRequest
 from source.services.admin_auth import STAFF_ROLES
 from source.services.admin_delivery_cache import AdminDeliveryCacheService
+from source.services.delivery_cache import DeliveryCacheService
 from source.services.redis import RedisService
 
 
@@ -13,6 +15,14 @@ class AdminDeliveryService:
         if user.role not in STAFF_ROLES:
             raise AdminAuthAccessDeniedError
         if "admin:delivery:read" not in permission_service.get_user_permissions(role=user.role):
+            raise AdminAuthAccessDeniedError
+
+    def _check_update_permission(self, *, user, permission_service) -> None:
+        if not user.is_active or user.is_deleted or user.is_blocked:
+            raise InactiveUserError
+        if user.role not in STAFF_ROLES:
+            raise AdminAuthAccessDeniedError
+        if "admin:delivery:update" not in permission_service.get_user_permissions(role=user.role):
             raise AdminAuthAccessDeniedError
 
     async def get_settings(
@@ -43,6 +53,130 @@ class AdminDeliveryService:
             ttl_seconds=settings.admin_delivery.settings_cache_ttl_seconds,
         )
         return response
+
+    async def update_settings(
+        self,
+        *,
+        session,
+        redis_service: RedisService,
+        user,
+        data: AdminDeliverySettingsUpdateRequest,
+        commiter,
+        permission_service,
+        admin_delivery_cache_service: AdminDeliveryCacheService,
+        delivery_cache_service: DeliveryCacheService,
+        delivery_settings_repository,
+        audit_log_service,
+        admin_audit_log_repository,
+        ip_address: str | None = None,
+        user_agent: str | None = None,
+    ) -> AdminDeliverySettingsResponse:
+        self._check_update_permission(user=user, permission_service=permission_service)
+
+        update_fields = data.model_dump(exclude_unset=True)
+        if not update_fields:
+            raise EmptyDeliverySettingsUpdateError
+
+        delivery_settings, created = await delivery_settings_repository.get_or_create_default(session=session)
+        repository_data = self._to_repository_data(update_fields=update_fields)
+        self._validate_update(delivery_settings=delivery_settings, repository_data=repository_data)
+
+        before = {
+            field: getattr(delivery_settings, field)
+            for field in repository_data
+        }
+        updated_settings = await delivery_settings_repository.update(
+            session=session,
+            delivery_settings=delivery_settings,
+            data=repository_data,
+        )
+        changes = {
+            self._response_field(field): {
+                "old": str(before[field]) if before[field] is not None else None,
+                "new": str(getattr(updated_settings, field)) if getattr(updated_settings, field) is not None else None,
+            }
+            for field in repository_data
+            if before[field] != getattr(updated_settings, field)
+        }
+        await audit_log_service.log_action(
+            session=session,
+            audit_log_repository=admin_audit_log_repository,
+            user_id=user.id,
+            login=getattr(user, "email", None) or getattr(user, "phone", None) or str(user.id),
+            event="admin_delivery_settings_update",
+            status="success",
+            ip_address=ip_address,
+            user_agent=user_agent,
+            details={
+                "created_default": created,
+                "changes": changes,
+            },
+        )
+        await commiter.commit()
+
+        await self._invalidate_cache(
+            redis_service=redis_service,
+            admin_delivery_cache_service=admin_delivery_cache_service,
+            delivery_cache_service=delivery_cache_service,
+        )
+        return self._build_response(delivery_settings=updated_settings)
+
+    def _to_repository_data(self, *, update_fields: dict) -> dict:
+        field_map = {
+            "base_delivery_price": "base_price",
+            "free_delivery_from": "free_from_amount",
+            "time_slots_enabled": "has_time_slots",
+            "delivery_comment": "delivery_description",
+            "pickup_comment": "pickup_description",
+        }
+        return {
+            field_map.get(field, field): value
+            for field, value in update_fields.items()
+        }
+
+    def _response_field(self, field: str) -> str:
+        field_map = {
+            "base_price": "base_delivery_price",
+            "free_from_amount": "free_delivery_from",
+            "has_time_slots": "time_slots_enabled",
+            "delivery_description": "delivery_comment",
+            "pickup_description": "pickup_comment",
+        }
+        return field_map.get(field, field)
+
+    def _validate_update(self, *, delivery_settings, repository_data: dict) -> None:
+        non_nullable_fields = {"delivery_enabled", "pickup_enabled", "min_order_amount", "base_price", "has_time_slots", "currency"}
+        if any(field in repository_data and repository_data[field] is None for field in non_nullable_fields):
+            raise ValueError("Неверные настройки доставки")
+
+        if repository_data.get("min_order_amount") is not None and repository_data["min_order_amount"] < 0:
+            raise ValueError("Минимальная сумма заказа не может быть отрицательной")
+        if repository_data.get("base_price") is not None and repository_data["base_price"] < 0:
+            raise ValueError("Стоимость доставки не может быть отрицательной")
+        if repository_data.get("free_from_amount") is not None and repository_data["free_from_amount"] < 0:
+            raise ValueError("Сумма бесплатной доставки не может быть отрицательной")
+
+        currency = repository_data.get("currency")
+        if currency is not None and currency not in settings.admin_delivery.supported_currencies:
+            raise ValueError("Неподдерживаемая валюта")
+
+        next_min_order_amount = repository_data.get("min_order_amount", delivery_settings.min_order_amount)
+        next_free_from_amount = repository_data.get("free_from_amount", delivery_settings.free_from_amount)
+        if next_free_from_amount is not None and next_free_from_amount < next_min_order_amount:
+            raise ValueError("Сумма бесплатной доставки не может быть меньше минимальной суммы заказа")
+
+    async def _invalidate_cache(
+        self,
+        *,
+        redis_service: RedisService,
+        admin_delivery_cache_service: AdminDeliveryCacheService,
+        delivery_cache_service: DeliveryCacheService,
+    ) -> None:
+        await admin_delivery_cache_service.invalidate_settings(redis_service=redis_service)
+        await delivery_cache_service.invalidate_options(redis_service=redis_service)
+        await delivery_cache_service.invalidate_calculate(redis_service=redis_service)
+        await delivery_cache_service.invalidate_time_slots(redis_service=redis_service)
+        await redis_service.delete_by_pattern("cart:summary:*")
 
     def _build_response(self, *, delivery_settings) -> AdminDeliverySettingsResponse:
         return AdminDeliverySettingsResponse(

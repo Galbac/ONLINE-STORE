@@ -9,10 +9,12 @@ from source.api.dependencies import resolve_access_token
 from source.config.settings import settings
 from source.db.models.choises.enum import UserRole
 from source.errors.auth import AdminAuthAccessDeniedError
-from source.schemas.pydantic.delivery import AdminDeliverySettingsResponse
-from source.services.admin_auth import PermissionService
+from source.errors.delivery import EmptyDeliverySettingsUpdateError
+from source.schemas.pydantic.delivery import AdminDeliverySettingsResponse, AdminDeliverySettingsUpdateRequest
+from source.services.admin_auth import AuditLogService, PermissionService
 from source.services.admin_delivery import AdminDeliveryService
 from source.services.admin_delivery_cache import AdminDeliveryCacheService
+from source.services.delivery_cache import DeliveryCacheService
 
 
 class FakeRedisService:
@@ -32,12 +34,16 @@ class FakeRedisService:
     async def delete(self, key: str) -> None:
         self.deleted.append(key)
 
+    async def delete_by_pattern(self, pattern: str) -> None:
+        self.deleted.append(pattern)
+
 
 class FakeDeliverySettingsRepository:
     def __init__(self, delivery_settings=None) -> None:
         self.delivery_settings = delivery_settings
         self.get_or_create_calls = 0
         self.created_default = False
+        self.updated = []
 
     async def get_or_create_default(self, *, session):
         self.get_or_create_calls += 1
@@ -49,6 +55,13 @@ class FakeDeliverySettingsRepository:
         )
         return self.delivery_settings, True
 
+    async def update(self, *, session, delivery_settings, data: dict):
+        self.updated.append(data)
+        for field, value in data.items():
+            setattr(delivery_settings, field, value)
+        delivery_settings.updated_date = datetime(2026, 5, 12, 11, 0, 0)
+        return delivery_settings
+
 
 class FakeCommiter:
     def __init__(self) -> None:
@@ -56,6 +69,15 @@ class FakeCommiter:
 
     async def commit(self) -> None:
         self.committed = True
+
+
+class FakeAuditLogRepository:
+    def __init__(self) -> None:
+        self.logs = []
+
+    async def create(self, *, session, **data):
+        self.logs.append(data)
+        return SimpleNamespace(**data)
 
 
 def build_user(*, role=UserRole.ADMIN):
@@ -116,6 +138,41 @@ async def get_settings(
         redis_service=redis_service,
         repository=repository,
         commiter=commiter,
+    )
+
+
+async def update_settings(
+    *,
+    data: AdminDeliverySettingsUpdateRequest | None = None,
+    redis_service=None,
+    role=UserRole.ADMIN,
+    repository=None,
+    commiter=None,
+    audit_log_repository=None,
+):
+    redis_service = redis_service or FakeRedisService()
+    commiter = commiter or FakeCommiter()
+    repository = repository or FakeDeliverySettingsRepository(build_delivery_settings())
+    audit_log_repository = audit_log_repository or FakeAuditLogRepository()
+    response = await AdminDeliveryService().update_settings(
+        session=None,
+        redis_service=redis_service,
+        user=build_user(role=role),
+        data=data or AdminDeliverySettingsUpdateRequest(delivery_enabled=False),
+        commiter=commiter,
+        permission_service=PermissionService(),
+        admin_delivery_cache_service=AdminDeliveryCacheService(),
+        delivery_cache_service=DeliveryCacheService(),
+        delivery_settings_repository=repository,
+        audit_log_service=AuditLogService(),
+        admin_audit_log_repository=audit_log_repository,
+    )
+    return SimpleNamespace(
+        response=response,
+        redis_service=redis_service,
+        repository=repository,
+        commiter=commiter,
+        audit_log_repository=audit_log_repository,
     )
 
 
@@ -211,3 +268,74 @@ async def test_admin_delivery_settings_response_is_cached() -> None:
 
     assert "admin:delivery:settings" in result.redis_service.values
     assert result.redis_service.ttls["admin:delivery:settings"] == settings.admin_delivery.settings_cache_ttl_seconds
+
+
+@pytest.mark.asyncio
+async def test_admin_delivery_settings_update_delivery_enabled_success() -> None:
+    result = await update_settings(data=AdminDeliverySettingsUpdateRequest(delivery_enabled=False))
+
+    assert result.response.delivery_enabled is False
+    assert result.repository.updated[0] == {"delivery_enabled": False}
+    assert result.commiter.committed is True
+
+
+@pytest.mark.asyncio
+async def test_admin_delivery_settings_update_pickup_enabled_success() -> None:
+    result = await update_settings(data=AdminDeliverySettingsUpdateRequest(pickup_enabled=False))
+
+    assert result.response.pickup_enabled is False
+    assert result.repository.updated[0] == {"pickup_enabled": False}
+
+
+@pytest.mark.asyncio
+async def test_admin_delivery_settings_update_base_delivery_price_success() -> None:
+    result = await update_settings(data=AdminDeliverySettingsUpdateRequest(base_delivery_price=Decimal("350.00")))
+
+    assert result.response.base_delivery_price == Decimal("350.00")
+    assert result.repository.updated[0] == {"base_price": Decimal("350.00")}
+
+
+@pytest.mark.asyncio
+async def test_admin_delivery_settings_update_empty_body_error() -> None:
+    with pytest.raises(EmptyDeliverySettingsUpdateError):
+        await update_settings(data=AdminDeliverySettingsUpdateRequest())
+
+
+@pytest.mark.asyncio
+async def test_admin_delivery_settings_update_negative_price_error() -> None:
+    with pytest.raises(ValueError, match="Стоимость доставки не может быть отрицательной"):
+        await update_settings(data=AdminDeliverySettingsUpdateRequest(base_delivery_price=Decimal("-1.00")))
+
+
+@pytest.mark.asyncio
+async def test_admin_delivery_settings_update_free_delivery_less_than_min_error() -> None:
+    with pytest.raises(ValueError, match="Сумма бесплатной доставки"):
+        await update_settings(data=AdminDeliverySettingsUpdateRequest(min_order_amount=Decimal("1000.00"), free_delivery_from=Decimal("900.00")))
+
+
+@pytest.mark.asyncio
+async def test_admin_delivery_settings_update_without_permission_error() -> None:
+    with pytest.raises(AdminAuthAccessDeniedError):
+        await update_settings(role=UserRole.MANAGER)
+
+
+@pytest.mark.asyncio
+async def test_admin_delivery_settings_update_invalidates_cache() -> None:
+    result = await update_settings()
+
+    assert "admin:delivery:settings" in result.redis_service.deleted
+    assert "delivery:options" in result.redis_service.deleted
+    assert "delivery:calculate:*" in result.redis_service.deleted
+    assert "delivery:time_slots:*" in result.redis_service.deleted
+    assert "cart:summary:*" in result.redis_service.deleted
+
+
+@pytest.mark.asyncio
+async def test_admin_delivery_settings_update_audit_log_created() -> None:
+    result = await update_settings(data=AdminDeliverySettingsUpdateRequest(base_delivery_price=Decimal("350.00")))
+
+    assert result.audit_log_repository.logs[0]["event"] == "admin_delivery_settings_update"
+    assert result.audit_log_repository.logs[0]["details"]["changes"]["base_delivery_price"] == {
+        "old": "250.00",
+        "new": "350.00",
+    }

@@ -29,3 +29,17 @@ class DeliverySettingsRepository:
         await session.flush()
         await session.refresh(delivery_settings)
         return delivery_settings, True
+
+    async def update(
+        self,
+        *,
+        session: AsyncSession,
+        delivery_settings: DeliverySettings,
+        data: dict,
+    ) -> DeliverySettings:
+        for field, value in data.items():
+            setattr(delivery_settings, field, value)
+        session.add(delivery_settings)
+        await session.flush()
+        await session.refresh(delivery_settings)
+        return delivery_settings

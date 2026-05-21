@@ -11,6 +11,7 @@ from source.common.commiter import Commiter
 from source.db.models.user import User
 from source.errors.category import CategoryCycleError, CategoryNotFoundError, CategorySlugAlreadyExistsError
 from source.errors.category import CategoryHasActiveChildrenError, CategoryHasActiveProductsError
+from source.errors.delivery import EmptyDeliverySettingsUpdateError
 from source.errors.discount import DiscountConflictError, DiscountExpiredError, DiscountNotFoundError, EmptyDiscountUpdateError
 from source.errors.auth import (
     AdminAuthAccessDeniedError,
@@ -102,7 +103,7 @@ from source.schemas.pydantic.discount import (
     AdminDiscountUpdateRequest,
     MessageResponse as AdminDiscountMessageResponse,
 )
-from source.schemas.pydantic.delivery import AdminDeliverySettingsResponse
+from source.schemas.pydantic.delivery import AdminDeliverySettingsResponse, AdminDeliverySettingsUpdateRequest
 from source.schemas.pydantic.admin_role import AdminRoleListResponse
 from source.schemas.pydantic.admin_category import (
     AdminCategoryCreateRequest,
@@ -185,6 +186,7 @@ from source.services.admin_dashboard import AdminDashboardService
 from source.services.admin_dashboard_cache import AdminDashboardCacheService
 from source.services.admin_delivery import AdminDeliveryService
 from source.services.admin_delivery_cache import AdminDeliveryCacheService
+from source.services.delivery_cache import DeliveryCacheService
 from source.services.admin_order import AdminOrderService
 from source.services.admin_order_print import AdminOrderPrintService
 from source.services.admin_product import AdminProductService
@@ -246,6 +248,65 @@ async def get_admin_delivery_settings(
     except InactiveUserError as error:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Пользователь заблокирован") from error
     except Exception as error:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Внутренняя ошибка сервера") from error
+
+
+@router.patch("/delivery/settings", response_model=AdminDeliverySettingsResponse, status_code=status.HTTP_200_OK)
+@inject
+async def update_admin_delivery_settings(
+    request: Request,
+    payload: dict = Body(...),
+    token_payload: dict = Depends(verify_access_token),
+    current_user: User = Depends(require_permission("admin:delivery:update")),
+    session: FromDishka[AsyncSession] = None,
+    commiter: FromDishka[Commiter] = None,
+    redis_service: FromDishka[RedisService] = None,
+    admin_delivery_service: FromDishka[AdminDeliveryService] = None,
+    admin_delivery_cache_service: FromDishka[AdminDeliveryCacheService] = None,
+    delivery_cache_service: FromDishka[DeliveryCacheService] = None,
+    permission_service: FromDishka[PermissionService] = None,
+    delivery_settings_repository: FromDishka[DeliverySettingsRepository] = None,
+    audit_log_service: FromDishka[AuditLogService] = None,
+    admin_audit_log_repository: FromDishka[AdminAuditLogRepository] = None,
+) -> AdminDeliverySettingsResponse:
+    if token_payload.get("token_type") != "access":
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь не авторизован")
+    try:
+        return await admin_delivery_service.update_settings(
+            session=session,
+            redis_service=redis_service,
+            user=current_user,
+            data=AdminDeliverySettingsUpdateRequest.model_validate(payload),
+            commiter=commiter,
+            permission_service=permission_service,
+            admin_delivery_cache_service=admin_delivery_cache_service,
+            delivery_cache_service=delivery_cache_service,
+            delivery_settings_repository=delivery_settings_repository,
+            audit_log_service=audit_log_service,
+            admin_audit_log_repository=admin_audit_log_repository,
+            ip_address=request.client.host if request.client else None,
+            user_agent=request.headers.get("user-agent"),
+        )
+    except ValidationError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Неверные настройки доставки") from error
+    except EmptyDeliverySettingsUpdateError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Не передано ни одного поля для обновления") from error
+    except ValueError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)) from error
+    except InvalidCredentialsError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь не авторизован") from error
+    except AdminAuthAccessDeniedError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Недостаточно прав") from error
+    except InactiveUserError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Пользователь заблокирован") from error
+    except Exception as error:
+        await commiter.rollback()
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Внутренняя ошибка сервера") from error
 
 

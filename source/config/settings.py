@@ -403,8 +403,13 @@ class DeliveryTimeSlotsSettings(BaseSettings):
 
 class AdminDeliverySettings(BaseSettings):
     settings_cache_ttl_seconds: int = Field(default=600, alias="ADMIN_DELIVERY_SETTINGS_CACHE_TTL_SECONDS")
+    supported_currencies_raw: str = Field(default="RUB", alias="SUPPORTED_CURRENCIES")
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+    @property
+    def supported_currencies(self) -> set[str]:
+        return {currency.strip().upper() for currency in self.supported_currencies_raw.split(",") if currency.strip()}
 
 
 class DiscountsSettings(BaseSettings):
