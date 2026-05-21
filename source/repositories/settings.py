@@ -19,3 +19,17 @@ class SettingsRepository:
         await session.flush()
         await session.refresh(store_settings)
         return store_settings, True
+
+    async def update(
+        self,
+        *,
+        session: AsyncSession,
+        store_settings: StoreSettings,
+        data: dict,
+    ) -> StoreSettings:
+        for field, value in data.items():
+            setattr(store_settings, field, value)
+        session.add(store_settings)
+        await session.flush()
+        await session.refresh(store_settings)
+        return store_settings

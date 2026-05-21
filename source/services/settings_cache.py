@@ -27,6 +27,12 @@ class SettingsCacheService:
             ttl_seconds=ttl_seconds,
         )
 
-    async def invalidate_settings(self, *, redis_service: RedisService) -> None:
+    async def invalidate_admin_settings(self, *, redis_service: RedisService) -> None:
         await redis_service.delete(self._admin_settings_key)
+
+    async def invalidate_public_settings(self, *, redis_service: RedisService) -> None:
         await redis_service.delete(self._public_settings_key)
+
+    async def invalidate_settings(self, *, redis_service: RedisService) -> None:
+        await self.invalidate_admin_settings(redis_service=redis_service)
+        await self.invalidate_public_settings(redis_service=redis_service)

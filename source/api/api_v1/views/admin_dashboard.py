@@ -73,6 +73,7 @@ from source.errors.promo_code import (
     PromoCodeNotFoundError,
     PromoCodeUsageLimitExceededError,
 )
+from source.errors.settings import EmptyAdminSettingsUpdateError
 from source.errors.upload import UploadFileMissingError, UploadFileTooLargeError, UploadNotFoundError, UploadStorageError, UploadUnsupportedFormatError
 from source.repositories.admin_audit_log import AdminAuditLogRepository
 from source.repositories.address import AddressRepository
@@ -188,7 +189,7 @@ from source.schemas.pydantic.promo_code import (
     AdminPromoCodeUpdateRequest,
     MessageResponse as AdminPromoCodeMessageResponse,
 )
-from source.schemas.pydantic.settings import AdminSettingsResponse
+from source.schemas.pydantic.settings import AdminSettingsResponse, AdminSettingsUpdateRequest
 from source.schemas.pydantic.user import (
     AdminUserBlockRequest,
     AdminUserBlockResponse,
@@ -202,6 +203,7 @@ from source.schemas.pydantic.user import (
     AdminUserUpdateResponse,
 )
 from source.services.category_cache import CategoryCacheService
+from source.services.cart_cache import CartCacheService
 from source.services.admin_auth import AuditLogService, PermissionService
 from source.services.auth_cache import AuthCacheService
 from source.services.admin_auth_cache import AdminAuthCacheService
@@ -279,6 +281,70 @@ async def get_admin_settings(
     except InactiveUserError as error:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Пользователь заблокирован") from error
     except Exception as error:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Внутренняя ошибка сервера") from error
+
+
+@router.patch("/settings", response_model=AdminSettingsResponse, status_code=status.HTTP_200_OK)
+@inject
+async def update_admin_settings(
+    request: Request,
+    payload: dict = Body(...),
+    token_payload: dict = Depends(verify_access_token),
+    current_user: User = Depends(require_permission("admin:settings:update")),
+    session: FromDishka[AsyncSession] = None,
+    commiter: FromDishka[Commiter] = None,
+    redis_service: FromDishka[RedisService] = None,
+    admin_settings_service: FromDishka[AdminSettingsService] = None,
+    settings_cache_service: FromDishka[SettingsCacheService] = None,
+    delivery_cache_service: FromDishka[DeliveryCacheService] = None,
+    cart_cache_service: FromDishka[CartCacheService] = None,
+    permission_service: FromDishka[PermissionService] = None,
+    settings_repository: FromDishka[SettingsRepository] = None,
+    delivery_settings_repository: FromDishka[DeliverySettingsRepository] = None,
+    audit_log_service: FromDishka[AuditLogService] = None,
+    admin_audit_log_repository: FromDishka[AdminAuditLogRepository] = None,
+) -> AdminSettingsResponse:
+    if token_payload.get("token_type") != "access":
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь не авторизован")
+    try:
+        return await admin_settings_service.update_settings(
+            session=session,
+            redis_service=redis_service,
+            user=current_user,
+            data=AdminSettingsUpdateRequest.model_validate(payload),
+            commiter=commiter,
+            permission_service=permission_service,
+            settings_repository=settings_repository,
+            delivery_settings_repository=delivery_settings_repository,
+            settings_cache_service=settings_cache_service,
+            delivery_cache_service=delivery_cache_service,
+            cart_cache_service=cart_cache_service,
+            audit_log_service=audit_log_service,
+            admin_audit_log_repository=admin_audit_log_repository,
+            ip_address=request.client.host if request.client else None,
+            user_agent=request.headers.get("user-agent"),
+        )
+    except ValidationError as error:
+        await commiter.rollback()
+        detail = "Неверные входные данные"
+        first_error = error.errors()[0] if error.errors() else None
+        if first_error is not None and isinstance(first_error.get("msg"), str):
+            detail = first_error["msg"].replace("Value error, ", "", 1)
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=detail) from error
+    except EmptyAdminSettingsUpdateError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Не передано ни одного поля для обновления") from error
+    except InvalidCredentialsError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь не авторизован") from error
+    except AdminAuthAccessDeniedError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Недостаточно прав") from error
+    except InactiveUserError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Пользователь заблокирован") from error
+    except Exception as error:
+        await commiter.rollback()
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Внутренняя ошибка сервера") from error
 
 

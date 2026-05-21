@@ -80,6 +80,7 @@ ADMIN_PERMISSIONS_BY_ROLE = {
         "admin:staff:change_role",
         "admin:roles:read",
         "admin:settings:read",
+        "admin:settings:update",
     ],
     UserRole.MANAGER: [
         "admin:dashboard:read",
