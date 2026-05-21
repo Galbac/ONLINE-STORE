@@ -86,7 +86,7 @@ from source.services.favorite import FavoriteService
 from source.services.favorite_cache import FavoriteCacheService
 from source.services.health import HealthService
 from source.services.health_cache import HealthCacheService
-from source.services.one_c import CategorySyncService, IntegrationLogService, OneCImportService, OneCIntegrationService
+from source.services.one_c import CategorySyncService, IntegrationLogService, OneCImportService, OneCIntegrationService, ProductSyncService, SlugService
 from source.services.order import OrderService
 from source.services.order_cache import OrderCacheService
 from source.services.order_status import OrderStatusService
@@ -458,6 +458,14 @@ class AppProvider(Provider):
     )
     category_sync_service = provide(
         CategorySyncService,
+        scope=Scope.REQUEST,
+    )
+    product_sync_service = provide(
+        ProductSyncService,
+        scope=Scope.REQUEST,
+    )
+    slug_service = provide(
+        SlugService,
         scope=Scope.REQUEST,
     )
     integration_log_service = provide(

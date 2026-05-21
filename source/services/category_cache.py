@@ -143,3 +143,6 @@ class CategoryCacheService:
         await redis_service.delete_by_pattern("categories:tree:*")
         await redis_service.delete_by_pattern("categories:detail:*")
         await redis_service.delete_by_pattern("categories:slug:*")
+
+    async def invalidate_tree(self, *, redis_service: RedisService) -> None:
+        await redis_service.delete_by_pattern("categories:tree:*")

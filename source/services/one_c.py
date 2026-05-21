@@ -1,4 +1,5 @@
 import json
+from decimal import Decimal
 from datetime import datetime
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -9,6 +10,8 @@ from source.schemas.pydantic.one_c import (
     OneCCategoryImportItem,
     OneCCategoryImportRequest,
     OneCImportItemErrorResponse,
+    OneCProductImportItem,
+    OneCProductImportRequest,
     OneCImportResultResponse,
 )
 from source.utils.slug import generate_slug, normalize_slug
@@ -224,6 +227,203 @@ class CategorySyncService:
         return category.slug == generate_slug(category.name)
 
 
+class SlugService:
+    async def generate_unique_slug(
+        self,
+        *,
+        session,
+        product_repository,
+        name: str,
+        external_1c_id: str,
+        taken_slugs: dict[str, str | None] | None = None,
+    ) -> str:
+        base_slug = generate_slug(name) or f"product-{normalize_slug(external_1c_id)}"
+        taken_slugs = taken_slugs if taken_slugs is not None else {}
+        slug = base_slug
+        suffix = normalize_slug(external_1c_id).replace(" ", "-") or "1c"
+        counter = 2
+        while not await self._is_slug_available(
+            session=session,
+            product_repository=product_repository,
+            slug=slug,
+            external_1c_id=external_1c_id,
+            taken_slugs=taken_slugs,
+        ):
+            slug = f"{base_slug}-{suffix}"
+            if not await self._is_slug_available(
+                session=session,
+                product_repository=product_repository,
+                slug=slug,
+                external_1c_id=external_1c_id,
+                taken_slugs=taken_slugs,
+            ):
+                slug = f"{base_slug}-{suffix}-{counter}"
+                counter += 1
+        taken_slugs[slug] = external_1c_id
+        return slug
+
+    async def _is_slug_available(
+        self,
+        *,
+        session,
+        product_repository,
+        slug: str,
+        external_1c_id: str,
+        taken_slugs: dict[str, str | None],
+    ) -> bool:
+        if slug not in taken_slugs:
+            existing_products = await product_repository.get_by_slugs(session=session, slugs={slug})
+            for product in existing_products:
+                taken_slugs[product.slug] = product.external_1c_id
+        return slug not in taken_slugs or taken_slugs[slug] == external_1c_id
+
+
+class ProductSyncService:
+    async def upsert_products_from_1c(
+        self,
+        *,
+        session,
+        data: OneCProductImportRequest,
+        product_repository,
+        category_repository,
+        slug_service: SlugService,
+    ) -> OneCImportResultResponse:
+        now = datetime.now(settings.tz)
+        product_external_ids = {item.external_1c_id for item in data.items}
+        category_external_ids = {
+            item.category_external_1c_id
+            for item in data.items
+            if item.category_external_1c_id is not None
+        }
+        existing_products = await product_repository.get_by_external_1c_ids(
+            session=session,
+            external_1c_ids=product_external_ids,
+        )
+        products_by_external_id = {
+            product.external_1c_id: product
+            for product in existing_products
+            if product.external_1c_id is not None
+        }
+        categories = await category_repository.get_by_external_1c_ids(
+            session=session,
+            external_1c_ids=category_external_ids,
+        )
+        categories_by_external_id = {
+            category.external_1c_id: category
+            for category in categories
+            if category.external_1c_id is not None
+        }
+
+        candidate_slugs = {generate_slug(item.name) for item in data.items}
+        slug_products = await product_repository.get_by_slugs(session=session, slugs=candidate_slugs)
+        taken_slugs = {
+            product.slug: product.external_1c_id
+            for product in slug_products
+        }
+
+        errors: list[OneCImportItemErrorResponse] = []
+        skipped = 0
+        create_payloads: list[dict] = []
+        update_products = []
+        seen_external_ids: set[str] = set()
+
+        for item in data.items:
+            if item.external_1c_id in seen_external_ids:
+                skipped += 1
+                errors.append(
+                    OneCImportItemErrorResponse(
+                        external_1c_id=item.external_1c_id,
+                        message="Дублирующийся external_1c_id в batch",
+                        field="external_1c_id",
+                    ),
+                )
+                continue
+            seen_external_ids.add(item.external_1c_id)
+
+            category_id = None
+            if item.category_external_1c_id is not None:
+                category = categories_by_external_id.get(item.category_external_1c_id)
+                if category is None:
+                    skipped += 1
+                    errors.append(
+                        OneCImportItemErrorResponse(
+                            external_1c_id=item.external_1c_id,
+                            message="Категория из 1С не найдена",
+                            field="category_external_1c_id",
+                        ),
+                    )
+                    continue
+                category_id = category.id
+
+            product = products_by_external_id.get(item.external_1c_id)
+            if product is None:
+                slug = await slug_service.generate_unique_slug(
+                    session=session,
+                    product_repository=product_repository,
+                    name=item.name,
+                    external_1c_id=item.external_1c_id,
+                    taken_slugs=taken_slugs,
+                )
+                create_payloads.append(
+                    {
+                        "external_1c_id": item.external_1c_id,
+                        "name": item.name,
+                        "slug": slug,
+                        "article": item.sku,
+                        "barcode": item.barcode,
+                        "category_id": category_id,
+                        "unit": item.unit,
+                        "product_type": item.product_type,
+                        "quantity_step": item.quantity_step,
+                        "min_quantity": item.min_quantity,
+                        "price": Decimal("0"),
+                        "is_active": item.is_active,
+                        "is_available": item.is_available,
+                        "sync_status": "synced",
+                        "last_sync_at": now,
+                        "source": "1c",
+                    },
+                )
+                continue
+
+            if self._can_update_slug(product=product):
+                product.slug = await slug_service.generate_unique_slug(
+                    session=session,
+                    product_repository=product_repository,
+                    name=item.name,
+                    external_1c_id=item.external_1c_id,
+                    taken_slugs=taken_slugs,
+                )
+            product.name = item.name
+            product.article = item.sku
+            product.barcode = item.barcode
+            product.category_id = category_id
+            product.unit = item.unit
+            product.product_type = item.product_type
+            product.quantity_step = item.quantity_step
+            product.min_quantity = item.min_quantity
+            product.is_active = item.is_active
+            product.is_available = item.is_available
+            product.sync_status = "synced"
+            product.last_sync_at = now
+            product.source = "1c"
+            update_products.append(product)
+
+        created_products = await product_repository.bulk_create(session=session, items=create_payloads)
+        if update_products:
+            await product_repository.bulk_update(session=session, products=update_products)
+
+        return OneCImportResultResponse(
+            created=len(created_products),
+            updated=len({product.id for product in update_products if product.id is not None}),
+            skipped=skipped,
+            errors=errors,
+        )
+
+    def _can_update_slug(self, *, product) -> bool:
+        return product.slug == generate_slug(product.name)
+
+
 class IntegrationLogService:
     async def create_log(
         self,
@@ -233,12 +433,13 @@ class IntegrationLogService:
         status: str,
         request_payload: dict | None,
         response_payload: dict | None,
+        entity_type: str = "categories",
         error_message: str | None = None,
     ) -> None:
         await integration_log_repository.create(
             session=session,
             system="1c",
-            entity_type="categories",
+            entity_type=entity_type,
             entity_id=0,
             action="inbound_import",
             status=status,
@@ -282,4 +483,44 @@ class OneCImportService:
         await category_cache_service.invalidate_all(redis_service=redis_service)
         await admin_category_cache_service.invalidate_all(redis_service=redis_service)
         await product_cache_service.invalidate_lists(redis_service=redis_service)
+        return result
+
+    async def import_products(
+        self,
+        *,
+        session,
+        redis_service,
+        data: OneCProductImportRequest,
+        commiter,
+        product_repository,
+        category_repository,
+        integration_log_repository,
+        product_sync_service: ProductSyncService,
+        slug_service: SlugService,
+        integration_log_service: IntegrationLogService,
+        product_cache_service,
+        admin_product_cache_service,
+        category_cache_service,
+    ) -> OneCImportResultResponse:
+        result = await product_sync_service.upsert_products_from_1c(
+            session=session,
+            data=data,
+            product_repository=product_repository,
+            category_repository=category_repository,
+            slug_service=slug_service,
+        )
+        status = "partial" if result.errors else "success"
+        await integration_log_service.create_log(
+            session=session,
+            integration_log_repository=integration_log_repository,
+            status=status,
+            request_payload=data.model_dump(),
+            response_payload=result.model_dump(),
+            entity_type="products",
+        )
+        await commiter.commit()
+
+        await product_cache_service.invalidate_all(redis_service=redis_service)
+        await admin_product_cache_service.invalidate_all(redis_service=redis_service)
+        await category_cache_service.invalidate_tree(redis_service=redis_service)
         return result

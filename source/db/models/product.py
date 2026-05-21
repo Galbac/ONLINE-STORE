@@ -18,6 +18,8 @@ class Product(IdBigIntPkMixin, CreateUpdateMixin, Base):
     barcode: Mapped[str | None] = mapped_column(String(100), index=True)
     external_1c_id: Mapped[str | None] = mapped_column(String(100), index=True)
     sync_status: Mapped[str | None] = mapped_column(String(50), index=True)
+    last_sync_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    source: Mapped[str | None] = mapped_column(String(50), index=True)
     description: Mapped[str | None] = mapped_column(Text)
     search_keywords: Mapped[str | None] = mapped_column(Text)
     preview_image_url: Mapped[str | None] = mapped_column(String(500))

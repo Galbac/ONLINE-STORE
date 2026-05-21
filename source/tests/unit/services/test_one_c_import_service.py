@@ -4,13 +4,19 @@ from types import SimpleNamespace
 import pytest
 from fastapi import HTTPException
 
-from source.api.api_v1.views.integration import import_one_c_categories
+from source.api.api_v1.views.integration import import_one_c_categories, import_one_c_products
 from source.api.dependencies import verify_one_c_token
 from source.config.settings import settings
-from source.schemas.pydantic.one_c import OneCCategoryImportItem, OneCCategoryImportRequest
+from source.schemas.pydantic.one_c import (
+    OneCCategoryImportItem,
+    OneCCategoryImportRequest,
+    OneCProductImportItem,
+    OneCProductImportRequest,
+)
+from source.services.admin_product_cache import AdminProductCacheService
 from source.services.admin_category_cache import AdminCategoryCacheService
 from source.services.category_cache import CategoryCacheService
-from source.services.one_c import CategorySyncService, IntegrationLogService, OneCImportService
+from source.services.one_c import CategorySyncService, IntegrationLogService, OneCImportService, ProductSyncService, SlugService
 from source.services.product_cache import ProductCacheService
 
 
@@ -69,6 +75,34 @@ class FakeCategoryRepository:
         return categories
 
 
+class FakeProductRepository:
+    def __init__(self, products=None) -> None:
+        self.products = products or []
+        self.next_id = max([product.id for product in self.products], default=0) + 1
+
+    async def get_by_external_1c_ids(self, *, session, external_1c_ids: set[str]):
+        return [
+            product
+            for product in self.products
+            if product.external_1c_id in external_1c_ids
+        ]
+
+    async def get_by_slugs(self, *, session, slugs: set[str]):
+        return [product for product in self.products if product.slug in slugs]
+
+    async def bulk_create(self, *, session, items: list[dict]):
+        created = []
+        for item in items:
+            product = build_product(product_id=self.next_id, **item)
+            self.next_id += 1
+            self.products.append(product)
+            created.append(product)
+        return created
+
+    async def bulk_update(self, *, session, products: list):
+        return products
+
+
 class FakeIntegrationLogRepository:
     def __init__(self) -> None:
         self.logs: list[dict] = []
@@ -103,8 +137,77 @@ def build_category(
     )
 
 
+def build_product(
+    *,
+    product_id: int = 1,
+    external_1c_id: str = "prod-001",
+    name: str = "Яблоки",
+    slug: str = "yabloki",
+    article: str | None = None,
+    barcode: str | None = None,
+    category_id: int | None = None,
+    unit: str = "kg",
+    product_type: str = "weight",
+    quantity_step="0.5",
+    min_quantity="0.5",
+    price="0",
+    is_active: bool = True,
+    is_available: bool = True,
+    sync_status: str | None = "synced",
+    last_sync_at=None,
+    source: str | None = "1c",
+    description: str | None = None,
+    meta_title: str | None = None,
+    meta_description: str | None = None,
+):
+    return SimpleNamespace(
+        id=product_id,
+        external_1c_id=external_1c_id,
+        name=name,
+        slug=slug,
+        article=article,
+        barcode=barcode,
+        category_id=category_id,
+        unit=unit,
+        product_type=product_type,
+        quantity_step=quantity_step,
+        min_quantity=min_quantity,
+        price=price,
+        is_active=is_active,
+        is_available=is_available,
+        sync_status=sync_status,
+        last_sync_at=last_sync_at,
+        source=source,
+        description=description,
+        meta_title=meta_title,
+        meta_description=meta_description,
+    )
+
+
 def build_request(*items) -> OneCCategoryImportRequest:
     return OneCCategoryImportRequest(items=list(items))
+
+
+def build_product_request(*items) -> OneCProductImportRequest:
+    return OneCProductImportRequest(items=list(items))
+
+
+def build_product_item(**kwargs) -> OneCProductImportItem:
+    data = {
+        "external_1c_id": "prod-001",
+        "name": "Яблоки красные",
+        "sku": "APL-001",
+        "barcode": "4600000000001",
+        "category_external_1c_id": "cat-001",
+        "unit": "kg",
+        "product_type": "weight",
+        "quantity_step": "0.5",
+        "min_quantity": "0.5",
+        "is_active": True,
+        "is_available": True,
+    }
+    data.update(kwargs)
+    return OneCProductImportItem(**data)
 
 
 async def import_categories(*, data, repository=None, redis_service=None, integration_log_repository=None, commiter=None):
@@ -120,6 +223,32 @@ async def import_categories(*, data, repository=None, redis_service=None, integr
         category_cache_service=CategoryCacheService(),
         admin_category_cache_service=AdminCategoryCacheService(),
         product_cache_service=ProductCacheService(),
+    )
+
+
+async def import_products(
+    *,
+    data,
+    product_repository=None,
+    category_repository=None,
+    redis_service=None,
+    integration_log_repository=None,
+    commiter=None,
+):
+    return await OneCImportService().import_products(
+        session=object(),
+        redis_service=redis_service or FakeRedisService(),
+        data=data,
+        commiter=commiter or FakeCommiter(),
+        product_repository=product_repository or FakeProductRepository(),
+        category_repository=category_repository or FakeCategoryRepository([build_category()]),
+        integration_log_repository=integration_log_repository or FakeIntegrationLogRepository(),
+        product_sync_service=ProductSyncService(),
+        slug_service=SlugService(),
+        integration_log_service=IntegrationLogService(),
+        product_cache_service=ProductCacheService(),
+        admin_product_cache_service=AdminProductCacheService(),
+        category_cache_service=CategoryCacheService(),
     )
 
 
@@ -268,3 +397,173 @@ async def test_one_c_import_categories_creates_integration_log() -> None:
     assert log["entity_type"] == "categories"
     assert log["status"] == "success"
     assert "api_token" not in log["request_payload"]
+
+
+@pytest.mark.asyncio
+async def test_one_c_import_products_creates_new_products() -> None:
+    product_repository = FakeProductRepository()
+
+    response = await import_products(
+        product_repository=product_repository,
+        data=build_product_request(build_product_item()),
+    )
+
+    assert response.created == 1
+    assert response.updated == 0
+    product = product_repository.products[0]
+    assert product.external_1c_id == "prod-001"
+    assert product.article == "APL-001"
+    assert product.sync_status == "synced"
+    assert product.last_sync_at is not None
+    assert product.source == "1c"
+
+
+@pytest.mark.asyncio
+async def test_one_c_import_products_updates_existing_products() -> None:
+    product = build_product(name="Старое", slug="staroe")
+    product_repository = FakeProductRepository([product])
+
+    response = await import_products(
+        product_repository=product_repository,
+        data=build_product_request(build_product_item(name="Новое", product_type="piece", quantity_step="1", min_quantity="1")),
+    )
+
+    assert response.created == 0
+    assert response.updated == 1
+    assert product.name == "Новое"
+    assert product.article == "APL-001"
+    assert product.product_type == "piece"
+
+
+@pytest.mark.asyncio
+async def test_one_c_import_products_repeated_import_does_not_create_duplicates() -> None:
+    product_repository = FakeProductRepository()
+    data = build_product_request(build_product_item())
+
+    first = await import_products(product_repository=product_repository, data=data)
+    second = await import_products(product_repository=product_repository, data=data)
+
+    assert first.created == 1
+    assert second.created == 0
+    assert second.updated == 1
+    assert len(product_repository.products) == 1
+
+
+@pytest.mark.asyncio
+async def test_one_c_import_products_generates_slug() -> None:
+    product_repository = FakeProductRepository()
+
+    await import_products(
+        product_repository=product_repository,
+        data=build_product_request(build_product_item(name="Яблоки красные")),
+    )
+
+    assert product_repository.products[0].slug == "yabloki-krasnye"
+
+
+@pytest.mark.asyncio
+async def test_one_c_import_products_adds_slug_suffix_when_taken() -> None:
+    existing = build_product(product_id=1, external_1c_id="other", name="Яблоки красные", slug="yabloki-krasnye")
+    product_repository = FakeProductRepository([existing])
+
+    await import_products(
+        product_repository=product_repository,
+        data=build_product_request(build_product_item()),
+    )
+
+    created = next(product for product in product_repository.products if product.external_1c_id == "prod-001")
+    assert created.slug == "yabloki-krasnye-prod-001"
+
+
+@pytest.mark.asyncio
+async def test_one_c_import_products_links_category_by_external_1c_id() -> None:
+    category = build_category(category_id=10, external_1c_id="cat-001")
+    product_repository = FakeProductRepository()
+
+    await import_products(
+        product_repository=product_repository,
+        category_repository=FakeCategoryRepository([category]),
+        data=build_product_request(build_product_item()),
+    )
+
+    assert product_repository.products[0].category_id == 10
+
+
+@pytest.mark.asyncio
+async def test_one_c_import_products_unknown_category_returns_partial_error() -> None:
+    response = await import_products(
+        category_repository=FakeCategoryRepository([]),
+        data=build_product_request(build_product_item()),
+    )
+
+    assert response.created == 0
+    assert response.skipped == 1
+    assert response.errors[0].field == "category_external_1c_id"
+    assert response.errors[0].message == "Категория из 1С не найдена"
+
+
+@pytest.mark.asyncio
+async def test_one_c_import_products_empty_items_returns_400() -> None:
+    with pytest.raises(HTTPException) as exc_info:
+        await import_one_c_products.__dishka_orig_func__(
+            body=OneCProductImportRequest(items=[]),
+            _token=None,
+            config=SimpleNamespace(one_c=SimpleNamespace(import_max_batch_size=1000)),
+            commiter=FakeCommiter(),
+        )
+
+    assert exc_info.value.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_one_c_import_products_does_not_overwrite_manual_fields() -> None:
+    product = build_product(
+        description="Описание сайта",
+        meta_title="SEO title",
+        meta_description="SEO description",
+        slug="custom-slug",
+    )
+
+    await import_products(
+        product_repository=FakeProductRepository([product]),
+        data=build_product_request(build_product_item(name="Новое", product_type="piece", quantity_step="1", min_quantity="1")),
+    )
+
+    assert product.description == "Описание сайта"
+    assert product.meta_title == "SEO title"
+    assert product.meta_description == "SEO description"
+    assert product.slug == "custom-slug"
+
+
+@pytest.mark.asyncio
+async def test_one_c_import_products_invalidates_cache() -> None:
+    redis_service = FakeRedisService()
+
+    await import_products(
+        redis_service=redis_service,
+        data=build_product_request(build_product_item()),
+    )
+
+    assert "products:list:*" in redis_service.deleted_patterns
+    assert "products:detail:*" in redis_service.deleted_patterns
+    assert "products:slug:*" in redis_service.deleted_patterns
+    assert "products:search:*" in redis_service.deleted_patterns
+    assert "products:popular:*" in redis_service.deleted_patterns
+    assert "products:new:*" in redis_service.deleted_patterns
+    assert "admin:products:list:*" in redis_service.deleted_patterns
+    assert "categories:tree:*" in redis_service.deleted_patterns
+
+
+@pytest.mark.asyncio
+async def test_one_c_import_products_creates_integration_log() -> None:
+    integration_log_repository = FakeIntegrationLogRepository()
+
+    await import_products(
+        integration_log_repository=integration_log_repository,
+        data=build_product_request(build_product_item()),
+    )
+
+    log = integration_log_repository.logs[0]
+    assert log["system"] == "1c"
+    assert log["entity_type"] == "products"
+    assert log["status"] == "success"

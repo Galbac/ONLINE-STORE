@@ -1,4 +1,8 @@
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from decimal import Decimal
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from source.schemas.pydantic.product import ProductType
 
 
 class OneCCategoryImportItem(BaseModel):
@@ -24,6 +28,45 @@ class OneCCategoryImportRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     items: list[OneCCategoryImportItem]
+
+
+class OneCProductImportItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    external_1c_id: str = Field(min_length=1, max_length=100)
+    name: str = Field(min_length=1, max_length=255)
+    sku: str | None = Field(default=None, max_length=100)
+    barcode: str | None = Field(default=None, max_length=100)
+    category_external_1c_id: str | None = Field(default=None, max_length=100)
+    unit: str = Field(min_length=1, max_length=20)
+    product_type: ProductType
+    quantity_step: Decimal = Field(gt=0, max_digits=12, decimal_places=3)
+    min_quantity: Decimal = Field(gt=0, max_digits=12, decimal_places=3)
+    is_active: bool = True
+    is_available: bool = True
+
+    @field_validator("external_1c_id", "name", "sku", "barcode", "category_external_1c_id", "unit", mode="before")
+    @classmethod
+    def normalize_optional_string(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        normalized_value = " ".join(value.strip().split())
+        return normalized_value or None
+
+    @model_validator(mode="after")
+    def validate_quantity_rules(self) -> "OneCProductImportItem":
+        if self.product_type == "piece":
+            if self.quantity_step != self.quantity_step.to_integral_value():
+                raise ValueError("quantity_step for piece product must be integer")
+            if self.min_quantity != self.min_quantity.to_integral_value():
+                raise ValueError("min_quantity for piece product must be integer")
+        return self
+
+
+class OneCProductImportRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    items: list[OneCProductImportItem]
 
 
 class OneCImportItemErrorResponse(BaseModel):

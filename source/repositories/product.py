@@ -198,6 +198,49 @@ class ProductRepository:
             for product in result.scalars().all()
         ]
 
+    async def get_by_external_1c_ids(
+        self,
+        *,
+        session: AsyncSession,
+        external_1c_ids: set[str],
+    ) -> list[Product]:
+        if not external_1c_ids:
+            return []
+        result = await session.execute(select(Product).where(Product.external_1c_id.in_(external_1c_ids)))
+        return list(result.scalars().all())
+
+    async def get_by_slugs(self, *, session: AsyncSession, slugs: set[str]) -> list[Product]:
+        if not slugs:
+            return []
+        result = await session.execute(select(Product).where(Product.slug.in_(slugs)))
+        return list(result.scalars().all())
+
+    async def bulk_create(
+        self,
+        *,
+        session: AsyncSession,
+        items: list[dict],
+    ) -> list[Product]:
+        products = [Product(**item) for item in items]
+        session.add_all(products)
+        await session.flush()
+        for product in products:
+            await session.refresh(product)
+        return products
+
+    async def bulk_update(
+        self,
+        *,
+        session: AsyncSession,
+        products: list[Product],
+    ) -> list[Product]:
+        for product in products:
+            session.add(product)
+        await session.flush()
+        for product in products:
+            await session.refresh(product)
+        return products
+
     def _base_statement(self, *, query: ProductListQueryParams, category_ids: set[int] | None):
         statement = (
             select(Product, Category)
