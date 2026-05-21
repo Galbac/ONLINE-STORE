@@ -15,6 +15,9 @@ from source.schemas.pydantic.delivery import (
     AdminDeliveryZoneListResponse,
     AdminDeliveryZoneResponse,
     AdminDeliveryZoneUpdateRequest,
+    AdminPickupPointListQueryParams,
+    AdminPickupPointListResponse,
+    AdminPickupPointResponse,
     MessageResponse,
 )
 from source.services.admin_auth import STAFF_ROLES
@@ -132,6 +135,49 @@ class AdminDeliveryService:
             query_hash=query_hash,
             response=response,
             ttl_seconds=settings.admin_delivery.zones_cache_ttl_seconds,
+        )
+        return response
+
+    async def get_pickup_points(
+        self,
+        *,
+        session,
+        redis_service: RedisService,
+        user,
+        query: AdminPickupPointListQueryParams,
+        permission_service,
+        admin_delivery_cache_service: AdminDeliveryCacheService,
+        pickup_point_repository,
+    ) -> AdminPickupPointListResponse:
+        self._check_read_permission(user=user, permission_service=permission_service)
+
+        normalized_query = query.model_copy(
+            update={
+                "q": normalize_search_query(query.q) if query.q is not None else None,
+                "city": query.city.strip() if query.city is not None else None,
+            },
+        )
+        query_hash = build_query_hash(normalized_query.model_dump())
+        cached_pickup_points = await admin_delivery_cache_service.get_pickup_points(
+            redis_service=redis_service,
+            query_hash=query_hash,
+        )
+        if cached_pickup_points is not None:
+            return cached_pickup_points
+
+        pickup_points = await pickup_point_repository.get_list(session=session, query=normalized_query)
+        total = await pickup_point_repository.count(session=session, query=normalized_query)
+        response = AdminPickupPointListResponse.build(
+            items=[self._build_pickup_point_response(pickup_point=pickup_point) for pickup_point in pickup_points],
+            total=total,
+            page=normalized_query.page,
+            limit=normalized_query.limit,
+        )
+        await admin_delivery_cache_service.set_pickup_points(
+            redis_service=redis_service,
+            query_hash=query_hash,
+            response=response,
+            ttl_seconds=settings.admin_delivery.pickup_points_cache_ttl_seconds,
         )
         return response
 
@@ -511,4 +557,22 @@ class AdminDeliveryService:
             sort_order=zone.sort_order,
             created_at=zone.created_date,
             updated_at=zone.updated_date,
+        )
+
+    def _build_pickup_point_response(self, *, pickup_point) -> AdminPickupPointResponse:
+        return AdminPickupPointResponse(
+            id=pickup_point.id,
+            name=pickup_point.name,
+            city=pickup_point.city,
+            address=pickup_point.address,
+            working_hours=pickup_point.working_hours,
+            phone=pickup_point.phone,
+            description=pickup_point.description,
+            latitude=pickup_point.latitude,
+            longitude=pickup_point.longitude,
+            is_active=pickup_point.is_active,
+            is_deleted=pickup_point.is_deleted,
+            sort_order=pickup_point.sort_order,
+            created_at=pickup_point.created_date,
+            updated_at=pickup_point.updated_date,
         )

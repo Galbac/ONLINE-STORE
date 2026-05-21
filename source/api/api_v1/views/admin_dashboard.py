@@ -118,6 +118,8 @@ from source.schemas.pydantic.delivery import (
     AdminDeliveryZoneListResponse,
     AdminDeliveryZoneResponse,
     AdminDeliveryZoneUpdateRequest,
+    AdminPickupPointListQueryParams,
+    AdminPickupPointListResponse,
     MessageResponse as AdminDeliveryMessageResponse,
 )
 from source.schemas.pydantic.admin_role import AdminRoleListResponse
@@ -438,6 +440,59 @@ async def delete_admin_delivery_zone(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Зона доставки используется в активных заказах") from error
     except Exception as error:
         await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Внутренняя ошибка сервера") from error
+
+
+@router.get(
+    "/delivery/pickup-points",
+    response_model=AdminPickupPointListResponse,
+    status_code=status.HTTP_200_OK,
+)
+@inject
+async def get_admin_delivery_pickup_points(
+    page: int = Query(default=1, ge=1),
+    limit: int = Query(default=50, ge=1, le=100),
+    q: str | None = Query(default=None, min_length=1, max_length=100),
+    city: str | None = Query(default=None, min_length=1, max_length=100),
+    is_active: bool | None = Query(default=None),
+    include_deleted: bool = Query(default=False),
+    token_payload: dict = Depends(verify_access_token),
+    current_user: User = Depends(require_permission("admin:delivery:read")),
+    session: FromDishka[AsyncSession] = None,
+    redis_service: FromDishka[RedisService] = None,
+    admin_delivery_service: FromDishka[AdminDeliveryService] = None,
+    admin_delivery_cache_service: FromDishka[AdminDeliveryCacheService] = None,
+    permission_service: FromDishka[PermissionService] = None,
+    pickup_point_repository: FromDishka[PickupPointRepository] = None,
+) -> AdminPickupPointListResponse:
+    if token_payload.get("token_type") != "access":
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь не авторизован")
+    try:
+        return await admin_delivery_service.get_pickup_points(
+            session=session,
+            redis_service=redis_service,
+            user=current_user,
+            query=AdminPickupPointListQueryParams(
+                page=page,
+                limit=limit,
+                q=q,
+                city=city,
+                is_active=is_active,
+                include_deleted=include_deleted,
+            ),
+            permission_service=permission_service,
+            admin_delivery_cache_service=admin_delivery_cache_service,
+            pickup_point_repository=pickup_point_repository,
+        )
+    except ValidationError as error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Неверные query params") from error
+    except InvalidCredentialsError as error:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь не авторизован") from error
+    except AdminAuthAccessDeniedError as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Недостаточно прав") from error
+    except InactiveUserError as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Пользователь заблокирован") from error
+    except Exception as error:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Внутренняя ошибка сервера") from error
 
 

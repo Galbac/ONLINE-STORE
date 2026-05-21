@@ -1,8 +1,8 @@
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from source.db.models.pickup_point import PickupPoint
-from source.schemas.pydantic.delivery import PickupPointListQueryParams
+from source.schemas.pydantic.delivery import AdminPickupPointListQueryParams, PickupPointListQueryParams
 
 
 class PickupPointRepository:
@@ -15,6 +15,7 @@ class PickupPointRepository:
             select(PickupPoint).where(
                 PickupPoint.id == pickup_point_id,
                 PickupPoint.is_active.is_(True),
+                PickupPoint.is_deleted.is_(False),
             ),
         )
         return result.scalar_one_or_none()
@@ -23,7 +24,10 @@ class PickupPointRepository:
         result = await session.execute(
             select(func.count())
             .select_from(PickupPoint)
-            .where(PickupPoint.is_active.is_(True)),
+            .where(
+                PickupPoint.is_active.is_(True),
+                PickupPoint.is_deleted.is_(False),
+            ),
         )
         return int(result.scalar_one()) > 0
 
@@ -31,7 +35,7 @@ class PickupPointRepository:
         self,
         *,
         session: AsyncSession,
-        query: PickupPointListQueryParams,
+        query: PickupPointListQueryParams | AdminPickupPointListQueryParams,
     ) -> list[PickupPoint]:
         statement = self._base_statement(query=query)
         statement = statement.order_by(PickupPoint.sort_order.asc(), PickupPoint.name.asc()).limit(query.limit).offset(query.offset)
@@ -42,16 +46,32 @@ class PickupPointRepository:
         self,
         *,
         session: AsyncSession,
-        query: PickupPointListQueryParams,
+        query: PickupPointListQueryParams | AdminPickupPointListQueryParams,
     ) -> int:
         statement = self._base_statement(query=query, count=True)
         result = await session.execute(statement)
         return int(result.scalar_one())
 
-    def _base_statement(self, *, query: PickupPointListQueryParams, count: bool = False):
+    def _base_statement(self, *, query: PickupPointListQueryParams | AdminPickupPointListQueryParams, count: bool = False):
         statement = select(func.count(PickupPoint.id)) if count else select(PickupPoint)
-        if query.only_active:
-            statement = statement.where(PickupPoint.is_active.is_(True))
+        if isinstance(query, AdminPickupPointListQueryParams):
+            if not query.include_deleted:
+                statement = statement.where(PickupPoint.is_deleted.is_(False))
+            if query.q is not None:
+                search_pattern = f"%{query.q}%"
+                statement = statement.where(
+                    or_(
+                        PickupPoint.name.ilike(search_pattern),
+                        PickupPoint.address.ilike(search_pattern),
+                        PickupPoint.city.ilike(search_pattern),
+                    ),
+                )
+            if query.is_active is not None:
+                statement = statement.where(PickupPoint.is_active.is_(query.is_active))
+        else:
+            statement = statement.where(PickupPoint.is_deleted.is_(False))
+            if query.only_active:
+                statement = statement.where(PickupPoint.is_active.is_(True))
         if query.city is not None:
             statement = statement.where(func.lower(PickupPoint.city) == query.city.lower())
         return statement

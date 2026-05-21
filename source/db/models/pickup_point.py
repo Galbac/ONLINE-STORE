@@ -1,6 +1,7 @@
 from decimal import Decimal
+from datetime import datetime
 
-from sqlalchemy import Boolean, Integer, Numeric, String, Text
+from sqlalchemy import Boolean, DateTime, Integer, Numeric, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from source.db.models.base import Base
@@ -19,3 +20,5 @@ class PickupPoint(IdBigIntPkMixin, CreateUpdateMixin, Base):
     longitude: Mapped[Decimal | None] = mapped_column(Numeric(9, 6))
     sort_order: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true", nullable=False)
+    is_deleted: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false", nullable=False)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

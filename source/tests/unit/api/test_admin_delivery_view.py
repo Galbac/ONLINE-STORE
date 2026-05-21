@@ -6,6 +6,7 @@ from fastapi import HTTPException
 from source.api.api_v1.views.admin_dashboard import (
     create_admin_delivery_zone,
     delete_admin_delivery_zone,
+    get_admin_delivery_pickup_points,
     get_admin_delivery_settings,
     get_admin_delivery_zones,
     update_admin_delivery_zone,
@@ -108,6 +109,14 @@ class FakeOrderRepository:
         return False
 
 
+class FakePickupPointRepository:
+    async def get_list(self, *, session, query):
+        return []
+
+    async def count(self, *, session, query) -> int:
+        return 0
+
+
 def build_user(*, role=UserRole.CUSTOMER):
     return SimpleNamespace(id=1, role=role, is_active=True, is_deleted=False, is_blocked=False)
 
@@ -146,6 +155,28 @@ async def test_admin_delivery_zones_without_permission_returns_403() -> None:
             admin_delivery_cache_service=AdminDeliveryCacheService(),
             permission_service=PermissionService(),
             delivery_zone_repository=FakeDeliveryZoneRepository(),
+        )
+
+    assert exc_info.value.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_admin_delivery_pickup_points_without_permission_returns_403() -> None:
+    with pytest.raises(HTTPException) as exc_info:
+        await get_admin_delivery_pickup_points.__dishka_orig_func__(
+            page=1,
+            limit=50,
+            q=None,
+            city=None,
+            is_active=None,
+            include_deleted=False,
+            token_payload={"token_type": "access"},
+            current_user=build_user(role=UserRole.CONTENT_MANAGER),
+            redis_service=FakeRedisService(),
+            admin_delivery_service=AdminDeliveryService(),
+            admin_delivery_cache_service=AdminDeliveryCacheService(),
+            permission_service=PermissionService(),
+            pickup_point_repository=FakePickupPointRepository(),
         )
 
     assert exc_info.value.status_code == 403

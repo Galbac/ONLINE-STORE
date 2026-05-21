@@ -24,6 +24,8 @@ from source.schemas.pydantic.delivery import (
     AdminDeliveryZoneListQueryParams,
     AdminDeliveryZoneListResponse,
     AdminDeliveryZoneUpdateRequest,
+    AdminPickupPointListQueryParams,
+    AdminPickupPointListResponse,
 )
 from source.services.admin_auth import AuditLogService, PermissionService
 from source.services.admin_delivery import AdminDeliveryService
@@ -195,6 +197,46 @@ class FakeOrderRepository:
         return self.exists_active
 
 
+class FakePickupPointRepository:
+    def __init__(self, pickup_points=None) -> None:
+        self.pickup_points = pickup_points if pickup_points is not None else [
+            build_pickup_point(point_id=3, name="Магазин на Арбате", city="Москва", address="ул. Арбат, 1", sort_order=20),
+            build_pickup_point(point_id=1, name="Магазин на Тверской", city="Москва", address="ул. Тверская, 10", description="Вход со стороны улицы", sort_order=10),
+            build_pickup_point(point_id=2, name="Пункт Казань", city="Казань", address="ул. Баумана, 5", is_active=False, sort_order=15),
+            build_pickup_point(point_id=4, name="Удалённый пункт", city="Москва", address="ул. Старая, 1", is_deleted=True, sort_order=1),
+        ]
+        self.get_list_calls = 0
+        self.count_calls = 0
+
+    async def get_list(self, *, session, query: AdminPickupPointListQueryParams):
+        self.get_list_calls += 1
+        pickup_points = self._filter(query=query)
+        pickup_points.sort(key=lambda pickup_point: (pickup_point.sort_order, pickup_point.name))
+        return pickup_points[query.offset:query.offset + query.limit]
+
+    async def count(self, *, session, query: AdminPickupPointListQueryParams) -> int:
+        self.count_calls += 1
+        return len(self._filter(query=query))
+
+    def _filter(self, *, query: AdminPickupPointListQueryParams):
+        pickup_points = list(self.pickup_points)
+        if not query.include_deleted:
+            pickup_points = [pickup_point for pickup_point in pickup_points if not pickup_point.is_deleted]
+        if query.city is not None:
+            pickup_points = [pickup_point for pickup_point in pickup_points if pickup_point.city.lower() == query.city.lower()]
+        if query.is_active is not None:
+            pickup_points = [pickup_point for pickup_point in pickup_points if pickup_point.is_active is query.is_active]
+        if query.q is not None:
+            q = query.q.lower()
+            pickup_points = [
+                pickup_point for pickup_point in pickup_points
+                if q in pickup_point.name.lower()
+                or q in pickup_point.address.lower()
+                or q in pickup_point.city.lower()
+            ]
+        return pickup_points
+
+
 def build_user(*, role=UserRole.ADMIN):
     return SimpleNamespace(
         id=1,
@@ -260,6 +302,36 @@ def build_delivery_zone(
     )
 
 
+def build_pickup_point(
+    *,
+    point_id: int,
+    name: str,
+    city: str,
+    address: str,
+    description: str | None = None,
+    is_active: bool = True,
+    is_deleted: bool = False,
+    sort_order: int = 10,
+):
+    return SimpleNamespace(
+        id=point_id,
+        name=name,
+        city=city,
+        address=address,
+        working_hours="Пн-Вс 09:00-22:00",
+        phone="+79990000000",
+        description=description,
+        latitude=Decimal("55.755800"),
+        longitude=Decimal("37.617300"),
+        is_active=is_active,
+        is_deleted=is_deleted,
+        sort_order=sort_order,
+        deleted_at=None,
+        created_date=datetime(2026, 5, 12, 10, 0, 0),
+        updated_date=datetime(2026, 5, 12, 10, 0, 0),
+    )
+
+
 async def get_settings(
     *,
     redis_service=None,
@@ -304,6 +376,31 @@ async def get_zones(
         permission_service=PermissionService(),
         admin_delivery_cache_service=AdminDeliveryCacheService(),
         delivery_zone_repository=repository,
+    )
+    return SimpleNamespace(
+        response=response,
+        redis_service=redis_service,
+        repository=repository,
+    )
+
+
+async def get_pickup_points(
+    *,
+    query: AdminPickupPointListQueryParams | None = None,
+    redis_service=None,
+    role=UserRole.ADMIN,
+    repository=None,
+):
+    redis_service = redis_service or FakeRedisService()
+    repository = repository or FakePickupPointRepository()
+    response = await AdminDeliveryService().get_pickup_points(
+        session=None,
+        redis_service=redis_service,
+        user=build_user(role=role),
+        query=query or AdminPickupPointListQueryParams(),
+        permission_service=PermissionService(),
+        admin_delivery_cache_service=AdminDeliveryCacheService(),
+        pickup_point_repository=repository,
     )
     return SimpleNamespace(
         response=response,
@@ -740,6 +837,100 @@ async def test_admin_delivery_zones_without_permission_error() -> None:
 async def test_admin_delivery_zones_include_deleted_requires_extra_permission() -> None:
     with pytest.raises(AdminAuthAccessDeniedError):
         await get_zones(role=UserRole.MANAGER, query=AdminDeliveryZoneListQueryParams(include_deleted=True))
+
+
+@pytest.mark.asyncio
+async def test_admin_pickup_points_from_postgres_success() -> None:
+    result = await get_pickup_points()
+
+    assert [item.name for item in result.response.items] == ["Магазин на Тверской", "Пункт Казань", "Магазин на Арбате"]
+    assert result.response.total == 3
+    assert result.response.page == 1
+    assert result.response.limit == 50
+    assert result.response.pages == 1
+    assert result.response.items[0].address == "ул. Тверская, 10"
+    assert result.response.items[0].description == "Вход со стороны улицы"
+    assert settings.admin_delivery.pickup_points_cache_ttl_seconds == 300
+    assert 300 in result.redis_service.ttls.values()
+
+
+@pytest.mark.asyncio
+async def test_admin_pickup_points_from_redis_cache() -> None:
+    query = AdminPickupPointListQueryParams(city="Москва")
+    cached_response = AdminPickupPointListResponse.build(
+        items=[],
+        total=0,
+        page=1,
+        limit=50,
+    )
+    redis_service = FakeRedisService()
+    redis_service.values[f"admin:delivery:pickup_points:{build_query_hash(query.model_dump())}"] = cached_response.model_dump_json()
+    repository = FakePickupPointRepository()
+
+    result = await get_pickup_points(query=query, redis_service=redis_service, repository=repository)
+
+    assert result.response == cached_response
+    assert repository.get_list_calls == 0
+    assert repository.count_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_admin_pickup_points_filter_city() -> None:
+    result = await get_pickup_points(query=AdminPickupPointListQueryParams(city=" Казань "))
+
+    assert [item.city for item in result.response.items] == ["Казань"]
+
+
+@pytest.mark.asyncio
+async def test_admin_pickup_points_filter_is_active() -> None:
+    result = await get_pickup_points(query=AdminPickupPointListQueryParams(is_active=False))
+
+    assert [item.name for item in result.response.items] == ["Пункт Казань"]
+
+
+@pytest.mark.asyncio
+async def test_admin_pickup_points_search_q() -> None:
+    result = await get_pickup_points(query=AdminPickupPointListQueryParams(q=" тверская "))
+
+    assert [item.name for item in result.response.items] == ["Магазин на Тверской"]
+
+
+@pytest.mark.asyncio
+async def test_admin_pickup_points_include_deleted_false_hides_deleted() -> None:
+    result = await get_pickup_points()
+
+    assert all(not item.is_deleted for item in result.response.items)
+    assert "Удалённый пункт" not in [item.name for item in result.response.items]
+
+
+@pytest.mark.asyncio
+async def test_admin_pickup_points_pagination() -> None:
+    result = await get_pickup_points(query=AdminPickupPointListQueryParams(page=2, limit=2))
+
+    assert [item.name for item in result.response.items] == ["Магазин на Арбате"]
+    assert result.response.total == 3
+    assert result.response.pages == 2
+
+
+@pytest.mark.asyncio
+async def test_admin_pickup_points_sort_by_sort_order_and_name() -> None:
+    repository = FakePickupPointRepository(
+        [
+            build_pickup_point(point_id=1, name="Ясенево", city="Москва", address="ул. Ясная, 1", sort_order=10),
+            build_pickup_point(point_id=2, name="Арбат", city="Москва", address="ул. Арбат, 1", sort_order=10),
+            build_pickup_point(point_id=3, name="Замоскворечье", city="Москва", address="ул. Малая, 1", sort_order=5),
+        ],
+    )
+
+    result = await get_pickup_points(repository=repository)
+
+    assert [item.name for item in result.response.items] == ["Замоскворечье", "Арбат", "Ясенево"]
+
+
+@pytest.mark.asyncio
+async def test_admin_pickup_points_without_permission_error() -> None:
+    with pytest.raises(AdminAuthAccessDeniedError):
+        await get_pickup_points(role=UserRole.CONTENT_MANAGER)
 
 
 @pytest.mark.asyncio

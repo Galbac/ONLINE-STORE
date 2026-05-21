@@ -1,4 +1,4 @@
-from source.schemas.pydantic.delivery import AdminDeliverySettingsResponse, AdminDeliveryZoneListResponse
+from source.schemas.pydantic.delivery import AdminDeliverySettingsResponse, AdminDeliveryZoneListResponse, AdminPickupPointListResponse
 from source.services.redis import RedisService
 
 
@@ -7,6 +7,9 @@ class AdminDeliveryCacheService:
 
     def _zones_key(self, *, query_hash: str) -> str:
         return f"admin:delivery:zones:{query_hash}"
+
+    def _pickup_points_key(self, *, query_hash: str) -> str:
+        return f"admin:delivery:pickup_points:{query_hash}"
 
     async def get_settings(self, *, redis_service: RedisService) -> AdminDeliverySettingsResponse | None:
         cached_settings = await redis_service.get(self._settings_key)
@@ -61,3 +64,33 @@ class AdminDeliveryCacheService:
 
     async def invalidate_zones(self, *, redis_service: RedisService) -> None:
         await redis_service.delete_by_pattern("admin:delivery:zones:*")
+
+    async def get_pickup_points(
+        self,
+        *,
+        redis_service: RedisService,
+        query_hash: str,
+    ) -> AdminPickupPointListResponse | None:
+        cached_pickup_points = await redis_service.get(self._pickup_points_key(query_hash=query_hash))
+        if cached_pickup_points is None:
+            return None
+        if isinstance(cached_pickup_points, bytes):
+            cached_pickup_points = cached_pickup_points.decode("utf-8")
+        return AdminPickupPointListResponse.model_validate_json(cached_pickup_points)
+
+    async def set_pickup_points(
+        self,
+        *,
+        redis_service: RedisService,
+        query_hash: str,
+        response: AdminPickupPointListResponse,
+        ttl_seconds: int,
+    ) -> None:
+        await redis_service.set(
+            self._pickup_points_key(query_hash=query_hash),
+            response.model_dump_json(),
+            ttl_seconds=ttl_seconds,
+        )
+
+    async def invalidate_pickup_points(self, *, redis_service: RedisService) -> None:
+        await redis_service.delete_by_pattern("admin:delivery:pickup_points:*")

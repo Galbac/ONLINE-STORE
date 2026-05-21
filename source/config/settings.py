@@ -404,6 +404,7 @@ class DeliveryTimeSlotsSettings(BaseSettings):
 class AdminDeliverySettings(BaseSettings):
     settings_cache_ttl_seconds: int = Field(default=600, alias="ADMIN_DELIVERY_SETTINGS_CACHE_TTL_SECONDS")
     zones_cache_ttl_seconds: int = Field(default=300, alias="ADMIN_DELIVERY_ZONES_CACHE_TTL_SECONDS")
+    pickup_points_cache_ttl_seconds: int = Field(default=300, alias="ADMIN_DELIVERY_PICKUP_POINTS_CACHE_TTL_SECONDS")
     supported_currencies_raw: str = Field(default="RUB", alias="SUPPORTED_CURRENCIES")
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
