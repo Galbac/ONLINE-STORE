@@ -575,6 +575,61 @@ class AdminDiscountService:
         comparable_now = now if discount.ends_at.tzinfo is not None else now.replace(tzinfo=None)
         return discount.ends_at < comparable_now
 
+    async def deactivate_discount(
+        self,
+        *,
+        session,
+        redis_service: RedisService,
+        user,
+        discount_id: int,
+        commiter,
+        permission_service,
+        discount_repository,
+        audit_log_service,
+        admin_audit_log_repository,
+        admin_discount_cache_service,
+        ip_address: str | None = None,
+        user_agent: str | None = None,
+    ) -> AdminDiscountStatusResponse:
+        self._check_update_permission(user=user, permission_service=permission_service)
+
+        discount = await discount_repository.admin_get_by_id(session=session, discount_id=discount_id)
+        if discount is None:
+            raise DiscountNotFoundError
+
+        deactivated_discount = await discount_repository.update_active(
+            session=session,
+            discount=discount,
+            is_active=False,
+        )
+        await audit_log_service.log_action(
+            session=session,
+            audit_log_repository=admin_audit_log_repository,
+            user_id=user.id,
+            login=getattr(user, "email", None) or getattr(user, "phone", None) or str(user.id),
+            event="admin_discount_deactivate",
+            status="success",
+            ip_address=ip_address,
+            user_agent=user_agent,
+            details={
+                "discount_id": deactivated_discount.id,
+                "name": deactivated_discount.name,
+                "type": deactivated_discount.type,
+            },
+        )
+        await commiter.commit()
+
+        await self._invalidate_discount_cache(
+            redis_service=redis_service,
+            admin_discount_cache_service=admin_discount_cache_service,
+        )
+
+        return AdminDiscountStatusResponse(
+            id=deactivated_discount.id,
+            is_active=deactivated_discount.is_active,
+            message="Скидка отключена",
+        )
+
     def _resolve_discount_type(
         self,
         *,

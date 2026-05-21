@@ -477,6 +477,40 @@ async def activate_discount(
     )
 
 
+async def deactivate_discount(
+    *,
+    discount_id: int = 1,
+    redis_service=None,
+    role=UserRole.ADMIN,
+    discount_repository=None,
+    audit_log_repository=None,
+    commiter=None,
+):
+    redis_service = redis_service or FakeRedisService()
+    audit_log_repository = audit_log_repository or FakeAuditLogRepository()
+    commiter = commiter or FakeCommiter()
+    discount_repository = discount_repository or FakeDiscountRepository()
+    response = await AdminDiscountService().deactivate_discount(
+        session=None,
+        redis_service=redis_service,
+        user=build_user(role=role),
+        discount_id=discount_id,
+        commiter=commiter,
+        permission_service=PermissionService(),
+        discount_repository=discount_repository,
+        audit_log_service=AuditLogService(),
+        admin_audit_log_repository=audit_log_repository,
+        admin_discount_cache_service=AdminDiscountCacheService(),
+    )
+    return SimpleNamespace(
+        response=response,
+        redis_service=redis_service,
+        audit_log_repository=audit_log_repository,
+        commiter=commiter,
+        discount_repository=discount_repository,
+    )
+
+
 @pytest.mark.asyncio
 async def test_admin_get_discounts_success() -> None:
     response = await get_discounts()
@@ -924,3 +958,59 @@ async def test_admin_activate_discount_invalidates_cache() -> None:
     assert "products:slug:*" in result.redis_service.deleted_patterns
     assert "products:discounted:*" in result.redis_service.deleted_patterns
     assert "cart:*" in result.redis_service.deleted_patterns
+
+
+@pytest.mark.asyncio
+async def test_admin_deactivate_discount_success() -> None:
+    result = await deactivate_discount()
+
+    assert result.response.id == 1
+    assert result.response.is_active is False
+    assert result.response.message == "Скидка отключена"
+    assert result.discount_repository.active_updates == [(1, False)]
+    assert result.commiter.committed is True
+
+
+@pytest.mark.asyncio
+async def test_admin_deactivate_discount_repeat_success() -> None:
+    repository = FakeDiscountRepository(
+        discounts=[
+            build_discount(discount_id=1, name="Скидка на яблоки", is_active=False),
+        ],
+    )
+
+    result = await deactivate_discount(discount_repository=repository)
+
+    assert result.response.is_active is False
+    assert repository.active_updates == [(1, False)]
+
+
+@pytest.mark.asyncio
+async def test_admin_deactivate_discount_not_found_error() -> None:
+    with pytest.raises(DiscountNotFoundError):
+        await deactivate_discount(discount_id=999)
+
+
+@pytest.mark.asyncio
+async def test_admin_deactivate_discount_invalidates_cache() -> None:
+    result = await deactivate_discount()
+
+    assert "admin:discounts:*" in result.redis_service.deleted_patterns
+    assert "discounts:*" in result.redis_service.deleted_patterns
+    assert "products:list:*" in result.redis_service.deleted_patterns
+    assert "products:detail:*" in result.redis_service.deleted_patterns
+    assert "products:slug:*" in result.redis_service.deleted_patterns
+    assert "products:discounted:*" in result.redis_service.deleted_patterns
+    assert "cart:*" in result.redis_service.deleted_patterns
+
+
+@pytest.mark.asyncio
+async def test_admin_deactivate_discount_audit_log_created() -> None:
+    result = await deactivate_discount()
+
+    assert result.audit_log_repository.logs[0]["event"] == "admin_discount_deactivate"
+    assert result.audit_log_repository.logs[0]["details"] == {
+        "discount_id": 1,
+        "name": "Скидка на яблоки",
+        "type": "product",
+    }
