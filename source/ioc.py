@@ -42,6 +42,7 @@ from source.repositories.product_availability_log import ProductAvailabilityLogR
 from source.repositories.product_image import ProductImageRepository
 from source.repositories.promo_code import PromoCodeCategoryRepository, PromoCodeProductRepository, PromoCodeRepository, PromoCodeUsageRepository
 from source.repositories.stock_movement import StockMovementRepository
+from source.repositories.settings import SettingsRepository
 from source.repositories.user import UserRepository
 from source.repositories.upload import UploadRepository
 from source.services.auth_cache import AuthCacheService
@@ -65,6 +66,7 @@ from source.services.admin_promo_code import AdminPromoCodeService
 from source.services.admin_staff import AdminStaffService
 from source.services.admin_staff_cache import AdminStaffCacheService
 from source.services.admin_user import AdminUserService
+from source.services.admin_settings import AdminSettingsService
 from source.services.auth import AuthService
 from source.services.cart import CartCalculatorService, CartService
 from source.services.cart_cache import CartCacheService
@@ -99,6 +101,7 @@ from source.services.promo_code import PromoCodeService
 from source.services.user import UserService
 from source.services.user_cache import UserCacheService
 from source.services.storage import StorageService
+from source.services.settings_cache import SettingsCacheService
 from source.services.upload import UploadService
 from source.services.upload_cache import UploadCacheService
 
@@ -303,6 +306,10 @@ class AppProvider(Provider):
         DeliverySettingsRepository,
         scope=Scope.REQUEST,
     )
+    settings_repository = provide(
+        SettingsRepository,
+        scope=Scope.REQUEST,
+    )
     delivery_time_slot_repository = provide(
         DeliveryTimeSlotRepository,
         scope=Scope.REQUEST,
@@ -465,6 +472,14 @@ class AppProvider(Provider):
     )
     admin_delivery_cache_service = provide(
         AdminDeliveryCacheService,
+        scope=Scope.REQUEST,
+    )
+    admin_settings_service = provide(
+        AdminSettingsService,
+        scope=Scope.REQUEST,
+    )
+    settings_cache_service = provide(
+        SettingsCacheService,
         scope=Scope.REQUEST,
     )
     admin_discount_service = provide(

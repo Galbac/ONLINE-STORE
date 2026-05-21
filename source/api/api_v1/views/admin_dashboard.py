@@ -95,6 +95,7 @@ from source.repositories.promo_code import PromoCodeRepository
 from source.repositories.refresh_token import RefreshTokenRepository
 from source.repositories.role import PermissionRepository, RoleRepository, UserRoleRepository
 from source.repositories.stock_movement import StockMovementRepository
+from source.repositories.settings import SettingsRepository
 from source.repositories.upload import UploadRepository
 from source.repositories.user import UserRepository
 from source.config.settings import Settings
@@ -187,6 +188,7 @@ from source.schemas.pydantic.promo_code import (
     AdminPromoCodeUpdateRequest,
     MessageResponse as AdminPromoCodeMessageResponse,
 )
+from source.schemas.pydantic.settings import AdminSettingsResponse
 from source.schemas.pydantic.user import (
     AdminUserBlockRequest,
     AdminUserBlockResponse,
@@ -221,6 +223,7 @@ from source.services.admin_promo_code import AdminPromoCodeService
 from source.services.admin_staff import AdminStaffService
 from source.services.admin_staff_cache import AdminStaffCacheService
 from source.services.admin_user import AdminUserService
+from source.services.admin_settings import AdminSettingsService
 from source.services.product_cache import ProductCacheService
 from source.services.order_cache import OrderCacheService
 from source.services.order_status import OrderStatusService
@@ -234,11 +237,49 @@ from source.services.redis import RedisService
 from source.services.refresh_token import RefreshTokenService
 from source.services.role import RoleService
 from source.services.storage import StorageService
+from source.services.settings_cache import SettingsCacheService
 from source.services.stock import StockMovementService, StockService
 from source.services.upload import UploadService
 from source.services.user_cache import UserCacheService
 
 router = APIRouter(prefix="/admin", tags=["admin-dashboard"])
+
+
+@router.get("/settings", response_model=AdminSettingsResponse, status_code=status.HTTP_200_OK)
+@inject
+async def get_admin_settings(
+    token_payload: dict = Depends(verify_access_token),
+    current_user: User = Depends(require_permission("admin:settings:read")),
+    session: FromDishka[AsyncSession] = None,
+    commiter: FromDishka[Commiter] = None,
+    redis_service: FromDishka[RedisService] = None,
+    admin_settings_service: FromDishka[AdminSettingsService] = None,
+    settings_cache_service: FromDishka[SettingsCacheService] = None,
+    permission_service: FromDishka[PermissionService] = None,
+    settings_repository: FromDishka[SettingsRepository] = None,
+    delivery_settings_repository: FromDishka[DeliverySettingsRepository] = None,
+) -> AdminSettingsResponse:
+    if token_payload.get("token_type") != "access":
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь не авторизован")
+    try:
+        return await admin_settings_service.get_settings(
+            session=session,
+            redis_service=redis_service,
+            user=current_user,
+            commiter=commiter,
+            permission_service=permission_service,
+            settings_repository=settings_repository,
+            delivery_settings_repository=delivery_settings_repository,
+            settings_cache_service=settings_cache_service,
+        )
+    except InvalidCredentialsError as error:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь не авторизован") from error
+    except AdminAuthAccessDeniedError as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Недостаточно прав") from error
+    except InactiveUserError as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Пользователь заблокирован") from error
+    except Exception as error:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Внутренняя ошибка сервера") from error
 
 
 @router.post(
