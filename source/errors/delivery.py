@@ -52,3 +52,7 @@ class EmptyDeliveryZoneUpdateError(Exception):
 
 class DeliveryZoneActiveOrdersError(Exception):
     pass
+
+
+class PickupPointAlreadyExistsError(Exception):
+    pass

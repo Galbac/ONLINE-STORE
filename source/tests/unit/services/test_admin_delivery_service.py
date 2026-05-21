@@ -16,6 +16,7 @@ from source.errors.delivery import (
     DeliveryZoneNotFoundError,
     EmptyDeliverySettingsUpdateError,
     EmptyDeliveryZoneUpdateError,
+    PickupPointAlreadyExistsError,
 )
 from source.schemas.pydantic.delivery import (
     AdminDeliverySettingsResponse,
@@ -24,6 +25,7 @@ from source.schemas.pydantic.delivery import (
     AdminDeliveryZoneListQueryParams,
     AdminDeliveryZoneListResponse,
     AdminDeliveryZoneUpdateRequest,
+    AdminPickupPointCreateRequest,
     AdminPickupPointListQueryParams,
     AdminPickupPointListResponse,
 )
@@ -198,15 +200,42 @@ class FakeOrderRepository:
 
 
 class FakePickupPointRepository:
-    def __init__(self, pickup_points=None) -> None:
+    def __init__(self, pickup_points=None, existing_pickup_point=None) -> None:
         self.pickup_points = pickup_points if pickup_points is not None else [
             build_pickup_point(point_id=3, name="Магазин на Арбате", city="Москва", address="ул. Арбат, 1", sort_order=20),
             build_pickup_point(point_id=1, name="Магазин на Тверской", city="Москва", address="ул. Тверская, 10", description="Вход со стороны улицы", sort_order=10),
             build_pickup_point(point_id=2, name="Пункт Казань", city="Казань", address="ул. Баумана, 5", is_active=False, sort_order=15),
             build_pickup_point(point_id=4, name="Удалённый пункт", city="Москва", address="ул. Старая, 1", is_deleted=True, sort_order=1),
         ]
+        self.existing_pickup_point = existing_pickup_point
         self.get_list_calls = 0
         self.count_calls = 0
+        self.created = []
+
+    async def get_by_city_and_address(self, *, session, city: str, address: str):
+        if self.existing_pickup_point is not None:
+            return self.existing_pickup_point
+        for pickup_point in self.pickup_points:
+            if pickup_point.city.lower() == city.lower() and pickup_point.address.lower() == address.lower() and not pickup_point.is_deleted:
+                return pickup_point
+        return None
+
+    async def create(self, *, session, data: AdminPickupPointCreateRequest):
+        pickup_point = build_pickup_point(
+            point_id=99,
+            name=data.name,
+            city=data.city,
+            address=data.address,
+            description=data.description,
+            is_active=data.is_active,
+            sort_order=data.sort_order,
+        )
+        pickup_point.working_hours = data.working_hours
+        pickup_point.phone = data.phone
+        pickup_point.latitude = data.latitude
+        pickup_point.longitude = data.longitude
+        self.created.append(pickup_point)
+        return pickup_point
 
     async def get_list(self, *, session, query: AdminPickupPointListQueryParams):
         self.get_list_calls += 1
@@ -406,6 +435,54 @@ async def get_pickup_points(
         response=response,
         redis_service=redis_service,
         repository=repository,
+    )
+
+
+async def create_pickup_point(
+    *,
+    data: AdminPickupPointCreateRequest | None = None,
+    redis_service=None,
+    role=UserRole.ADMIN,
+    repository=None,
+    commiter=None,
+    audit_log_repository=None,
+):
+    redis_service = redis_service or FakeRedisService()
+    repository = repository or FakePickupPointRepository(pickup_points=[])
+    commiter = commiter or FakeCommiter()
+    audit_log_repository = audit_log_repository or FakeAuditLogRepository()
+    response = await AdminDeliveryService().create_pickup_point(
+        session=None,
+        redis_service=redis_service,
+        user=build_user(role=role),
+        data=data or AdminPickupPointCreateRequest(
+            name=" Магазин на Тверской ",
+            city=" Москва ",
+            address=" ул. Тверская, 10 ",
+            working_hours=" Пн-Вс 09:00-22:00 ",
+            phone=" +79990000000 ",
+            description=" Вход со стороны улицы ",
+            latitude=Decimal("55.7558"),
+            longitude=Decimal("37.6173"),
+            is_active=True,
+            sort_order=10,
+        ),
+        commiter=commiter,
+        permission_service=PermissionService(),
+        admin_delivery_cache_service=AdminDeliveryCacheService(),
+        delivery_cache_service=DeliveryCacheService(),
+        pickup_point_repository=repository,
+        audit_log_service=AuditLogService(),
+        admin_audit_log_repository=audit_log_repository,
+        ip_address="127.0.0.1",
+        user_agent="pytest",
+    )
+    return SimpleNamespace(
+        response=response,
+        redis_service=redis_service,
+        repository=repository,
+        commiter=commiter,
+        audit_log_repository=audit_log_repository,
     )
 
 
@@ -931,6 +1008,118 @@ async def test_admin_pickup_points_sort_by_sort_order_and_name() -> None:
 async def test_admin_pickup_points_without_permission_error() -> None:
     with pytest.raises(AdminAuthAccessDeniedError):
         await get_pickup_points(role=UserRole.CONTENT_MANAGER)
+
+
+@pytest.mark.asyncio
+async def test_admin_pickup_point_create_success() -> None:
+    result = await create_pickup_point()
+
+    assert result.response.id == 99
+    assert result.response.name == "Магазин на Тверской"
+    assert result.response.city == "Москва"
+    assert result.response.address == "ул. Тверская, 10"
+    assert result.response.working_hours == "Пн-Вс 09:00-22:00"
+    assert result.response.phone == "+79990000000"
+    assert result.response.description == "Вход со стороны улицы"
+    assert result.response.latitude == Decimal("55.7558")
+    assert result.response.longitude == Decimal("37.6173")
+    assert result.response.is_active is True
+    assert result.response.sort_order == 10
+    assert result.commiter.committed is True
+
+
+def test_admin_pickup_point_create_empty_name_error() -> None:
+    with pytest.raises(ValidationError, match="name"):
+        AdminPickupPointCreateRequest(
+            name=" ",
+            city="Москва",
+            address="ул. Тверская, 10",
+        )
+
+
+def test_admin_pickup_point_create_empty_city_error() -> None:
+    with pytest.raises(ValidationError, match="city"):
+        AdminPickupPointCreateRequest(
+            name="Магазин на Тверской",
+            city=" ",
+            address="ул. Тверская, 10",
+        )
+
+
+def test_admin_pickup_point_create_empty_address_error() -> None:
+    with pytest.raises(ValidationError, match="address"):
+        AdminPickupPointCreateRequest(
+            name="Магазин на Тверской",
+            city="Москва",
+            address=" ",
+        )
+
+
+def test_admin_pickup_point_create_invalid_phone_error() -> None:
+    with pytest.raises(ValidationError, match="Неверный формат телефона"):
+        AdminPickupPointCreateRequest(
+            name="Магазин на Тверской",
+            city="Москва",
+            address="ул. Тверская, 10",
+            phone="phone",
+        )
+
+
+def test_admin_pickup_point_create_invalid_latitude_error() -> None:
+    with pytest.raises(ValidationError, match="Неверные координаты"):
+        AdminPickupPointCreateRequest(
+            name="Магазин на Тверской",
+            city="Москва",
+            address="ул. Тверская, 10",
+            latitude=Decimal("90.1"),
+        )
+
+
+def test_admin_pickup_point_create_invalid_longitude_error() -> None:
+    with pytest.raises(ValidationError, match="Неверные координаты"):
+        AdminPickupPointCreateRequest(
+            name="Магазин на Тверской",
+            city="Москва",
+            address="ул. Тверская, 10",
+            longitude=Decimal("180.1"),
+        )
+
+
+@pytest.mark.asyncio
+async def test_admin_pickup_point_create_duplicate_city_address_error() -> None:
+    repository = FakePickupPointRepository(
+        pickup_points=[],
+        existing_pickup_point=build_pickup_point(
+            point_id=1,
+            name="Магазин на Тверской",
+            city="Москва",
+            address="ул. Тверская, 10",
+        ),
+    )
+
+    with pytest.raises(PickupPointAlreadyExistsError):
+        await create_pickup_point(repository=repository)
+
+
+@pytest.mark.asyncio
+async def test_admin_pickup_point_create_invalidates_cache() -> None:
+    result = await create_pickup_point()
+
+    assert "admin:delivery:pickup_points:*" in result.redis_service.deleted
+    assert "delivery:pickup_points:*" in result.redis_service.deleted
+    assert "delivery:options" in result.redis_service.deleted
+
+
+@pytest.mark.asyncio
+async def test_admin_pickup_point_create_audit_log_created() -> None:
+    result = await create_pickup_point()
+
+    assert result.audit_log_repository.logs[0]["event"] == "create_pickup_point"
+    assert result.audit_log_repository.logs[0]["user_id"] == 1
+    assert result.audit_log_repository.logs[0]["ip_address"] == "127.0.0.1"
+    assert result.audit_log_repository.logs[0]["user_agent"] == "pytest"
+    assert result.audit_log_repository.logs[0]["details"]["actor_id"] == 1
+    assert result.audit_log_repository.logs[0]["details"]["pickup_point_id"] == 99
 
 
 @pytest.mark.asyncio

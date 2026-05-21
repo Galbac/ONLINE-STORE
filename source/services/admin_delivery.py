@@ -6,6 +6,7 @@ from source.errors.delivery import (
     DeliveryZoneNotFoundError,
     EmptyDeliverySettingsUpdateError,
     EmptyDeliveryZoneUpdateError,
+    PickupPointAlreadyExistsError,
 )
 from source.schemas.pydantic.delivery import (
     AdminDeliverySettingsResponse,
@@ -15,6 +16,7 @@ from source.schemas.pydantic.delivery import (
     AdminDeliveryZoneListResponse,
     AdminDeliveryZoneResponse,
     AdminDeliveryZoneUpdateRequest,
+    AdminPickupPointCreateRequest,
     AdminPickupPointListQueryParams,
     AdminPickupPointListResponse,
     AdminPickupPointResponse,
@@ -180,6 +182,59 @@ class AdminDeliveryService:
             ttl_seconds=settings.admin_delivery.pickup_points_cache_ttl_seconds,
         )
         return response
+
+    async def create_pickup_point(
+        self,
+        *,
+        session,
+        redis_service: RedisService,
+        user,
+        data: AdminPickupPointCreateRequest,
+        commiter,
+        permission_service,
+        admin_delivery_cache_service: AdminDeliveryCacheService,
+        delivery_cache_service: DeliveryCacheService,
+        pickup_point_repository,
+        audit_log_service,
+        admin_audit_log_repository,
+        ip_address: str | None = None,
+        user_agent: str | None = None,
+    ) -> AdminPickupPointResponse:
+        self._check_create_permission(user=user, permission_service=permission_service)
+
+        existing_pickup_point = await pickup_point_repository.get_by_city_and_address(
+            session=session,
+            city=data.city,
+            address=data.address,
+        )
+        if existing_pickup_point is not None:
+            raise PickupPointAlreadyExistsError
+
+        created_pickup_point = await pickup_point_repository.create(session=session, data=data)
+        await audit_log_service.log_action(
+            session=session,
+            audit_log_repository=admin_audit_log_repository,
+            user_id=user.id,
+            login=getattr(user, "email", None) or getattr(user, "phone", None) or str(user.id),
+            event="create_pickup_point",
+            status="success",
+            ip_address=ip_address,
+            user_agent=user_agent,
+            details={
+                "actor_id": user.id,
+                "pickup_point_id": created_pickup_point.id,
+                "name": created_pickup_point.name,
+                "city": created_pickup_point.city,
+                "address": created_pickup_point.address,
+            },
+        )
+        await commiter.commit()
+
+        await admin_delivery_cache_service.invalidate_pickup_points(redis_service=redis_service)
+        await delivery_cache_service.invalidate_pickup_points(redis_service=redis_service)
+        await delivery_cache_service.invalidate_options(redis_service=redis_service)
+
+        return self._build_pickup_point_response(pickup_point=created_pickup_point)
 
     async def create_zone(
         self,

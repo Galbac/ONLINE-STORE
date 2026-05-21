@@ -2,10 +2,51 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from source.db.models.pickup_point import PickupPoint
-from source.schemas.pydantic.delivery import AdminPickupPointListQueryParams, PickupPointListQueryParams
+from source.schemas.pydantic.delivery import AdminPickupPointCreateRequest, AdminPickupPointListQueryParams, PickupPointListQueryParams
 
 
 class PickupPointRepository:
+    async def get_by_city_and_address(
+        self,
+        *,
+        session: AsyncSession,
+        city: str,
+        address: str,
+    ) -> PickupPoint | None:
+        result = await session.execute(
+            select(PickupPoint)
+            .where(
+                func.lower(PickupPoint.city) == city.lower(),
+                func.lower(PickupPoint.address) == address.lower(),
+                PickupPoint.is_deleted.is_(False),
+            )
+            .limit(1),
+        )
+        return result.scalar_one_or_none()
+
+    async def create(
+        self,
+        *,
+        session: AsyncSession,
+        data: AdminPickupPointCreateRequest,
+    ) -> PickupPoint:
+        pickup_point = PickupPoint(
+            name=data.name,
+            city=data.city,
+            address=data.address,
+            working_hours=data.working_hours,
+            phone=data.phone,
+            description=data.description,
+            latitude=data.latitude,
+            longitude=data.longitude,
+            is_active=data.is_active,
+            sort_order=data.sort_order,
+        )
+        session.add(pickup_point)
+        await session.flush()
+        await session.refresh(pickup_point)
+        return pickup_point
+
     async def get_by_id(self, *, session: AsyncSession, pickup_point_id: int) -> PickupPoint | None:
         result = await session.execute(select(PickupPoint).where(PickupPoint.id == pickup_point_id))
         return result.scalar_one_or_none()

@@ -227,6 +227,52 @@ class AdminPickupPointListQueryParams(BaseModel):
         return (self.page - 1) * self.limit
 
 
+class AdminPickupPointCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+    city: str = Field(min_length=1, max_length=100)
+    address: str = Field(min_length=1, max_length=500)
+    working_hours: str | None = Field(default=None, max_length=255)
+    phone: str | None = Field(default=None, max_length=32)
+    description: str | None = None
+    latitude: Decimal | None = None
+    longitude: Decimal | None = None
+    is_active: bool = True
+    sort_order: int = 0
+
+    @model_validator(mode="after")
+    def normalize_and_validate(self) -> "AdminPickupPointCreateRequest":
+        self.name = self.name.strip()
+        self.city = self.city.strip()
+        self.address = self.address.strip()
+        if not self.name:
+            raise ValueError("name обязателен")
+        if not self.city:
+            raise ValueError("city обязателен")
+        if not self.address:
+            raise ValueError("address обязателен")
+        for field in ("working_hours", "phone", "description"):
+            value = getattr(self, field)
+            if value is not None:
+                value = value.strip()
+                setattr(self, field, value or None)
+        if self.phone is not None and not self._is_valid_phone(self.phone):
+            raise ValueError("Неверный формат телефона")
+        if self.latitude is not None and not Decimal("-90") <= self.latitude <= Decimal("90"):
+            raise ValueError("Неверные координаты")
+        if self.longitude is not None and not Decimal("-180") <= self.longitude <= Decimal("180"):
+            raise ValueError("Неверные координаты")
+        if self.sort_order < 0:
+            raise ValueError("sort_order не может быть отрицательным")
+        return self
+
+    @staticmethod
+    def _is_valid_phone(phone: str) -> bool:
+        normalized_phone = phone.replace(" ", "").replace("-", "").replace("(", "").replace(")", "")
+        if normalized_phone.startswith("+"):
+            normalized_phone = normalized_phone[1:]
+        return normalized_phone.isdigit() and 10 <= len(normalized_phone) <= 15
+
+
 class AdminPickupPointResponse(BaseModel):
     id: int
     name: str
