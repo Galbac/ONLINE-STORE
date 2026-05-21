@@ -19,6 +19,8 @@ from source.schemas.pydantic.one_c import (
     OneCOrderCustomerResponse,
     OneCOrderDeliveryResponse,
     OneCOrderItemResponse,
+    OneCOrderSyncResponse,
+    OneCMarkOrderSyncedRequest,
     OneCOrderPayloadResponse,
     OneCOrderPaymentResponse,
     OneCOrdersPendingQueryParams,
@@ -236,6 +238,62 @@ class OneCOrderService:
             for order in orders
         ]
         return OneCOrdersPendingResponse(items=payloads, total=len(payloads))
+
+    async def mark_order_synced(
+        self,
+        *,
+        session,
+        redis_service,
+        order_id: int,
+        data: OneCMarkOrderSyncedRequest,
+        commiter,
+        order_repository,
+        integration_log_repository,
+        order_cache_service,
+    ) -> OneCOrderSyncResponse | None:
+        order = await order_repository.get_by_id(session=session, order_id=order_id)
+        if order is None:
+            return None
+
+        now = datetime.now(settings.tz)
+        external_1c_id = data.external_1c_id or order.external_1c_id
+        order = await order_repository.update_sync_success(
+            session=session,
+            order=order,
+            external_1c_id=external_1c_id,
+            last_sync_at=now,
+        )
+        response = OneCOrderSyncResponse(
+            order_id=order.id,
+            order_number=order.order_number,
+            sync_status=order.sync_status,
+            external_1c_id=order.external_1c_id,
+            last_sync_at=order.last_sync_at,
+        )
+        await integration_log_repository.create(
+            session=session,
+            system="1c",
+            entity_type="orders",
+            entity_id=order.id,
+            action="inbound_mark_synced",
+            status="success",
+            request_payload={
+                "direction": "inbound",
+                "order_id": order.id,
+                "external_1c_id": data.external_1c_id,
+                "message": data.message,
+            },
+            response_payload=response.model_dump(),
+            error_message=None,
+        )
+        await commiter.commit()
+
+        await order_cache_service.invalidate_order(
+            redis_service=redis_service,
+            user_id=order.user_id,
+            order_id=order.id,
+        )
+        return response
 
 
 class CategorySyncService:

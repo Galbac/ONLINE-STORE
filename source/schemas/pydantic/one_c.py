@@ -220,3 +220,26 @@ class OneCOrderPayloadResponse(BaseModel):
 class OneCOrdersPendingResponse(BaseModel):
     items: list[OneCOrderPayloadResponse]
     total: int
+
+
+class OneCMarkOrderSyncedRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    external_1c_id: str | None = Field(default=None, max_length=100)
+    message: str | None = Field(default=None, max_length=500)
+
+    @field_validator("external_1c_id", "message", mode="before")
+    @classmethod
+    def normalize_string(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        normalized_value = " ".join(value.strip().split())
+        return normalized_value or None
+
+
+class OneCOrderSyncResponse(BaseModel):
+    order_id: int
+    order_number: str
+    sync_status: str
+    external_1c_id: str | None = None
+    last_sync_at: datetime | None = None

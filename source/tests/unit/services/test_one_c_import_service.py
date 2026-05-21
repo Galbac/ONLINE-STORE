@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 from fastapi import HTTPException
 
-from source.api.api_v1.views.integration import get_one_c_pending_orders, import_one_c_categories, import_one_c_products
+from source.api.api_v1.views.integration import get_one_c_pending_orders, import_one_c_categories, import_one_c_products, mark_one_c_order_synced
 from source.api.dependencies import verify_one_c_token
 from source.config.settings import settings
 from source.schemas.pydantic.one_c import (
@@ -17,6 +17,7 @@ from source.schemas.pydantic.one_c import (
     OneCPriceImportRequest,
     OneCProductImportItem,
     OneCProductImportRequest,
+    OneCMarkOrderSyncedRequest,
     OneCOrdersPendingQueryParams,
     OneCStockImportItem,
     OneCStockImportRequest,
@@ -27,6 +28,7 @@ from source.services.admin_category_cache import AdminCategoryCacheService
 from source.services.cart_cache import CartCacheService
 from source.services.category_cache import CategoryCacheService
 from source.services.one_c import CategorySyncService, ImageDownloadService, IntegrationLogService, OneCImportService, OneCOrderPayloadBuilder, OneCOrderService, ProductImageSyncService, ProductPriceSyncService, ProductStockSyncService, ProductSyncService, SlugService
+from source.services.order_cache import OrderCacheService
 from source.services.product_cache import ProductCacheService
 from source.services.stock import StockMovementService
 
@@ -141,6 +143,16 @@ class FakeOrderRepository:
             if order.sync_status in allowed_sync_statuses and order.status not in {"draft", "pending_payment"}
         ]
         return result[:limit]
+
+    async def get_by_id(self, *, session, order_id: int):
+        return next((order for order in self.orders if order.id == order_id), None)
+
+    async def update_sync_success(self, *, session, order, external_1c_id: str | None, last_sync_at):
+        order.sync_status = "synced"
+        order.external_1c_id = external_1c_id
+        order.sync_error = None
+        order.last_sync_at = last_sync_at
+        return order
 
 
 class FakeOrderItemRepository:
@@ -398,9 +410,12 @@ def build_order(
     delivery_type: str = "delivery",
     payment_method: str | None = "online",
     payment_status: str | None = "paid",
+    external_1c_id: str | None = None,
+    sync_error: str | None = "old error",
 ):
     return SimpleNamespace(
         id=order_id,
+        user_id=1,
         order_number=order_number,
         status=status,
         sync_status=sync_status,
@@ -411,6 +426,9 @@ def build_order(
         delivery_date=date(2026, 5, 20),
         payment_method=payment_method,
         payment_status=payment_status,
+        external_1c_id=external_1c_id,
+        sync_error=sync_error,
+        last_sync_at=None,
         customer_name="Иван Иванов",
         customer_phone="+79990000000",
         customer_email="ivan@example.com",
@@ -707,6 +725,27 @@ async def get_pending_orders(
         delivery_time_slot_repository=delivery_time_slot_repository or FakeDeliveryTimeSlotRepository([build_delivery_slot()]),
         product_repository=product_repository or FakeProductRepository([build_product(product_id=55, external_1c_id="prod-001")]),
         order_payload_builder=OneCOrderPayloadBuilder(),
+    )
+
+
+async def mark_order_synced(
+    *,
+    order_repository=None,
+    redis_service=None,
+    integration_log_repository=None,
+    commiter=None,
+    data=None,
+    order_id: int = 101,
+):
+    return await OneCOrderService().mark_order_synced(
+        session=object(),
+        redis_service=redis_service or FakeRedisService(),
+        order_id=order_id,
+        data=data or OneCMarkOrderSyncedRequest(external_1c_id="1c-doc-123", message="Заказ создан в 1С"),
+        commiter=commiter or FakeCommiter(),
+        order_repository=order_repository or FakeOrderRepository([build_order()]),
+        integration_log_repository=integration_log_repository or FakeIntegrationLogRepository(),
+        order_cache_service=OrderCacheService(),
     )
 
 
@@ -1575,3 +1614,105 @@ async def test_one_c_pending_orders_payload_uses_order_item_prices() -> None:
 
     assert str(response.items[0].items[0].price) == "150.00"
     assert str(response.items[0].items[0].final_price) == "225.00"
+
+
+@pytest.mark.asyncio
+async def test_one_c_mark_order_synced_success() -> None:
+    order = build_order(sync_status="pending")
+
+    response = await mark_order_synced(order_repository=FakeOrderRepository([order]))
+
+    assert response.order_id == 101
+    assert response.order_number == "ORD-000101"
+    assert response.sync_status == "synced"
+    assert response.external_1c_id == "1c-doc-123"
+    assert response.last_sync_at is not None
+    assert order.sync_status == "synced"
+
+
+@pytest.mark.asyncio
+async def test_one_c_mark_order_synced_repeated_is_safe() -> None:
+    order = build_order(sync_status="synced", external_1c_id="1c-doc-123", sync_error=None)
+
+    first = await mark_order_synced(order_repository=FakeOrderRepository([order]))
+    second = await mark_order_synced(order_repository=FakeOrderRepository([order]))
+
+    assert first.sync_status == "synced"
+    assert second.sync_status == "synced"
+    assert order.external_1c_id == "1c-doc-123"
+
+
+@pytest.mark.asyncio
+async def test_one_c_mark_order_synced_saves_external_1c_id() -> None:
+    order = build_order()
+
+    await mark_order_synced(order_repository=FakeOrderRepository([order]))
+
+    assert order.external_1c_id == "1c-doc-123"
+
+
+@pytest.mark.asyncio
+async def test_one_c_mark_order_synced_clears_sync_error() -> None:
+    order = build_order(sync_error="1C timeout")
+
+    await mark_order_synced(order_repository=FakeOrderRepository([order]))
+
+    assert order.sync_error is None
+
+
+@pytest.mark.asyncio
+async def test_one_c_mark_order_synced_invalid_token_returns_401(monkeypatch) -> None:
+    monkeypatch.setattr(settings.one_c, "api_token", "secret")
+
+    with pytest.raises(HTTPException) as exc_info:
+        await verify_one_c_token(authorization="Bearer wrong")
+
+    assert exc_info.value.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_one_c_mark_order_synced_order_not_found_returns_404() -> None:
+    with pytest.raises(HTTPException) as exc_info:
+        await mark_one_c_order_synced.__dishka_orig_func__(
+            order_id=404,
+            body=OneCMarkOrderSyncedRequest(external_1c_id="1c-doc-123"),
+            _token=None,
+            session=object(),
+            redis_service=FakeRedisService(),
+            commiter=FakeCommiter(),
+            config=SimpleNamespace(one_c=SimpleNamespace(external_order_id_required=True)),
+            one_c_order_service=OneCOrderService(),
+            order_repository=FakeOrderRepository([]),
+            integration_log_repository=FakeIntegrationLogRepository(),
+            order_cache_service=OrderCacheService(),
+        )
+
+    assert exc_info.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_one_c_mark_order_synced_invalidates_cache() -> None:
+    redis_service = FakeRedisService()
+
+    await mark_order_synced(redis_service=redis_service)
+
+    assert "admin:orders:list:*" in redis_service.deleted_patterns
+    assert "orders:my:1:*" in redis_service.deleted_patterns
+    assert "orders:detail:1:101" in redis_service.deleted
+    assert "orders:status:1:101" in redis_service.deleted
+    assert "admin:orders:detail:101" in redis_service.deleted
+
+
+@pytest.mark.asyncio
+async def test_one_c_mark_order_synced_creates_integration_log() -> None:
+    integration_log_repository = FakeIntegrationLogRepository()
+
+    await mark_order_synced(integration_log_repository=integration_log_repository)
+
+    log = integration_log_repository.logs[0]
+    assert log["system"] == "1c"
+    assert log["entity_type"] == "orders"
+    assert log["entity_id"] == 101
+    assert log["action"] == "inbound_mark_synced"
+    assert log["status"] == "success"
+    assert log["request_payload"]["direction"] == "inbound"

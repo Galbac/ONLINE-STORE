@@ -18,13 +18,14 @@ from source.repositories.product_image import ProductImageRepository
 from source.repositories.product_price_history import ProductPriceHistoryRepository
 from source.repositories.stock_movement import StockMovementRepository
 from source.repositories.upload import UploadRepository
-from source.schemas.pydantic.one_c import OneCCategoryImportRequest, OneCImageImportRequest, OneCImportResultResponse, OneCOrderSyncStatus, OneCOrdersPendingQueryParams, OneCOrdersPendingResponse, OneCPriceImportRequest, OneCProductImportRequest, OneCStockImportRequest
+from source.schemas.pydantic.one_c import OneCCategoryImportRequest, OneCImageImportRequest, OneCImportResultResponse, OneCMarkOrderSyncedRequest, OneCOrderSyncResponse, OneCOrderSyncStatus, OneCOrdersPendingQueryParams, OneCOrdersPendingResponse, OneCPriceImportRequest, OneCProductImportRequest, OneCStockImportRequest
 from source.services.admin_dashboard_cache import AdminDashboardCacheService
 from source.services.admin_product_cache import AdminProductCacheService
 from source.services.admin_category_cache import AdminCategoryCacheService
 from source.services.cart_cache import CartCacheService
 from source.services.category_cache import CategoryCacheService
 from source.services.one_c import CategorySyncService, ImageDownloadService, IntegrationLogService, OneCImportService, OneCOrderPayloadBuilder, OneCOrderService, ProductImageSyncService, ProductPriceSyncService, ProductStockSyncService, ProductSyncService, SlugService
+from source.services.order_cache import OrderCacheService
 from source.services.product_cache import ProductCacheService
 from source.services.redis import RedisService
 from source.services.storage import StorageService
@@ -72,6 +73,51 @@ async def get_one_c_pending_orders(
         product_repository=product_repository,
         order_payload_builder=order_payload_builder,
     )
+
+
+@router.post(
+    "/integration/1c/orders/{order_id}/mark-synced",
+    response_model=OneCOrderSyncResponse,
+    response_model_exclude_none=True,
+    status_code=status.HTTP_200_OK,
+)
+@inject
+async def mark_one_c_order_synced(
+    order_id: int,
+    body: OneCMarkOrderSyncedRequest,
+    _token: None = Depends(verify_one_c_token),
+    session: FromDishka[AsyncSession] = None,
+    redis_service: FromDishka[RedisService] = None,
+    commiter: FromDishka[Commiter] = None,
+    config: FromDishka[Settings] = None,
+    one_c_order_service: FromDishka[OneCOrderService] = None,
+    order_repository: FromDishka[OrderRepository] = None,
+    integration_log_repository: FromDishka[IntegrationLogRepository] = None,
+    order_cache_service: FromDishka[OrderCacheService] = None,
+) -> OneCOrderSyncResponse:
+    if order_id <= 0:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Некорректный order_id")
+    if config.one_c.external_order_id_required and body.external_1c_id is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="external_1c_id обязателен")
+
+    try:
+        response = await one_c_order_service.mark_order_synced(
+            session=session,
+            redis_service=redis_service,
+            order_id=order_id,
+            data=body,
+            commiter=commiter,
+            order_repository=order_repository,
+            integration_log_repository=integration_log_repository,
+            order_cache_service=order_cache_service,
+        )
+    except Exception:
+        await commiter.rollback()
+        raise
+
+    if response is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Заказ не найден")
+    return response
 
 
 @router.post(

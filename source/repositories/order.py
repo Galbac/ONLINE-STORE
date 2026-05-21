@@ -234,6 +234,23 @@ class OrderRepository:
         await session.refresh(order)
         return order
 
+    async def update_sync_success(
+        self,
+        *,
+        session: AsyncSession,
+        order: Order,
+        external_1c_id: str | None,
+        last_sync_at,
+    ) -> Order:
+        return await self.update_sync_status(
+            session=session,
+            order=order,
+            sync_status="synced",
+            external_1c_id=external_1c_id,
+            sync_error=None,
+            last_sync_at=last_sync_at,
+        )
+
     async def update_payment_status(self, *, session: AsyncSession, order: Order, payment_status: str) -> Order:
         order.payment_status = payment_status
         session.add(order)
