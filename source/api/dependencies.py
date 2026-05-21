@@ -1,4 +1,5 @@
 from typing import Any
+from secrets import compare_digest
 
 from dishka.integrations.fastapi import FromDishka, inject
 from fastapi import Depends, Header, HTTPException, status
@@ -147,5 +148,24 @@ def raise_unauthorized() -> None:
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Пользователь не авторизован",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+
+
+async def verify_one_c_token(authorization: str | None = Header(default=None)) -> None:
+    if not authorization:
+        raise_integration_unauthorized()
+
+    scheme, _, token = authorization.partition(" ")
+    if scheme.lower() != "bearer" or not token:
+        raise_integration_unauthorized()
+    if not settings.one_c.api_token or not compare_digest(token, settings.one_c.api_token):
+        raise_integration_unauthorized()
+
+
+def raise_integration_unauthorized() -> None:
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Неверный integration token",
         headers={"WWW-Authenticate": "Bearer"},
     )

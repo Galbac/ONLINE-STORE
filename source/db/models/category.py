@@ -13,6 +13,9 @@ class Category(IdBigIntPkMixin, CreateUpdateMixin, Base):
 
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     slug: Mapped[str] = mapped_column(String(255), unique=True, index=True, nullable=False)
+    external_1c_id: Mapped[str | None] = mapped_column(String(100), index=True)
+    sync_status: Mapped[str | None] = mapped_column(String(50), index=True)
+    last_sync_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     description: Mapped[str | None] = mapped_column(Text)
     parent_id: Mapped[int | None] = mapped_column(ForeignKey("categories.id", ondelete="SET NULL"), index=True)
     image_file_id: Mapped[int | None] = mapped_column(ForeignKey("uploads.id", ondelete="SET NULL"), index=True)

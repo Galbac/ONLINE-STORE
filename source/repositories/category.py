@@ -22,6 +22,62 @@ class CategoryRepository:
         result = await session.execute(select(Category).where(Category.slug == slug))
         return result.scalar_one_or_none()
 
+    async def get_by_slugs(self, *, session: AsyncSession, slugs: set[str]) -> list[Category]:
+        if not slugs:
+            return []
+        result = await session.execute(select(Category).where(Category.slug.in_(slugs)))
+        return list(result.scalars().all())
+
+    async def get_by_external_1c_ids(
+        self,
+        *,
+        session: AsyncSession,
+        external_1c_ids: set[str],
+    ) -> list[Category]:
+        if not external_1c_ids:
+            return []
+        result = await session.execute(select(Category).where(Category.external_1c_id.in_(external_1c_ids)))
+        return list(result.scalars().all())
+
+    async def get_parent_map_by_external_ids(
+        self,
+        *,
+        session: AsyncSession,
+        external_1c_ids: set[str],
+    ) -> dict[str, Category]:
+        categories = await self.get_by_external_1c_ids(session=session, external_1c_ids=external_1c_ids)
+        return {
+            category.external_1c_id: category
+            for category in categories
+            if category.external_1c_id is not None
+        }
+
+    async def bulk_create(
+        self,
+        *,
+        session: AsyncSession,
+        items: list[dict],
+    ) -> list[Category]:
+        categories = [Category(**item) for item in items]
+        session.add_all(categories)
+        await session.flush()
+        for category in categories:
+            await session.refresh(category)
+        return categories
+
+    async def bulk_update(
+        self,
+        *,
+        session: AsyncSession,
+        categories: list[Category],
+    ) -> list[Category]:
+        for category in categories:
+            session.add(category)
+        await session.flush()
+        for category in categories:
+            await session.refresh(category)
+        return categories
+
     async def create(
         self,
         *,

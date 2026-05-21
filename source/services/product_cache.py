@@ -154,6 +154,9 @@ class ProductCacheService:
     async def invalidate_search(self, *, redis_service: RedisService) -> None:
         await redis_service.delete_by_pattern("products:search:*")
 
+    async def invalidate_lists(self, *, redis_service: RedisService) -> None:
+        await redis_service.delete_by_pattern("products:list:*")
+
     async def get_popular(
         self,
         *,

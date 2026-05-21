@@ -84,7 +84,7 @@ from source.services.discount import DiscountService
 from source.services.discount_cache import DiscountCacheService
 from source.services.favorite import FavoriteService
 from source.services.favorite_cache import FavoriteCacheService
-from source.services.one_c import OneCIntegrationService
+from source.services.one_c import CategorySyncService, IntegrationLogService, OneCImportService, OneCIntegrationService
 from source.services.order import OrderService
 from source.services.order_cache import OrderCacheService
 from source.services.order_status import OrderStatusService
@@ -435,6 +435,18 @@ class AppProvider(Provider):
     )
     one_c_integration_service = provide(
         OneCIntegrationService,
+        scope=Scope.REQUEST,
+    )
+    one_c_import_service = provide(
+        OneCImportService,
+        scope=Scope.REQUEST,
+    )
+    category_sync_service = provide(
+        CategorySyncService,
+        scope=Scope.REQUEST,
+    )
+    integration_log_service = provide(
+        IntegrationLogService,
         scope=Scope.REQUEST,
     )
     cart_cache_service = provide(

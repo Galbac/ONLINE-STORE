@@ -7,6 +7,7 @@ from source.api.api_v1.views.categories import router as categories_router
 from source.api.api_v1.views.delivery import router as delivery_router
 from source.api.api_v1.views.discounts import router as discounts_router
 from source.api.api_v1.views.favorites import router as favorites_router
+from source.api.api_v1.views.integration import router as integration_router
 from source.api.api_v1.views.profile import router as profile_router
 from source.api.api_v1.views.products import router as products_router
 from source.api.api_v1.views.orders import router as orders_router
@@ -37,3 +38,4 @@ router.include_router(users_router)
 router.include_router(profile_router)
 router.include_router(favorites_router)
 router.include_router(uploads_router)
+router.include_router(integration_router)
