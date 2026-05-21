@@ -16,7 +16,9 @@ from source.errors.delivery import (
     DeliveryZoneNotFoundError,
     EmptyDeliverySettingsUpdateError,
     EmptyDeliveryZoneUpdateError,
+    EmptyPickupPointUpdateError,
     PickupPointAlreadyExistsError,
+    PickupPointAdminNotFoundError,
 )
 from source.schemas.pydantic.delivery import (
     AdminDeliverySettingsResponse,
@@ -28,6 +30,7 @@ from source.schemas.pydantic.delivery import (
     AdminPickupPointCreateRequest,
     AdminPickupPointListQueryParams,
     AdminPickupPointListResponse,
+    AdminPickupPointUpdateRequest,
 )
 from source.services.admin_auth import AuditLogService, PermissionService
 from source.services.admin_delivery import AdminDeliveryService
@@ -212,6 +215,12 @@ class FakePickupPointRepository:
         self.count_calls = 0
         self.created = []
 
+    async def get_by_id(self, *, session, pickup_point_id: int):
+        for pickup_point in self.pickup_points:
+            if pickup_point.id == pickup_point_id:
+                return pickup_point
+        return None
+
     async def get_by_city_and_address(self, *, session, city: str, address: str):
         if self.existing_pickup_point is not None:
             return self.existing_pickup_point
@@ -235,6 +244,12 @@ class FakePickupPointRepository:
         pickup_point.latitude = data.latitude
         pickup_point.longitude = data.longitude
         self.created.append(pickup_point)
+        return pickup_point
+
+    async def update(self, *, session, pickup_point, data: dict):
+        for field, value in data.items():
+            setattr(pickup_point, field, value)
+        pickup_point.updated_date = datetime(2026, 5, 12, 11, 0, 0)
         return pickup_point
 
     async def get_list(self, *, session, query: AdminPickupPointListQueryParams):
@@ -467,6 +482,54 @@ async def create_pickup_point(
             is_active=True,
             sort_order=10,
         ),
+        commiter=commiter,
+        permission_service=PermissionService(),
+        admin_delivery_cache_service=AdminDeliveryCacheService(),
+        delivery_cache_service=DeliveryCacheService(),
+        pickup_point_repository=repository,
+        audit_log_service=AuditLogService(),
+        admin_audit_log_repository=audit_log_repository,
+        ip_address="127.0.0.1",
+        user_agent="pytest",
+    )
+    return SimpleNamespace(
+        response=response,
+        redis_service=redis_service,
+        repository=repository,
+        commiter=commiter,
+        audit_log_repository=audit_log_repository,
+    )
+
+
+async def update_pickup_point(
+    *,
+    point_id: int = 1,
+    data: AdminPickupPointUpdateRequest | None = None,
+    redis_service=None,
+    role=UserRole.ADMIN,
+    repository=None,
+    commiter=None,
+    audit_log_repository=None,
+):
+    redis_service = redis_service or FakeRedisService()
+    repository = repository or FakePickupPointRepository(
+        pickup_points=[
+            build_pickup_point(
+                point_id=1,
+                name="Магазин на Тверской",
+                city="Москва",
+                address="ул. Тверская, 10",
+            ),
+        ],
+    )
+    commiter = commiter or FakeCommiter()
+    audit_log_repository = audit_log_repository or FakeAuditLogRepository()
+    response = await AdminDeliveryService().update_pickup_point(
+        session=None,
+        redis_service=redis_service,
+        user=build_user(role=role),
+        point_id=point_id,
+        data=data or AdminPickupPointUpdateRequest(working_hours=" Пн-Вс 09:00-23:00 "),
         commiter=commiter,
         permission_service=PermissionService(),
         admin_delivery_cache_service=AdminDeliveryCacheService(),
@@ -1120,6 +1183,110 @@ async def test_admin_pickup_point_create_audit_log_created() -> None:
     assert result.audit_log_repository.logs[0]["user_agent"] == "pytest"
     assert result.audit_log_repository.logs[0]["details"]["actor_id"] == 1
     assert result.audit_log_repository.logs[0]["details"]["pickup_point_id"] == 99
+
+
+@pytest.mark.asyncio
+async def test_admin_pickup_point_update_working_hours_success() -> None:
+    result = await update_pickup_point(data=AdminPickupPointUpdateRequest(working_hours=" Пн-Вс 09:00-23:00 "))
+
+    assert result.response.working_hours == "Пн-Вс 09:00-23:00"
+    assert result.commiter.committed is True
+
+
+@pytest.mark.asyncio
+async def test_admin_pickup_point_update_is_active_false_success() -> None:
+    result = await update_pickup_point(data=AdminPickupPointUpdateRequest(is_active=False))
+
+    assert result.response.is_active is False
+
+
+@pytest.mark.asyncio
+async def test_admin_pickup_point_update_not_found_error() -> None:
+    repository = FakePickupPointRepository(pickup_points=[])
+
+    with pytest.raises(PickupPointAdminNotFoundError):
+        await update_pickup_point(repository=repository)
+
+
+@pytest.mark.asyncio
+async def test_admin_pickup_point_update_deleted_point_error() -> None:
+    repository = FakePickupPointRepository(
+        pickup_points=[
+            build_pickup_point(
+                point_id=1,
+                name="Удалённый пункт",
+                city="Москва",
+                address="ул. Старая, 1",
+                is_deleted=True,
+            ),
+        ],
+    )
+
+    with pytest.raises(PickupPointAdminNotFoundError):
+        await update_pickup_point(repository=repository)
+
+
+@pytest.mark.asyncio
+async def test_admin_pickup_point_update_empty_body_error() -> None:
+    with pytest.raises(EmptyPickupPointUpdateError):
+        await update_pickup_point(data=AdminPickupPointUpdateRequest())
+
+
+def test_admin_pickup_point_update_invalid_phone_error() -> None:
+    with pytest.raises(ValidationError, match="Неверный формат телефона"):
+        AdminPickupPointUpdateRequest(phone="phone")
+
+
+def test_admin_pickup_point_update_invalid_latitude_error() -> None:
+    with pytest.raises(ValidationError, match="Неверные координаты"):
+        AdminPickupPointUpdateRequest(latitude=Decimal("-90.1"))
+
+
+def test_admin_pickup_point_update_invalid_longitude_error() -> None:
+    with pytest.raises(ValidationError, match="Неверные координаты"):
+        AdminPickupPointUpdateRequest(longitude=Decimal("-180.1"))
+
+
+@pytest.mark.asyncio
+async def test_admin_pickup_point_update_duplicate_city_address_error() -> None:
+    repository = FakePickupPointRepository(
+        pickup_points=[
+            build_pickup_point(point_id=1, name="Магазин на Тверской", city="Москва", address="ул. Тверская, 10"),
+        ],
+        existing_pickup_point=build_pickup_point(point_id=2, name="Магазин на Арбате", city="Москва", address="ул. Арбат, 1"),
+    )
+
+    with pytest.raises(PickupPointAlreadyExistsError):
+        await update_pickup_point(
+            repository=repository,
+            data=AdminPickupPointUpdateRequest(address="ул. Арбат, 1"),
+        )
+
+
+@pytest.mark.asyncio
+async def test_admin_pickup_point_update_invalidates_cache() -> None:
+    result = await update_pickup_point()
+
+    assert "admin:delivery:pickup_points:*" in result.redis_service.deleted
+    assert "delivery:pickup_points:*" in result.redis_service.deleted
+    assert "delivery:pickup_point:1" in result.redis_service.deleted
+    assert "delivery:options" in result.redis_service.deleted
+
+
+@pytest.mark.asyncio
+async def test_admin_pickup_point_update_audit_log_created() -> None:
+    result = await update_pickup_point(data=AdminPickupPointUpdateRequest(working_hours="Пн-Вс 09:00-23:00"))
+
+    assert result.audit_log_repository.logs[0]["event"] == "update_pickup_point"
+    assert result.audit_log_repository.logs[0]["user_id"] == 1
+    assert result.audit_log_repository.logs[0]["ip_address"] == "127.0.0.1"
+    assert result.audit_log_repository.logs[0]["user_agent"] == "pytest"
+    assert result.audit_log_repository.logs[0]["details"]["actor_id"] == 1
+    assert result.audit_log_repository.logs[0]["details"]["pickup_point_id"] == 1
+    assert result.audit_log_repository.logs[0]["details"]["changes"]["working_hours"] == {
+        "old": "Пн-Вс 09:00-22:00",
+        "new": "Пн-Вс 09:00-23:00",
+    }
 
 
 @pytest.mark.asyncio

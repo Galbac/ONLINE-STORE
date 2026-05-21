@@ -273,6 +273,51 @@ class AdminPickupPointCreateRequest(BaseModel):
         return normalized_phone.isdigit() and 10 <= len(normalized_phone) <= 15
 
 
+class AdminPickupPointUpdateRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+    city: str | None = Field(default=None, min_length=1, max_length=100)
+    address: str | None = Field(default=None, min_length=1, max_length=500)
+    working_hours: str | None = Field(default=None, max_length=255)
+    phone: str | None = Field(default=None, max_length=32)
+    description: str | None = None
+    latitude: Decimal | None = None
+    longitude: Decimal | None = None
+    is_active: bool | None = None
+    sort_order: int | None = None
+
+    @model_validator(mode="after")
+    def normalize_and_validate(self) -> "AdminPickupPointUpdateRequest":
+        for field in ("name", "city", "address", "is_active", "sort_order"):
+            if field in self.model_fields_set and getattr(self, field) is None:
+                raise ValueError(f"{field} cannot be null")
+        if self.name is not None:
+            self.name = self.name.strip()
+            if not self.name:
+                raise ValueError("name обязателен")
+        if self.city is not None:
+            self.city = self.city.strip()
+            if not self.city:
+                raise ValueError("city обязателен")
+        if self.address is not None:
+            self.address = self.address.strip()
+            if not self.address:
+                raise ValueError("address обязателен")
+        for field in ("working_hours", "phone", "description"):
+            value = getattr(self, field)
+            if value is not None:
+                value = value.strip()
+                setattr(self, field, value or None)
+        if self.phone is not None and not AdminPickupPointCreateRequest._is_valid_phone(self.phone):
+            raise ValueError("Неверный формат телефона")
+        if self.latitude is not None and not Decimal("-90") <= self.latitude <= Decimal("90"):
+            raise ValueError("Неверные координаты")
+        if self.longitude is not None and not Decimal("-180") <= self.longitude <= Decimal("180"):
+            raise ValueError("Неверные координаты")
+        if self.sort_order is not None and self.sort_order < 0:
+            raise ValueError("sort_order не может быть отрицательным")
+        return self
+
+
 class AdminPickupPointResponse(BaseModel):
     id: int
     name: str

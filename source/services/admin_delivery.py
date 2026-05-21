@@ -7,6 +7,8 @@ from source.errors.delivery import (
     EmptyDeliverySettingsUpdateError,
     EmptyDeliveryZoneUpdateError,
     PickupPointAlreadyExistsError,
+    PickupPointAdminNotFoundError,
+    EmptyPickupPointUpdateError,
 )
 from source.schemas.pydantic.delivery import (
     AdminDeliverySettingsResponse,
@@ -20,6 +22,7 @@ from source.schemas.pydantic.delivery import (
     AdminPickupPointListQueryParams,
     AdminPickupPointListResponse,
     AdminPickupPointResponse,
+    AdminPickupPointUpdateRequest,
     MessageResponse,
 )
 from source.services.admin_auth import STAFF_ROLES
@@ -235,6 +238,84 @@ class AdminDeliveryService:
         await delivery_cache_service.invalidate_options(redis_service=redis_service)
 
         return self._build_pickup_point_response(pickup_point=created_pickup_point)
+
+    async def update_pickup_point(
+        self,
+        *,
+        session,
+        redis_service: RedisService,
+        user,
+        point_id: int,
+        data: AdminPickupPointUpdateRequest,
+        commiter,
+        permission_service,
+        admin_delivery_cache_service: AdminDeliveryCacheService,
+        delivery_cache_service: DeliveryCacheService,
+        pickup_point_repository,
+        audit_log_service,
+        admin_audit_log_repository,
+        ip_address: str | None = None,
+        user_agent: str | None = None,
+    ) -> AdminPickupPointResponse:
+        self._check_update_permission(user=user, permission_service=permission_service)
+        if point_id <= 0:
+            raise ValueError("Неверный point_id")
+
+        update_fields = data.model_dump(exclude_unset=True)
+        if not update_fields:
+            raise EmptyPickupPointUpdateError
+
+        pickup_point = await pickup_point_repository.get_by_id(session=session, pickup_point_id=point_id)
+        if pickup_point is None or pickup_point.is_deleted:
+            raise PickupPointAdminNotFoundError
+
+        next_city = update_fields.get("city", pickup_point.city)
+        next_address = update_fields.get("address", pickup_point.address)
+        if next_city != pickup_point.city or next_address != pickup_point.address:
+            existing_pickup_point = await pickup_point_repository.get_by_city_and_address(
+                session=session,
+                city=next_city,
+                address=next_address,
+            )
+            if existing_pickup_point is not None and existing_pickup_point.id != pickup_point.id:
+                raise PickupPointAlreadyExistsError
+
+        before = {field: getattr(pickup_point, field) for field in update_fields}
+        updated_pickup_point = await pickup_point_repository.update(
+            session=session,
+            pickup_point=pickup_point,
+            data=update_fields,
+        )
+        changes = {
+            field: {
+                "old": str(before[field]) if before[field] is not None else None,
+                "new": str(getattr(updated_pickup_point, field)) if getattr(updated_pickup_point, field) is not None else None,
+            }
+            for field in update_fields
+            if before[field] != getattr(updated_pickup_point, field)
+        }
+        await audit_log_service.log_action(
+            session=session,
+            audit_log_repository=admin_audit_log_repository,
+            user_id=user.id,
+            login=getattr(user, "email", None) or getattr(user, "phone", None) or str(user.id),
+            event="update_pickup_point",
+            status="success",
+            ip_address=ip_address,
+            user_agent=user_agent,
+            details={
+                "actor_id": user.id,
+                "pickup_point_id": updated_pickup_point.id,
+                "changes": changes,
+            },
+        )
+        await commiter.commit()
+
+        await admin_delivery_cache_service.invalidate_pickup_points(redis_service=redis_service)
+        await delivery_cache_service.invalidate_pickup_point(redis_service=redis_service, point_id=updated_pickup_point.id)
+        await delivery_cache_service.invalidate_options(redis_service=redis_service)
+
+        return self._build_pickup_point_response(pickup_point=updated_pickup_point)
 
     async def create_zone(
         self,

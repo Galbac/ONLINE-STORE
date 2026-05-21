@@ -47,6 +47,19 @@ class PickupPointRepository:
         await session.refresh(pickup_point)
         return pickup_point
 
+    async def update(
+        self,
+        *,
+        session: AsyncSession,
+        pickup_point: PickupPoint,
+        data: dict,
+    ) -> PickupPoint:
+        for field, value in data.items():
+            setattr(pickup_point, field, value)
+        await session.flush()
+        await session.refresh(pickup_point)
+        return pickup_point
+
     async def get_by_id(self, *, session: AsyncSession, pickup_point_id: int) -> PickupPoint | None:
         result = await session.execute(select(PickupPoint).where(PickupPoint.id == pickup_point_id))
         return result.scalar_one_or_none()

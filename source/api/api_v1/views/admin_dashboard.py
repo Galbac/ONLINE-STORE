@@ -17,7 +17,9 @@ from source.errors.delivery import (
     DeliveryZoneNotFoundError,
     EmptyDeliverySettingsUpdateError,
     EmptyDeliveryZoneUpdateError,
+    EmptyPickupPointUpdateError,
     PickupPointAlreadyExistsError,
+    PickupPointAdminNotFoundError,
 )
 from source.errors.discount import DiscountConflictError, DiscountExpiredError, DiscountNotFoundError, EmptyDiscountUpdateError
 from source.errors.auth import (
@@ -123,6 +125,7 @@ from source.schemas.pydantic.delivery import (
     AdminPickupPointListQueryParams,
     AdminPickupPointListResponse,
     AdminPickupPointResponse,
+    AdminPickupPointUpdateRequest,
     MessageResponse as AdminDeliveryMessageResponse,
 )
 from source.schemas.pydantic.admin_role import AdminRoleListResponse
@@ -503,6 +506,82 @@ async def create_admin_delivery_pickup_point(
     except InactiveUserError as error:
         await commiter.rollback()
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Пользователь заблокирован") from error
+    except PickupPointAlreadyExistsError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Точка самовывоза с таким адресом уже существует") from error
+    except Exception as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Внутренняя ошибка сервера") from error
+
+
+@router.patch(
+    "/delivery/pickup-points/{point_id}",
+    response_model=AdminPickupPointResponse,
+    response_model_exclude={"is_deleted", "created_at"},
+    status_code=status.HTTP_200_OK,
+)
+@inject
+async def update_admin_delivery_pickup_point(
+    request: Request,
+    point_id: int = Path(...),
+    payload: dict = Body(...),
+    token_payload: dict = Depends(verify_access_token),
+    current_user: User = Depends(require_permission("admin:delivery:update")),
+    session: FromDishka[AsyncSession] = None,
+    commiter: FromDishka[Commiter] = None,
+    redis_service: FromDishka[RedisService] = None,
+    admin_delivery_service: FromDishka[AdminDeliveryService] = None,
+    admin_delivery_cache_service: FromDishka[AdminDeliveryCacheService] = None,
+    delivery_cache_service: FromDishka[DeliveryCacheService] = None,
+    permission_service: FromDishka[PermissionService] = None,
+    pickup_point_repository: FromDishka[PickupPointRepository] = None,
+    audit_log_service: FromDishka[AuditLogService] = None,
+    admin_audit_log_repository: FromDishka[AdminAuditLogRepository] = None,
+) -> AdminPickupPointResponse:
+    if token_payload.get("token_type") != "access":
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь не авторизован")
+    try:
+        return await admin_delivery_service.update_pickup_point(
+            session=session,
+            redis_service=redis_service,
+            user=current_user,
+            point_id=point_id,
+            data=AdminPickupPointUpdateRequest.model_validate(payload),
+            commiter=commiter,
+            permission_service=permission_service,
+            admin_delivery_cache_service=admin_delivery_cache_service,
+            delivery_cache_service=delivery_cache_service,
+            pickup_point_repository=pickup_point_repository,
+            audit_log_service=audit_log_service,
+            admin_audit_log_repository=admin_audit_log_repository,
+            ip_address=request.client.host if request.client else None,
+            user_agent=request.headers.get("user-agent"),
+        )
+    except ValidationError as error:
+        await commiter.rollback()
+        detail = "Неверные входные данные"
+        first_error = error.errors()[0] if error.errors() else None
+        if first_error is not None and isinstance(first_error.get("msg"), str):
+            detail = first_error["msg"].replace("Value error, ", "", 1)
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=detail) from error
+    except EmptyPickupPointUpdateError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Не передано ни одного поля для обновления") from error
+    except ValueError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)) from error
+    except InvalidCredentialsError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь не авторизован") from error
+    except AdminAuthAccessDeniedError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Недостаточно прав") from error
+    except InactiveUserError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Пользователь заблокирован") from error
+    except PickupPointAdminNotFoundError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Точка самовывоза не найдена") from error
     except PickupPointAlreadyExistsError as error:
         await commiter.rollback()
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Точка самовывоза с таким адресом уже существует") from error

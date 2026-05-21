@@ -56,3 +56,11 @@ class DeliveryZoneActiveOrdersError(Exception):
 
 class PickupPointAlreadyExistsError(Exception):
     pass
+
+
+class PickupPointAdminNotFoundError(Exception):
+    pass
+
+
+class EmptyPickupPointUpdateError(Exception):
+    pass

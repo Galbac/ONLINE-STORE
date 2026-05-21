@@ -10,6 +10,7 @@ from source.api.api_v1.views.admin_dashboard import (
     get_admin_delivery_pickup_points,
     get_admin_delivery_settings,
     get_admin_delivery_zones,
+    update_admin_delivery_pickup_point,
     update_admin_delivery_zone,
     update_admin_delivery_settings,
 )
@@ -132,6 +133,12 @@ class FakePickupPointRepository:
             updated_date=None,
         )
 
+    async def get_by_id(self, *, session, pickup_point_id: int):
+        return None
+
+    async def update(self, *, session, pickup_point, data: dict):
+        return pickup_point
+
     async def get_list(self, *, session, query):
         return []
 
@@ -214,6 +221,29 @@ async def test_admin_delivery_pickup_point_create_without_permission_returns_403
                 "city": "Москва",
                 "address": "ул. Тверская, 10",
             },
+            token_payload={"token_type": "access"},
+            current_user=build_user(role=UserRole.CONTENT_MANAGER),
+            commiter=FakeCommiter(),
+            redis_service=FakeRedisService(),
+            admin_delivery_service=AdminDeliveryService(),
+            admin_delivery_cache_service=AdminDeliveryCacheService(),
+            delivery_cache_service=DeliveryCacheService(),
+            permission_service=PermissionService(),
+            pickup_point_repository=FakePickupPointRepository(),
+            audit_log_service=AuditLogService(),
+            admin_audit_log_repository=FakeAuditLogRepository(),
+        )
+
+    assert exc_info.value.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_admin_delivery_pickup_point_update_without_permission_returns_403() -> None:
+    with pytest.raises(HTTPException) as exc_info:
+        await update_admin_delivery_pickup_point.__dishka_orig_func__(
+            request=SimpleNamespace(client=None, headers={}),
+            point_id=1,
+            payload={"working_hours": "Пн-Вс 09:00-23:00"},
             token_payload={"token_type": "access"},
             current_user=build_user(role=UserRole.CONTENT_MANAGER),
             commiter=FakeCommiter(),
