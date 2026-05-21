@@ -149,6 +149,7 @@ class EmailNotificationSettings(BaseSettings):
     username: str = Field(default="", alias="EMAIL_USERNAME")
     password: str = Field(default="", alias="EMAIL_PASSWORD")
     from_email: str = Field(default="", alias="EMAIL_FROM")
+    use_tls: bool = Field(default=True, alias="EMAIL_USE_TLS")
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

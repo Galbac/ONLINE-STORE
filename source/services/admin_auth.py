@@ -84,6 +84,7 @@ ADMIN_PERMISSIONS_BY_ROLE = {
         "admin:uploads:create",
         "admin:notifications:read",
         "admin:notifications:update",
+        "admin:notifications:test",
     ],
     UserRole.MANAGER: [
         "admin:dashboard:read",

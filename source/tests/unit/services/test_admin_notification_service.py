@@ -9,9 +9,11 @@ from source.db.models.choises.enum import UserRole
 from source.errors.auth import AdminAuthAccessDeniedError
 from source.errors.settings import EmptyNotificationSettingsUpdateError
 from source.schemas.pydantic.notifications import AdminNotificationSettingsResponse, AdminNotificationSettingsUpdateRequest
+from source.schemas.pydantic.notifications import AdminTestEmailRequest
 from source.services.admin_auth import AuditLogService, PermissionService
 from source.services.admin_notification import AdminNotificationService
 from source.services.notification_settings_cache import NotificationSettingsCacheService
+from source.errors.notification import NotificationEmailDisabledError, NotificationSendError
 
 
 class FakeRedisService:
@@ -70,6 +72,26 @@ class FakeAuditLogRepository:
     async def create(self, *, session, **data):
         self.created_payload = data
         return SimpleNamespace(**data)
+
+
+class FakeNotificationLogRepository:
+    def __init__(self) -> None:
+        self.logs: list[dict] = []
+
+    async def create(self, *, session, **data):
+        self.logs.append(data)
+        return SimpleNamespace(id=len(self.logs), **data)
+
+
+class FakeEmailService:
+    def __init__(self, *, fail: Exception | None = None) -> None:
+        self.fail = fail
+        self.sent: list[dict] = []
+
+    async def send_email(self, *, email: str, subject: str, message: str) -> None:
+        if self.fail is not None:
+            raise self.fail
+        self.sent.append({"email": email, "subject": subject, "message": message})
 
 
 def build_user(*, role=UserRole.ADMIN):
@@ -138,6 +160,27 @@ async def update_settings(
         admin_audit_log_repository=audit_log_repository or FakeAuditLogRepository(),
         ip_address="127.0.0.1",
         user_agent="pytest",
+    )
+
+
+async def send_test_email(
+    *,
+    data=None,
+    repository=None,
+    user=None,
+    commiter=None,
+    email_service=None,
+    notification_log_repository=None,
+):
+    return await AdminNotificationService().send_test_email(
+        session=object(),
+        user=user or build_user(),
+        data=data or AdminTestEmailRequest(email="admin@example.com"),
+        commiter=commiter or FakeCommiter(),
+        permission_service=PermissionService(),
+        email_service=email_service or FakeEmailService(),
+        notification_settings_repository=repository or FakeNotificationSettingsRepository(build_notification_settings(email_enabled=True)),
+        notification_log_repository=notification_log_repository or FakeNotificationLogRepository(),
     )
 
 
@@ -302,3 +345,97 @@ async def test_admin_notification_settings_update_audit_log_created() -> None:
         "old": "True",
         "new": "False",
     }
+
+
+@pytest.mark.asyncio
+async def test_admin_test_email_success(monkeypatch) -> None:
+    monkeypatch.setattr(settings.email_notifications, "enabled", True)
+    email_service = FakeEmailService()
+    log_repository = FakeNotificationLogRepository()
+
+    response = await send_test_email(
+        data=AdminTestEmailRequest(email="admin@example.com", subject="Тестовое письмо", message="Проверка"),
+        email_service=email_service,
+        notification_log_repository=log_repository,
+    )
+
+    assert response.message == "Тестовое email-уведомление отправлено"
+    assert response.email == "admin@example.com"
+    assert email_service.sent[0] == {
+        "email": "admin@example.com",
+        "subject": "Тестовое письмо",
+        "message": "Проверка",
+    }
+    assert log_repository.logs[0]["status"] == "success"
+
+
+def test_admin_test_email_invalid_email_error() -> None:
+    with pytest.raises(ValidationError):
+        AdminTestEmailRequest(email="not-an-email")
+
+
+@pytest.mark.asyncio
+async def test_admin_test_email_env_disabled_error(monkeypatch) -> None:
+    monkeypatch.setattr(settings.email_notifications, "enabled", False)
+    log_repository = FakeNotificationLogRepository()
+
+    with pytest.raises(NotificationEmailDisabledError):
+        await send_test_email(notification_log_repository=log_repository)
+
+    assert log_repository.logs[0]["status"] == "error"
+    assert log_repository.logs[0]["error_message"] == "Email-уведомления отключены"
+
+
+@pytest.mark.asyncio
+async def test_admin_test_email_settings_disabled_error(monkeypatch) -> None:
+    monkeypatch.setattr(settings.email_notifications, "enabled", True)
+    log_repository = FakeNotificationLogRepository()
+
+    with pytest.raises(NotificationEmailDisabledError):
+        await send_test_email(
+            repository=FakeNotificationSettingsRepository(build_notification_settings(email_enabled=False)),
+            notification_log_repository=log_repository,
+        )
+
+    assert log_repository.logs[0]["status"] == "error"
+
+
+@pytest.mark.asyncio
+async def test_admin_test_email_without_permission_error(monkeypatch) -> None:
+    monkeypatch.setattr(settings.email_notifications, "enabled", True)
+
+    with pytest.raises(AdminAuthAccessDeniedError):
+        await send_test_email(user=build_user(role=UserRole.MANAGER))
+
+
+@pytest.mark.asyncio
+async def test_admin_test_email_error_log_created(monkeypatch) -> None:
+    monkeypatch.setattr(settings.email_notifications, "enabled", True)
+    log_repository = FakeNotificationLogRepository()
+
+    with pytest.raises(NotificationSendError):
+        await send_test_email(
+            email_service=FakeEmailService(fail=RuntimeError("smtp failed")),
+            notification_log_repository=log_repository,
+        )
+
+    assert log_repository.logs[0]["status"] == "error"
+    assert log_repository.logs[0]["error_message"] == "smtp failed"
+
+
+def test_admin_test_email_rejects_secrets() -> None:
+    with pytest.raises(ValidationError):
+        AdminTestEmailRequest.model_validate({"email": "admin@example.com", "EMAIL_PASSWORD": "secret"})
+    with pytest.raises(ValidationError):
+        AdminTestEmailRequest.model_validate({"email": "admin@example.com", "smtp_password": "secret"})
+
+
+@pytest.mark.asyncio
+async def test_admin_test_email_response_does_not_return_smtp_password(monkeypatch) -> None:
+    monkeypatch.setattr(settings.email_notifications, "enabled", True)
+
+    response = await send_test_email()
+
+    payload = response.model_dump()
+    assert "password" not in payload
+    assert "smtp" not in payload

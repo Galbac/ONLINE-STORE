@@ -99,6 +99,10 @@ class TestEmailRequest(BaseModel):
         return normalized_value or None
 
 
+class AdminTestEmailRequest(TestEmailRequest):
+    model_config = ConfigDict(extra="forbid")
+
+
 class TestTelegramRequest(BaseModel):
     __test__: ClassVar[bool] = False
 

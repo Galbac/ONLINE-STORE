@@ -22,6 +22,7 @@ from source.repositories.notification import NotificationLogRepository, Notifica
 from source.schemas.pydantic.notifications import (
     AdminNotificationSettingsResponse,
     AdminNotificationSettingsUpdateRequest,
+    AdminTestEmailRequest,
     MessageResponse,
     NotificationListResponse,
     NotificationQueryParams,
@@ -111,6 +112,47 @@ async def update_admin_notification_settings(
         )
     except EmptyNotificationSettingsUpdateError as error:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Не передано ни одного поля") from error
+    except (AdminAuthAccessDeniedError, InactiveUserError) as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Недостаточно прав") from error
+
+
+@router.post(
+    "/admin/notifications/test-email",
+    response_model=MessageResponse,
+    status_code=status.HTTP_200_OK,
+)
+@inject
+async def send_admin_test_email(
+    body: dict = Body(...),
+    current_user: User = Depends(require_permission("admin:notifications:test")),
+    session: FromDishka[AsyncSession] = None,
+    commiter: FromDishka[Commiter] = None,
+    admin_notification_service: FromDishka[AdminNotificationService] = None,
+    permission_service: FromDishka[PermissionService] = None,
+    email_service: FromDishka[EmailService] = None,
+    notification_settings_repository: FromDishka[NotificationSettingsRepository] = None,
+    notification_log_repository: FromDishka[NotificationLogRepository] = None,
+) -> MessageResponse:
+    try:
+        data = AdminTestEmailRequest.model_validate(body)
+    except ValidationError as error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Неверный email") from error
+
+    try:
+        return await admin_notification_service.send_test_email(
+            session=session,
+            user=current_user,
+            data=data,
+            commiter=commiter,
+            permission_service=permission_service,
+            email_service=email_service,
+            notification_settings_repository=notification_settings_repository,
+            notification_log_repository=notification_log_repository,
+        )
+    except NotificationEmailDisabledError as error:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Email-уведомления отключены") from error
+    except NotificationSendError as error:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Ошибка отправки email") from error
     except (AdminAuthAccessDeniedError, InactiveUserError) as error:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Недостаточно прав") from error
 

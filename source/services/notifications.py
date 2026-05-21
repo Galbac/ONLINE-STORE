@@ -42,7 +42,8 @@ class EmailService:
 
     def _send_email_notification(self, message: EmailMessage) -> None:
         with smtplib.SMTP(settings.email_notifications.host, settings.email_notifications.port) as smtp:
-            smtp.starttls()
+            if settings.email_notifications.use_tls:
+                smtp.starttls()
             if settings.email_notifications.username:
                 smtp.login(settings.email_notifications.username, settings.email_notifications.password)
             smtp.send_message(message)
