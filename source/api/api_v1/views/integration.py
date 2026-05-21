@@ -1,30 +1,77 @@
 from dishka.integrations.fastapi import FromDishka, inject
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from source.api.dependencies import verify_one_c_token
 from source.common.commiter import Commiter
 from source.config.settings import Settings
 from source.repositories.category import CategoryRepository
+from source.repositories.address import AddressRepository
+from source.repositories.delivery_time_slot import DeliveryTimeSlotRepository
 from source.repositories.integration_log import IntegrationLogRepository
+from source.repositories.order import OrderRepository
+from source.repositories.order_item import OrderItemRepository
+from source.repositories.payment import PaymentRepository
+from source.repositories.pickup_point import PickupPointRepository
 from source.repositories.product import ProductRepository
 from source.repositories.product_image import ProductImageRepository
 from source.repositories.product_price_history import ProductPriceHistoryRepository
 from source.repositories.stock_movement import StockMovementRepository
 from source.repositories.upload import UploadRepository
-from source.schemas.pydantic.one_c import OneCCategoryImportRequest, OneCImageImportRequest, OneCImportResultResponse, OneCPriceImportRequest, OneCProductImportRequest, OneCStockImportRequest
+from source.schemas.pydantic.one_c import OneCCategoryImportRequest, OneCImageImportRequest, OneCImportResultResponse, OneCOrderSyncStatus, OneCOrdersPendingQueryParams, OneCOrdersPendingResponse, OneCPriceImportRequest, OneCProductImportRequest, OneCStockImportRequest
 from source.services.admin_dashboard_cache import AdminDashboardCacheService
 from source.services.admin_product_cache import AdminProductCacheService
 from source.services.admin_category_cache import AdminCategoryCacheService
 from source.services.cart_cache import CartCacheService
 from source.services.category_cache import CategoryCacheService
-from source.services.one_c import CategorySyncService, ImageDownloadService, IntegrationLogService, OneCImportService, ProductImageSyncService, ProductPriceSyncService, ProductStockSyncService, ProductSyncService, SlugService
+from source.services.one_c import CategorySyncService, ImageDownloadService, IntegrationLogService, OneCImportService, OneCOrderPayloadBuilder, OneCOrderService, ProductImageSyncService, ProductPriceSyncService, ProductStockSyncService, ProductSyncService, SlugService
 from source.services.product_cache import ProductCacheService
 from source.services.redis import RedisService
 from source.services.storage import StorageService
 from source.services.stock import StockMovementService
 
 router = APIRouter(tags=["integration"])
+
+
+@router.get(
+    "/integration/1c/orders/pending",
+    response_model=OneCOrdersPendingResponse,
+    response_model_exclude_none=True,
+    status_code=status.HTTP_200_OK,
+)
+@inject
+async def get_one_c_pending_orders(
+    _token: None = Depends(verify_one_c_token),
+    limit: int | None = Query(default=None, ge=1),
+    sync_status: OneCOrderSyncStatus | None = Query(default=None, alias="status"),
+    session: FromDishka[AsyncSession] = None,
+    config: FromDishka[Settings] = None,
+    one_c_order_service: FromDishka[OneCOrderService] = None,
+    order_payload_builder: FromDishka[OneCOrderPayloadBuilder] = None,
+    order_repository: FromDishka[OrderRepository] = None,
+    order_item_repository: FromDishka[OrderItemRepository] = None,
+    payment_repository: FromDishka[PaymentRepository] = None,
+    address_repository: FromDishka[AddressRepository] = None,
+    pickup_point_repository: FromDishka[PickupPointRepository] = None,
+    delivery_time_slot_repository: FromDishka[DeliveryTimeSlotRepository] = None,
+    product_repository: FromDishka[ProductRepository] = None,
+) -> OneCOrdersPendingResponse:
+    effective_limit = limit if limit is not None else config.one_c.orders_pending_default_limit
+    if effective_limit > config.one_c.orders_pending_max_limit:
+        effective_limit = config.one_c.orders_pending_max_limit
+
+    return await one_c_order_service.get_pending_orders(
+        session=session,
+        query=OneCOrdersPendingQueryParams(limit=effective_limit, status=sync_status),
+        order_repository=order_repository,
+        order_item_repository=order_item_repository,
+        payment_repository=payment_repository,
+        address_repository=address_repository,
+        pickup_point_repository=pickup_point_repository,
+        delivery_time_slot_repository=delivery_time_slot_repository,
+        product_repository=product_repository,
+        order_payload_builder=order_payload_builder,
+    )
 
 
 @router.post(

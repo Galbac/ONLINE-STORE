@@ -1,8 +1,13 @@
 from decimal import Decimal
+from datetime import date as date_type, datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from source.schemas.pydantic.product import ProductType
+
+
+OneCOrderSyncStatus = Literal["pending", "pending_update", "pending_cancel", "error"]
 
 
 class OneCCategoryImportItem(BaseModel):
@@ -155,3 +160,63 @@ class OneCImportResultResponse(BaseModel):
     updated: int = 0
     skipped: int = 0
     errors: list[OneCImportItemErrorResponse] = Field(default_factory=list)
+
+
+class OneCOrdersPendingQueryParams(BaseModel):
+    limit: int = Field(default=50, ge=1, le=200)
+    status: OneCOrderSyncStatus | None = None
+
+
+class OneCOrderCustomerResponse(BaseModel):
+    name: str
+    phone: str
+    email: str | None = None
+
+
+class OneCOrderDeliveryResponse(BaseModel):
+    type: str
+    address: str | None = None
+    date: date_type | None = None
+    time_slot: str | None = None
+    pickup_point: str | None = None
+
+
+class OneCOrderPaymentResponse(BaseModel):
+    method: str | None = None
+    status: str | None = None
+
+
+class OneCOrderItemResponse(BaseModel):
+    product_id: int
+    product_external_1c_id: str | None = None
+    name: str
+    quantity: Decimal
+    unit: str
+    price: Decimal
+    final_price: Decimal
+
+
+class OneCOrderTotalsResponse(BaseModel):
+    subtotal: Decimal
+    discount_amount: Decimal
+    promo_discount_amount: Decimal
+    delivery_price: Decimal
+    final_price: Decimal
+
+
+class OneCOrderPayloadResponse(BaseModel):
+    id: int
+    order_number: str
+    status: str
+    sync_status: str
+    customer: OneCOrderCustomerResponse
+    delivery: OneCOrderDeliveryResponse
+    payment: OneCOrderPaymentResponse
+    items: list[OneCOrderItemResponse]
+    totals: OneCOrderTotalsResponse
+    created_at: datetime | None = None
+
+
+class OneCOrdersPendingResponse(BaseModel):
+    items: list[OneCOrderPayloadResponse]
+    total: int

@@ -347,6 +347,8 @@ class OneCSettings(BaseSettings):
     import_images_enabled: bool = Field(default=True, alias="ONE_C_IMPORT_IMAGES_ENABLED")
     download_images: bool = Field(default=False, alias="ONE_C_DOWNLOAD_IMAGES")
     product_images_source: str = Field(default="1c", alias="PRODUCT_IMAGES_SOURCE")
+    orders_pending_default_limit: int = Field(default=50, alias="ONE_C_ORDERS_PENDING_DEFAULT_LIMIT")
+    orders_pending_max_limit: int = Field(default=200, alias="ONE_C_ORDERS_PENDING_MAX_LIMIT")
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

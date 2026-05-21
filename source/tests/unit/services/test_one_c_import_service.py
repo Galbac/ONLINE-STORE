@@ -1,11 +1,11 @@
-from datetime import datetime
+from datetime import date, datetime, time
 import base64
 from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
 
-from source.api.api_v1.views.integration import import_one_c_categories, import_one_c_products
+from source.api.api_v1.views.integration import get_one_c_pending_orders, import_one_c_categories, import_one_c_products
 from source.api.dependencies import verify_one_c_token
 from source.config.settings import settings
 from source.schemas.pydantic.one_c import (
@@ -17,6 +17,7 @@ from source.schemas.pydantic.one_c import (
     OneCPriceImportRequest,
     OneCProductImportItem,
     OneCProductImportRequest,
+    OneCOrdersPendingQueryParams,
     OneCStockImportItem,
     OneCStockImportRequest,
 )
@@ -25,7 +26,7 @@ from source.services.admin_product_cache import AdminProductCacheService
 from source.services.admin_category_cache import AdminCategoryCacheService
 from source.services.cart_cache import CartCacheService
 from source.services.category_cache import CategoryCacheService
-from source.services.one_c import CategorySyncService, ImageDownloadService, IntegrationLogService, OneCImportService, ProductImageSyncService, ProductPriceSyncService, ProductStockSyncService, ProductSyncService, SlugService
+from source.services.one_c import CategorySyncService, ImageDownloadService, IntegrationLogService, OneCImportService, OneCOrderPayloadBuilder, OneCOrderService, ProductImageSyncService, ProductPriceSyncService, ProductStockSyncService, ProductSyncService, SlugService
 from source.services.product_cache import ProductCacheService
 from source.services.stock import StockMovementService
 
@@ -121,6 +122,65 @@ class FakeProductRepository:
 
     async def bulk_update_stocks(self, *, session, products: list):
         return products
+
+    async def get_by_ids(self, *, session, product_ids: list[int]):
+        return [product for product in self.products if product.id in product_ids]
+
+
+class FakeOrderRepository:
+    def __init__(self, orders=None) -> None:
+        self.orders = orders or []
+        self.last_limit = None
+
+    async def get_pending_sync(self, *, session, limit: int, sync_status: str | None = None):
+        self.last_limit = limit
+        allowed_sync_statuses = {sync_status} if sync_status is not None else {"pending", "pending_update", "pending_cancel"}
+        result = [
+            order
+            for order in self.orders
+            if order.sync_status in allowed_sync_statuses and order.status not in {"draft", "pending_payment"}
+        ]
+        return result[:limit]
+
+
+class FakeOrderItemRepository:
+    def __init__(self, items=None) -> None:
+        self.items = items or []
+
+    async def get_by_order_ids(self, *, session, order_ids: list[int]):
+        return [item for item in self.items if item.order_id in order_ids]
+
+
+class FakePaymentRepository:
+    def __init__(self, payments=None) -> None:
+        self.payments = payments or []
+
+    async def get_by_order_ids(self, *, session, order_ids: list[int]):
+        return [payment for payment in self.payments if payment.order_id in order_ids]
+
+
+class FakeAddressRepository:
+    def __init__(self, addresses=None) -> None:
+        self.addresses = addresses or []
+
+    async def get_by_ids(self, *, session, address_ids: list[int]):
+        return [address for address in self.addresses if address.id in address_ids]
+
+
+class FakePickupPointRepository:
+    def __init__(self, pickup_points=None) -> None:
+        self.pickup_points = pickup_points or []
+
+    async def get_by_ids(self, *, session, pickup_point_ids: list[int]):
+        return [pickup_point for pickup_point in self.pickup_points if pickup_point.id in pickup_point_ids]
+
+
+class FakeDeliveryTimeSlotRepository:
+    def __init__(self, slots=None) -> None:
+        self.slots = slots or []
+
+    async def get_by_ids(self, *, session, slot_ids: list[int]):
+        return [slot for slot in self.slots if slot.id in slot_ids]
 
 
 class FakeProductPriceHistoryRepository:
@@ -323,6 +383,80 @@ def build_product(
         description=description,
         meta_title=meta_title,
         meta_description=meta_description,
+    )
+
+
+def build_order(
+    *,
+    order_id: int = 101,
+    order_number: str = "ORD-000101",
+    status: str = "new",
+    sync_status: str = "pending",
+    address_id: int | None = 1,
+    pickup_point_id: int | None = None,
+    delivery_time_slot_id: int | None = 1,
+    delivery_type: str = "delivery",
+    payment_method: str | None = "online",
+    payment_status: str | None = "paid",
+):
+    return SimpleNamespace(
+        id=order_id,
+        order_number=order_number,
+        status=status,
+        sync_status=sync_status,
+        address_id=address_id,
+        pickup_point_id=pickup_point_id,
+        delivery_time_slot_id=delivery_time_slot_id,
+        delivery_type=delivery_type,
+        delivery_date=date(2026, 5, 20),
+        payment_method=payment_method,
+        payment_status=payment_status,
+        customer_name="Иван Иванов",
+        customer_phone="+79990000000",
+        customer_email="ivan@example.com",
+        subtotal="270.00",
+        discount_amount="45.00",
+        promo_discount_amount="100.00",
+        delivery_price="250.00",
+        final_price="375.00",
+        created_date=datetime(2026, 5, 12, 10, 0, 0),
+    )
+
+
+def build_order_item(*, order_id: int = 101, product_id: int = 55):
+    return SimpleNamespace(
+        id=1,
+        order_id=order_id,
+        product_id=product_id,
+        product_name="Яблоки красные",
+        quantity="1.5",
+        unit="kg",
+        price="150.00",
+        final_price="225.00",
+    )
+
+
+def build_address():
+    return SimpleNamespace(
+        id=1,
+        city="Москва",
+        street="Тверская",
+        house="10",
+        building=None,
+        apartment="15",
+    )
+
+
+def build_payment(*, order_id: int = 101):
+    return SimpleNamespace(id=1, order_id=order_id, status="paid")
+
+
+def build_delivery_slot():
+    return SimpleNamespace(
+        id=1,
+        label=None,
+        start_time=time(10, 0),
+        end_time=time(12, 0),
     )
 
 
@@ -548,6 +682,31 @@ async def import_images(
         integration_log_service=IntegrationLogService(),
         product_cache_service=ProductCacheService(),
         admin_product_cache_service=AdminProductCacheService(),
+    )
+
+
+async def get_pending_orders(
+    *,
+    query=None,
+    order_repository=None,
+    order_item_repository=None,
+    payment_repository=None,
+    address_repository=None,
+    pickup_point_repository=None,
+    delivery_time_slot_repository=None,
+    product_repository=None,
+):
+    return await OneCOrderService().get_pending_orders(
+        session=object(),
+        query=query or OneCOrdersPendingQueryParams(limit=50),
+        order_repository=order_repository or FakeOrderRepository([build_order()]),
+        order_item_repository=order_item_repository or FakeOrderItemRepository([build_order_item()]),
+        payment_repository=payment_repository or FakePaymentRepository([build_payment()]),
+        address_repository=address_repository or FakeAddressRepository([build_address()]),
+        pickup_point_repository=pickup_point_repository or FakePickupPointRepository(),
+        delivery_time_slot_repository=delivery_time_slot_repository or FakeDeliveryTimeSlotRepository([build_delivery_slot()]),
+        product_repository=product_repository or FakeProductRepository([build_product(product_id=55, external_1c_id="prod-001")]),
+        order_payload_builder=OneCOrderPayloadBuilder(),
     )
 
 
@@ -1321,3 +1480,98 @@ async def test_one_c_import_images_creates_integration_log(monkeypatch) -> None:
     assert log["system"] == "1c"
     assert log["entity_type"] == "product_images"
     assert log["status"] == "success"
+
+
+@pytest.mark.asyncio
+async def test_one_c_pending_orders_returns_pending_payload() -> None:
+    response = await get_pending_orders()
+
+    assert response.total == 1
+    order = response.items[0]
+    assert order.id == 101
+    assert order.order_number == "ORD-000101"
+    assert order.sync_status == "pending"
+    assert order.customer.phone == "+79990000000"
+    assert order.delivery.address == "Москва, Тверская 10, кв. 15"
+    assert order.delivery.time_slot == "10:00-12:00"
+    assert order.payment.status == "paid"
+    assert order.items[0].product_external_1c_id == "prod-001"
+    assert str(order.items[0].price) == "150.00"
+    assert str(order.items[0].final_price) == "225.00"
+
+
+@pytest.mark.asyncio
+async def test_one_c_pending_orders_limit_works() -> None:
+    orders = [build_order(order_id=index, order_number=f"ORD-{index}") for index in range(1, 4)]
+    response = await get_pending_orders(
+        query=OneCOrdersPendingQueryParams(limit=2),
+        order_repository=FakeOrderRepository(orders),
+        order_item_repository=FakeOrderItemRepository([]),
+        payment_repository=FakePaymentRepository([]),
+    )
+
+    assert response.total == 2
+    assert [order.id for order in response.items] == [1, 2]
+
+
+@pytest.mark.asyncio
+async def test_one_c_pending_orders_endpoint_caps_max_limit() -> None:
+    order_repository = FakeOrderRepository([])
+
+    await get_one_c_pending_orders.__dishka_orig_func__(
+        _token=None,
+        limit=500,
+        sync_status=None,
+        session=object(),
+        config=SimpleNamespace(one_c=SimpleNamespace(orders_pending_default_limit=50, orders_pending_max_limit=200)),
+        one_c_order_service=OneCOrderService(),
+        order_payload_builder=OneCOrderPayloadBuilder(),
+        order_repository=order_repository,
+        order_item_repository=FakeOrderItemRepository([]),
+        payment_repository=FakePaymentRepository([]),
+        address_repository=FakeAddressRepository([]),
+        pickup_point_repository=FakePickupPointRepository([]),
+        delivery_time_slot_repository=FakeDeliveryTimeSlotRepository([]),
+        product_repository=FakeProductRepository([]),
+    )
+
+    assert order_repository.last_limit == 200
+
+
+@pytest.mark.asyncio
+async def test_one_c_pending_orders_synced_orders_not_returned() -> None:
+    response = await get_pending_orders(
+        order_repository=FakeOrderRepository([build_order(sync_status="synced")]),
+    )
+
+    assert response.total == 0
+
+
+@pytest.mark.asyncio
+async def test_one_c_pending_orders_pending_payment_not_returned() -> None:
+    response = await get_pending_orders(
+        order_repository=FakeOrderRepository([build_order(status="pending_payment", sync_status="pending")]),
+    )
+
+    assert response.total == 0
+
+
+@pytest.mark.asyncio
+async def test_one_c_pending_orders_invalid_token_returns_401(monkeypatch) -> None:
+    monkeypatch.setattr(settings.one_c, "api_token", "secret")
+
+    with pytest.raises(HTTPException) as exc_info:
+        await verify_one_c_token(authorization="Bearer invalid")
+
+    assert exc_info.value.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_one_c_pending_orders_payload_uses_order_item_prices() -> None:
+    response = await get_pending_orders(
+        order_item_repository=FakeOrderItemRepository([build_order_item()]),
+        product_repository=FakeProductRepository([build_product(product_id=55, external_1c_id="prod-001", price="999.00")]),
+    )
+
+    assert str(response.items[0].items[0].price) == "150.00"
+    assert str(response.items[0].items[0].final_price) == "225.00"

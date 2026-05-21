@@ -83,6 +83,12 @@ class PickupPointRepository:
         result = await session.execute(select(PickupPoint).where(PickupPoint.id == pickup_point_id))
         return result.scalar_one_or_none()
 
+    async def get_by_ids(self, *, session: AsyncSession, pickup_point_ids: list[int]) -> list[PickupPoint]:
+        if not pickup_point_ids:
+            return []
+        result = await session.execute(select(PickupPoint).where(PickupPoint.id.in_(pickup_point_ids)))
+        return list(result.scalars().all())
+
     async def get_active_by_id(self, *, session: AsyncSession, pickup_point_id: int) -> PickupPoint | None:
         result = await session.execute(
             select(PickupPoint).where(

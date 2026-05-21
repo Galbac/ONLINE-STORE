@@ -86,6 +86,17 @@ class AddressRepository:
         result = await session.execute(select(Address).where(Address.id == address_id))
         return result.scalar_one_or_none()
 
+    async def get_by_ids(
+        self,
+        *,
+        session: AsyncSession,
+        address_ids: list[int],
+    ) -> list[Address]:
+        if not address_ids:
+            return []
+        result = await session.execute(select(Address).where(Address.id.in_(address_ids)))
+        return list(result.scalars().all())
+
     async def unset_default_by_user_id(
         self,
         *,

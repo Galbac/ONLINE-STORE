@@ -22,6 +22,17 @@ class OrderItemRepository:
         result = await session.execute(select(OrderItem).where(OrderItem.order_id == order_id))
         return list(result.scalars().all())
 
+    async def get_by_order_ids(
+        self,
+        *,
+        session: AsyncSession,
+        order_ids: list[int],
+    ) -> list[OrderItem]:
+        if not order_ids:
+            return []
+        result = await session.execute(select(OrderItem).where(OrderItem.order_id.in_(order_ids)))
+        return list(result.scalars().all())
+
     async def exists_active_order_by_product_id(
         self,
         *,

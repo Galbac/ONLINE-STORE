@@ -16,6 +16,8 @@ from source.schemas.pydantic.user import AdminUserOrdersQueryParams
 ACTIVE_ORDER_STATUSES = ("new", "paid", "assembling", "delivering", "in_progress")
 DELIVERY_ZONE_ACTIVE_ORDER_STATUSES = ("new", "confirmed", "assembling", "delivering", "pending_payment")
 PICKUP_POINT_ACTIVE_ORDER_STATUSES = ("new", "confirmed", "assembling", "ready_for_pickup")
+PENDING_1C_SYNC_STATUSES = ("pending", "pending_update", "pending_cancel")
+EXCLUDED_1C_ORDER_STATUSES = ("draft", "pending_payment")
 
 
 class OrderRepository:
@@ -34,6 +36,25 @@ class OrderRepository:
     ) -> Order | None:
         result = await session.execute(select(Order).where(Order.id == order_id))
         return result.scalar_one_or_none()
+
+    async def get_pending_sync(
+        self,
+        *,
+        session: AsyncSession,
+        limit: int,
+        sync_status: str | None = None,
+    ) -> list[Order]:
+        sync_statuses = (sync_status,) if sync_status is not None else PENDING_1C_SYNC_STATUSES
+        result = await session.execute(
+            select(Order)
+            .where(
+                Order.sync_status.in_(sync_statuses),
+                Order.status.notin_(EXCLUDED_1C_ORDER_STATUSES),
+            )
+            .order_by(Order.created_date.asc(), Order.id.asc())
+            .limit(limit),
+        )
+        return list(result.scalars().all())
 
     async def exists_active_by_delivery_zone_id(
         self,

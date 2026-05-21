@@ -16,6 +16,14 @@ from source.schemas.pydantic.one_c import (
     OneCImageImportItem,
     OneCImageImportRequest,
     OneCImportItemErrorResponse,
+    OneCOrderCustomerResponse,
+    OneCOrderDeliveryResponse,
+    OneCOrderItemResponse,
+    OneCOrderPayloadResponse,
+    OneCOrderPaymentResponse,
+    OneCOrdersPendingQueryParams,
+    OneCOrdersPendingResponse,
+    OneCOrderTotalsResponse,
     OneCPriceImportItem,
     OneCPriceImportRequest,
     OneCProductImportItem,
@@ -86,6 +94,148 @@ class OneCIntegrationService:
             raise OneCSyncError(f"1C HTTP error {error.code}") from error
         except URLError as error:
             raise OneCSyncError("1C unavailable") from error
+
+
+class OneCOrderPayloadBuilder:
+    def build_order_payload(
+        self,
+        *,
+        order,
+        order_items: list,
+        products_by_id: dict[int, object],
+        address,
+        pickup_point,
+        payment,
+        delivery_time_slot,
+    ) -> OneCOrderPayloadResponse:
+        return OneCOrderPayloadResponse(
+            id=order.id,
+            order_number=order.order_number,
+            status=order.status,
+            sync_status=order.sync_status,
+            customer=OneCOrderCustomerResponse(
+                name=order.customer_name,
+                phone=order.customer_phone,
+                email=order.customer_email,
+            ),
+            delivery=OneCOrderDeliveryResponse(
+                type=order.delivery_type,
+                address=self._build_delivery_address(order=order, address=address, pickup_point=pickup_point),
+                date=order.delivery_date,
+                time_slot=self._build_time_slot(delivery_time_slot=delivery_time_slot),
+                pickup_point=pickup_point.name if pickup_point is not None else None,
+            ),
+            payment=OneCOrderPaymentResponse(
+                method=order.payment_method,
+                status=payment.status if payment is not None else order.payment_status,
+            ),
+            items=[
+                OneCOrderItemResponse(
+                    product_id=item.product_id,
+                    product_external_1c_id=getattr(products_by_id.get(item.product_id), "external_1c_id", None),
+                    name=item.product_name,
+                    quantity=item.quantity,
+                    unit=item.unit,
+                    price=item.price,
+                    final_price=item.final_price,
+                )
+                for item in order_items
+            ],
+            totals=OneCOrderTotalsResponse(
+                subtotal=order.subtotal,
+                discount_amount=order.discount_amount,
+                promo_discount_amount=order.promo_discount_amount,
+                delivery_price=order.delivery_price,
+                final_price=order.final_price,
+            ),
+            created_at=order.created_date,
+        )
+
+    def _build_delivery_address(self, *, order, address, pickup_point) -> str | None:
+        if order.delivery_type == "pickup":
+            return pickup_point.address if pickup_point is not None else None
+        if address is None:
+            return None
+        parts = [
+            address.city,
+            f"{address.street} {address.house}".strip(),
+        ]
+        if address.building:
+            parts.append(f"корп. {address.building}")
+        if address.apartment:
+            parts.append(f"кв. {address.apartment}")
+        return ", ".join(part for part in parts if part)
+
+    def _build_time_slot(self, *, delivery_time_slot) -> str | None:
+        if delivery_time_slot is None:
+            return None
+        if delivery_time_slot.label:
+            return delivery_time_slot.label
+        return f"{delivery_time_slot.start_time.strftime('%H:%M')}-{delivery_time_slot.end_time.strftime('%H:%M')}"
+
+
+class OneCOrderService:
+    async def get_pending_orders(
+        self,
+        *,
+        session,
+        query: OneCOrdersPendingQueryParams,
+        order_repository,
+        order_item_repository,
+        payment_repository,
+        address_repository,
+        pickup_point_repository,
+        delivery_time_slot_repository,
+        product_repository,
+        order_payload_builder: OneCOrderPayloadBuilder,
+    ) -> OneCOrdersPendingResponse:
+        orders = await order_repository.get_pending_sync(
+            session=session,
+            limit=query.limit,
+            sync_status=query.status,
+        )
+        order_ids = [order.id for order in orders]
+        order_items = await order_item_repository.get_by_order_ids(session=session, order_ids=order_ids)
+        payments = await payment_repository.get_by_order_ids(session=session, order_ids=order_ids)
+        addresses = await address_repository.get_by_ids(
+            session=session,
+            address_ids=[order.address_id for order in orders if order.address_id is not None],
+        )
+        pickup_points = await pickup_point_repository.get_by_ids(
+            session=session,
+            pickup_point_ids=[order.pickup_point_id for order in orders if order.pickup_point_id is not None],
+        )
+        delivery_time_slots = await delivery_time_slot_repository.get_by_ids(
+            session=session,
+            slot_ids=[order.delivery_time_slot_id for order in orders if order.delivery_time_slot_id is not None],
+        )
+        products = await product_repository.get_by_ids(
+            session=session,
+            product_ids=list({item.product_id for item in order_items}),
+        )
+
+        items_by_order_id: dict[int, list] = {}
+        for item in order_items:
+            items_by_order_id.setdefault(item.order_id, []).append(item)
+        payments_by_order_id = {payment.order_id: payment for payment in payments}
+        addresses_by_id = {address.id: address for address in addresses}
+        pickup_points_by_id = {pickup_point.id: pickup_point for pickup_point in pickup_points}
+        slots_by_id = {slot.id: slot for slot in delivery_time_slots}
+        products_by_id = {product.id: product for product in products}
+
+        payloads = [
+            order_payload_builder.build_order_payload(
+                order=order,
+                order_items=items_by_order_id.get(order.id, []),
+                products_by_id=products_by_id,
+                address=addresses_by_id.get(order.address_id),
+                pickup_point=pickup_points_by_id.get(order.pickup_point_id),
+                payment=payments_by_order_id.get(order.id),
+                delivery_time_slot=slots_by_id.get(order.delivery_time_slot_id),
+            )
+            for order in orders
+        ]
+        return OneCOrdersPendingResponse(items=payloads, total=len(payloads))
 
 
 class CategorySyncService:

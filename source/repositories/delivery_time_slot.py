@@ -12,6 +12,12 @@ class DeliveryTimeSlotRepository:
         result = await session.execute(select(DeliveryTimeSlot).where(DeliveryTimeSlot.id == slot_id))
         return result.scalar_one_or_none()
 
+    async def get_by_ids(self, *, session: AsyncSession, slot_ids: list[int]) -> list[DeliveryTimeSlot]:
+        if not slot_ids:
+            return []
+        result = await session.execute(select(DeliveryTimeSlot).where(DeliveryTimeSlot.id.in_(slot_ids)))
+        return list(result.scalars().all())
+
     async def get_by_day(
         self,
         *,
