@@ -11,6 +11,10 @@ from source.schemas.pydantic.cart import CartResponse
 AdminPromoCodeDiscountType = Literal["percent", "fixed_amount"]
 
 
+class MessageResponse(BaseModel):
+    message: str
+
+
 class AdminPromoCodeListQueryParams(BaseModel):
     page: int = Field(default=1, ge=1)
     limit: int = Field(default=50, ge=1, le=100)

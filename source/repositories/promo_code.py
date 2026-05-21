@@ -36,6 +36,23 @@ class PromoCodeRepository:
         await session.refresh(promo_code)
         return promo_code
 
+    async def soft_delete(
+        self,
+        *,
+        session: AsyncSession,
+        promo_code: PromoCode,
+        deleted_at: datetime,
+        deleted_by: int,
+    ) -> PromoCode:
+        promo_code.is_deleted = True
+        promo_code.is_active = False
+        promo_code.deleted_at = deleted_at
+        promo_code.deleted_by = deleted_by
+        session.add(promo_code)
+        await session.flush()
+        await session.refresh(promo_code)
+        return promo_code
+
     async def admin_get_list(
         self,
         *,
@@ -95,7 +112,13 @@ class PromoCodeRepository:
         return result.scalar_one_or_none()
 
     async def get_active_by_code(self, *, session: AsyncSession, code: str) -> PromoCode | None:
-        result = await session.execute(select(PromoCode).where(PromoCode.code == code, PromoCode.is_active.is_(True)))
+        result = await session.execute(
+            select(PromoCode).where(
+                PromoCode.code == code,
+                PromoCode.is_active.is_(True),
+                PromoCode.is_deleted.is_(False),
+            ),
+        )
         return result.scalar_one_or_none()
 
 

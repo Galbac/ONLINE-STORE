@@ -157,6 +157,7 @@ from source.schemas.pydantic.promo_code import (
     AdminPromoCodeListQueryParams,
     AdminPromoCodeListResponse,
     AdminPromoCodeUpdateRequest,
+    MessageResponse as AdminPromoCodeMessageResponse,
 )
 from source.schemas.pydantic.user import (
     AdminUserBlockRequest,
@@ -477,6 +478,55 @@ async def update_admin_promo_code(
     except PromoCodeUsageLimitExceededError as error:
         await commiter.rollback()
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="usage_limit меньше уже использованного количества") from error
+    except Exception as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Внутренняя ошибка сервера") from error
+
+
+@router.delete("/promo-codes/{promo_code_id}", response_model=AdminPromoCodeMessageResponse, status_code=status.HTTP_200_OK)
+@inject
+async def delete_admin_promo_code(
+    request: Request,
+    promo_code_id: int = Path(..., gt=0),
+    token_payload: dict = Depends(verify_access_token),
+    current_user: User = Depends(get_current_user),
+    session: FromDishka[AsyncSession] = None,
+    commiter: FromDishka[Commiter] = None,
+    redis_service: FromDishka[RedisService] = None,
+    admin_promo_code_service: FromDishka[AdminPromoCodeService] = None,
+    permission_service: FromDishka[PermissionService] = None,
+    promo_code_repository: FromDishka[PromoCodeRepository] = None,
+    audit_log_service: FromDishka[AuditLogService] = None,
+    admin_audit_log_repository: FromDishka[AdminAuditLogRepository] = None,
+) -> AdminPromoCodeMessageResponse:
+    if token_payload.get("token_type") != "access":
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь не авторизован")
+    try:
+        return await admin_promo_code_service.delete_promo_code(
+            session=session,
+            redis_service=redis_service,
+            user=current_user,
+            promo_code_id=promo_code_id,
+            commiter=commiter,
+            permission_service=permission_service,
+            promo_code_repository=promo_code_repository,
+            audit_log_service=audit_log_service,
+            admin_audit_log_repository=admin_audit_log_repository,
+            ip_address=request.client.host if request.client else None,
+            user_agent=request.headers.get("user-agent"),
+        )
+    except InvalidCredentialsError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь не авторизован") from error
+    except AdminAuthAccessDeniedError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Недостаточно прав") from error
+    except InactiveUserError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Пользователь заблокирован") from error
+    except PromoCodeNotFoundError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Промокод не найден") from error
     except Exception as error:
         await commiter.rollback()
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Внутренняя ошибка сервера") from error

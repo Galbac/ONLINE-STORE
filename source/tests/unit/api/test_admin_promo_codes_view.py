@@ -3,7 +3,7 @@ from types import SimpleNamespace
 import pytest
 from fastapi import HTTPException
 
-from source.api.api_v1.views.admin_dashboard import get_admin_promo_code_detail, get_admin_promo_codes
+from source.api.api_v1.views.admin_dashboard import delete_admin_promo_code, get_admin_promo_code_detail, get_admin_promo_codes
 from source.db.models.choises.enum import UserRole
 from source.services.admin_auth import PermissionService
 from source.services.admin_promo_code import AdminPromoCodeService
@@ -16,6 +16,9 @@ class FakeRedisService:
     async def set(self, key: str, value: str, *, ttl_seconds: int | None = None) -> None:
         return None
 
+    async def delete_by_pattern(self, pattern: str) -> None:
+        return None
+
 
 class FakePromoCodeRepository:
     async def admin_get_list(self, *, session, query):
@@ -26,6 +29,9 @@ class FakePromoCodeRepository:
 
     async def admin_get_by_id(self, *, session, promo_code_id: int):
         return None
+
+    async def soft_delete(self, *, session, promo_code, deleted_at, deleted_by):
+        return promo_code
 
 
 class FakePromoCodeUsageRepository:
@@ -48,6 +54,16 @@ class FakePromoCodeCategoryRepository:
 
 def build_user(*, role=UserRole.MANAGER):
     return SimpleNamespace(id=1, role=role, is_active=True, is_deleted=False, is_blocked=False)
+
+
+class FakeCommiter:
+    async def rollback(self) -> None:
+        return None
+
+
+class FakeAuditLogRepository:
+    async def create(self, *, session, **data):
+        return SimpleNamespace(**data)
 
 
 @pytest.mark.asyncio
@@ -87,6 +103,25 @@ async def test_admin_get_promo_code_detail_no_permission_returns_403() -> None:
             promo_code_usage_repository=FakePromoCodeUsageRepository(),
             promo_code_product_repository=FakePromoCodeProductRepository(),
             promo_code_category_repository=FakePromoCodeCategoryRepository(),
+        )
+
+    assert exc_info.value.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_admin_delete_promo_code_no_permission_returns_403() -> None:
+    with pytest.raises(HTTPException) as exc_info:
+        await delete_admin_promo_code.__dishka_orig_func__(
+            request=SimpleNamespace(client=None, headers={}),
+            token_payload={"token_type": "access"},
+            current_user=build_user(role=UserRole.MANAGER),
+            promo_code_id=1,
+            commiter=FakeCommiter(),
+            redis_service=FakeRedisService(),
+            admin_promo_code_service=AdminPromoCodeService(),
+            permission_service=PermissionService(),
+            promo_code_repository=FakePromoCodeRepository(),
+            admin_audit_log_repository=FakeAuditLogRepository(),
         )
 
     assert exc_info.value.status_code == 403

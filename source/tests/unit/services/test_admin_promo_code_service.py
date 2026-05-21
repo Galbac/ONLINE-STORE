@@ -47,6 +47,8 @@ class FakePromoCodeRepository:
         self.created = []
         self.detail_calls = 0
         self.updated = []
+        self.soft_deleted = []
+        self.usages_deleted = False
 
     async def admin_get_list(self, *, session, query: AdminPromoCodeListQueryParams):
         promo_codes = self._filter(query=query)
@@ -97,6 +99,14 @@ class FakePromoCodeRepository:
         for field, value in data.items():
             setattr(promo_code, field, value)
         promo_code.updated_date = datetime(2026, 5, 12, 11, 0, 0)
+        return promo_code
+
+    async def soft_delete(self, *, session, promo_code, deleted_at: datetime, deleted_by: int):
+        promo_code.is_deleted = True
+        promo_code.is_active = False
+        promo_code.deleted_at = deleted_at
+        promo_code.deleted_by = deleted_by
+        self.soft_deleted.append((promo_code.id, deleted_at, deleted_by))
         return promo_code
 
     def _filter(self, *, query: AdminPromoCodeListQueryParams):
@@ -250,6 +260,8 @@ def build_promo_code(
         applicable_product_id=None,
         applicable_category_id=None,
         is_deleted=False,
+        deleted_at=None,
+        deleted_by=None,
         is_active=is_active,
         starts_at=datetime(2026, 5, 1, 0, 0, 0),
         ends_at=datetime(2026, 5, 31, 23, 59, 59),
@@ -427,6 +439,39 @@ async def update_promo_code(
         promo_code_repository=promo_code_repository,
         promo_code_product_repository=promo_code_product_repository,
         promo_code_category_repository=promo_code_category_repository,
+    )
+
+
+async def delete_promo_code(
+    *,
+    promo_code_id: int = 1,
+    redis_service=None,
+    role=UserRole.ADMIN,
+    promo_code_repository=None,
+    audit_log_repository=None,
+    commiter=None,
+):
+    redis_service = redis_service or FakeRedisService()
+    audit_log_repository = audit_log_repository or FakeAuditLogRepository()
+    commiter = commiter or FakeCommiter()
+    promo_code_repository = promo_code_repository or FakePromoCodeRepository()
+    response = await AdminPromoCodeService().delete_promo_code(
+        session=None,
+        redis_service=redis_service,
+        user=build_user(role=role),
+        promo_code_id=promo_code_id,
+        commiter=commiter,
+        permission_service=PermissionService(),
+        promo_code_repository=promo_code_repository,
+        audit_log_service=AuditLogService(),
+        admin_audit_log_repository=audit_log_repository,
+    )
+    return SimpleNamespace(
+        response=response,
+        redis_service=redis_service,
+        audit_log_repository=audit_log_repository,
+        commiter=commiter,
+        promo_code_repository=promo_code_repository,
     )
 
 
@@ -719,4 +764,58 @@ async def test_admin_update_promo_code_audit_log_created() -> None:
     assert result.audit_log_repository.logs[0]["details"]["changes"]["code"] == {
         "old": "PROMO10",
         "new": "PROMO15",
+    }
+
+
+@pytest.mark.asyncio
+async def test_admin_delete_promo_code_success() -> None:
+    result = await delete_promo_code()
+
+    assert result.response.message == "Промокод удалён"
+    assert result.promo_code_repository.soft_deleted[0][0] == 1
+    assert result.commiter.committed is True
+
+
+@pytest.mark.asyncio
+async def test_admin_delete_promo_code_not_found_error() -> None:
+    with pytest.raises(PromoCodeNotFoundError):
+        await delete_promo_code(promo_code_id=999)
+
+
+@pytest.mark.asyncio
+async def test_admin_delete_promo_code_sets_inactive_and_deleted() -> None:
+    result = await delete_promo_code()
+    promo_code = result.promo_code_repository.promo_codes[0]
+
+    assert promo_code.is_active is False
+    assert promo_code.is_deleted is True
+    assert promo_code.deleted_by == 1
+    assert promo_code.deleted_at is not None
+
+
+@pytest.mark.asyncio
+async def test_admin_delete_promo_code_does_not_delete_usages() -> None:
+    result = await delete_promo_code()
+
+    assert result.promo_code_repository.usages_deleted is False
+
+
+@pytest.mark.asyncio
+async def test_admin_delete_promo_code_invalidates_cache() -> None:
+    result = await delete_promo_code()
+
+    assert result.redis_service.ttls["admin:promo_codes:*"] == 0
+    assert result.redis_service.ttls["cart:*"] == 0
+
+
+@pytest.mark.asyncio
+async def test_admin_delete_promo_code_audit_log_created() -> None:
+    result = await delete_promo_code()
+
+    assert result.audit_log_repository.logs[0]["event"] == "admin_promo_code_delete"
+    assert result.audit_log_repository.logs[0]["details"] == {
+        "promo_code_id": 1,
+        "code": "PROMO10",
+        "name": "Скидка 10%",
+        "discount_type": "percent",
     }

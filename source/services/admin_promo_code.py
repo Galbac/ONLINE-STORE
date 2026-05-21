@@ -1,9 +1,10 @@
+from datetime import datetime
+from decimal import Decimal
+
 from source.config.settings import settings
 from source.errors.auth import AdminAuthAccessDeniedError, InactiveUserError
 from source.errors.category import CategoryNotFoundError
 from source.errors.product import ProductNotFoundError
-from decimal import Decimal
-
 from source.errors.promo_code import (
     EmptyPromoCodeUpdateError,
     PromoCodeAlreadyExistsError,
@@ -19,6 +20,7 @@ from source.schemas.pydantic.promo_code import (
     AdminPromoCodeListResponse,
     AdminPromoCodeProductResponse,
     AdminPromoCodeUpdateRequest,
+    MessageResponse,
 )
 from source.services.admin_auth import STAFF_ROLES
 from source.services.redis import RedisService
@@ -49,6 +51,14 @@ class AdminPromoCodeService:
         if user.role not in STAFF_ROLES:
             raise AdminAuthAccessDeniedError
         if "admin:promo_codes:update" not in permission_service.get_user_permissions(role=user.role):
+            raise AdminAuthAccessDeniedError
+
+    def _check_delete_permission(self, *, user, permission_service) -> None:
+        if not user.is_active or user.is_deleted or user.is_blocked:
+            raise InactiveUserError
+        if user.role not in STAFF_ROLES:
+            raise AdminAuthAccessDeniedError
+        if "admin:promo_codes:delete" not in permission_service.get_user_permissions(role=user.role):
             raise AdminAuthAccessDeniedError
 
     async def get_promo_codes(
@@ -368,6 +378,56 @@ class AdminPromoCodeService:
             products=products,
             categories=categories,
         )
+
+    async def delete_promo_code(
+        self,
+        *,
+        session,
+        redis_service: RedisService,
+        user,
+        promo_code_id: int,
+        commiter,
+        permission_service,
+        promo_code_repository,
+        audit_log_service,
+        admin_audit_log_repository,
+        ip_address: str | None = None,
+        user_agent: str | None = None,
+    ) -> MessageResponse:
+        self._check_delete_permission(user=user, permission_service=permission_service)
+
+        promo_code = await promo_code_repository.admin_get_by_id(session=session, promo_code_id=promo_code_id)
+        if promo_code is None:
+            raise PromoCodeNotFoundError
+
+        deleted_promo_code = await promo_code_repository.soft_delete(
+            session=session,
+            promo_code=promo_code,
+            deleted_at=datetime.now(settings.tz),
+            deleted_by=user.id,
+        )
+        await audit_log_service.log_action(
+            session=session,
+            audit_log_repository=admin_audit_log_repository,
+            user_id=user.id,
+            login=getattr(user, "email", None) or getattr(user, "phone", None) or str(user.id),
+            event="admin_promo_code_delete",
+            status="success",
+            ip_address=ip_address,
+            user_agent=user_agent,
+            details={
+                "promo_code_id": deleted_promo_code.id,
+                "code": deleted_promo_code.code,
+                "name": deleted_promo_code.name,
+                "discount_type": deleted_promo_code.discount_type,
+            },
+        )
+        await commiter.commit()
+
+        await redis_service.delete_by_pattern("admin:promo_codes:*")
+        await redis_service.delete_by_pattern("cart:*")
+
+        return MessageResponse(message="Промокод удалён")
 
     def _list_key(self, *, query_hash: str) -> str:
         return f"admin:promo_codes:list:{query_hash}"
