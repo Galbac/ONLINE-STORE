@@ -11,6 +11,8 @@ from urllib.request import Request, urlopen
 from source.config.settings import settings
 from source.errors.auth import AdminAuthAccessDeniedError, InactiveUserError, OneCIntegrationDisabledError, OneCSyncAlreadyRunningError, OneCSyncError
 from source.schemas.pydantic.one_c import (
+    AdminOneCOrderSyncRequest,
+    AdminOneCOrderSyncResponse,
     AdminOneCSyncRequest,
     AdminOneCSyncResponse,
     OneCCategoryImportItem,
@@ -103,6 +105,37 @@ class OneCIntegrationService:
 
 
 class OneCClient:
+    async def sync_order(self, *, payload: dict) -> dict:
+        if not settings.one_c.api_url:
+            raise OneCSyncError("1C API URL is not configured")
+
+        url = settings.one_c.api_url.rstrip("/") + "/orders"
+        headers = {"Content-Type": "application/json"}
+        if settings.one_c.api_token:
+            headers["Authorization"] = f"Bearer {settings.one_c.api_token}"
+
+        request = Request(
+            url,
+            data=json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8"),
+            headers=headers,
+            method="POST",
+        )
+        try:
+            with urlopen(request, timeout=20) as response:
+                response_body = response.read().decode("utf-8")
+        except HTTPError as error:
+            error_body = error.read().decode("utf-8", errors="ignore")
+            raise OneCSyncError(error_body or f"1C HTTP error {error.code}") from error
+        except URLError as error:
+            raise OneCSyncError(str(error.reason)) from error
+
+        if not response_body:
+            return {}
+        try:
+            return json.loads(response_body)
+        except json.JSONDecodeError as error:
+            raise OneCSyncError("Invalid 1C response") from error
+
     async def fetch_products(self, *, full_sync: bool = False) -> OneCProductImportRequest:
         if not settings.one_c.api_url:
             raise OneCSyncError("1C API URL is not configured")
@@ -192,6 +225,27 @@ class OneCClient:
 
 
 class OneCOrderPayloadBuilder:
+    def build(
+        self,
+        *,
+        order,
+        order_items: list,
+        products_by_id: dict[int, object],
+        address,
+        pickup_point,
+        payment,
+        delivery_time_slot,
+    ) -> OneCOrderPayloadResponse:
+        return self.build_order_payload(
+            order=order,
+            order_items=order_items,
+            products_by_id=products_by_id,
+            address=address,
+            pickup_point=pickup_point,
+            payment=payment,
+            delivery_time_slot=delivery_time_slot,
+        )
+
     def build_order_payload(
         self,
         *,
@@ -1535,6 +1589,7 @@ class AdminOneCIntegrationService:
     _products_lock_key = "integration:1c:lock:products"
     _prices_lock_key = "integration:1c:lock:prices"
     _stocks_lock_key = "integration:1c:lock:stocks"
+    _orders_lock_key = "integration:1c:lock:orders"
 
     def _check_sync_permission(self, *, user, permission_service) -> None:
         if not user.is_active or user.is_deleted:
@@ -1946,6 +2001,218 @@ class AdminOneCIntegrationService:
             raise OneCSyncError(error_message) from error
         finally:
             await redis_lock_service.release(redis_service=redis_service, key=self._stocks_lock_key)
+
+    async def sync_orders(
+        self,
+        *,
+        session,
+        redis_service,
+        user,
+        data: AdminOneCOrderSyncRequest,
+        commiter,
+        config,
+        permission_service,
+        redis_lock_service,
+        one_c_client: OneCClient,
+        order_payload_builder: OneCOrderPayloadBuilder,
+        integration_job_service: IntegrationJobService,
+        integration_job_repository,
+        integration_log_repository,
+        order_repository,
+        order_item_repository,
+        payment_repository,
+        address_repository,
+        pickup_point_repository,
+        delivery_time_slot_repository,
+        product_repository,
+        admin_order_cache_service,
+        order_cache_service,
+    ) -> AdminOneCOrderSyncResponse:
+        self._check_sync_permission(user=user, permission_service=permission_service)
+        if not config.one_c.sync_enabled or not config.one_c.api_url:
+            raise OneCIntegrationDisabledError
+
+        lock_acquired = await redis_lock_service.acquire(
+            redis_service=redis_service,
+            key=self._orders_lock_key,
+            ttl_seconds=config.one_c.sync_lock_ttl_seconds,
+        )
+        if not lock_acquired:
+            raise OneCSyncAlreadyRunningError
+
+        job = None
+        processed = 0
+        synced = 0
+        errors = 0
+        try:
+            job = await integration_job_service.create_job(
+                session=session,
+                integration_job_repository=integration_job_repository,
+                job_type="orders",
+                started_by=user.id,
+                full_sync=False,
+            )
+            await integration_log_repository.create(
+                session=session,
+                system="1c",
+                entity_type="orders",
+                entity_id=job.id,
+                action="manual_sync_started",
+                status="started",
+                request_payload=data.model_dump(),
+                response_payload=None,
+                error_message=None,
+            )
+            await commiter.commit()
+
+            if data.only_errors:
+                orders = await order_repository.get_error_sync(session=session, limit=data.limit)
+            else:
+                orders = await order_repository.get_pending_sync(session=session, limit=data.limit)
+
+            order_ids = [order.id for order in orders]
+            order_items = await order_item_repository.get_by_order_ids(session=session, order_ids=order_ids)
+            payments = await payment_repository.get_by_order_ids(session=session, order_ids=order_ids)
+            addresses = await address_repository.get_by_ids(
+                session=session,
+                address_ids=[order.address_id for order in orders if order.address_id is not None],
+            )
+            pickup_points = await pickup_point_repository.get_by_ids(
+                session=session,
+                pickup_point_ids=[order.pickup_point_id for order in orders if order.pickup_point_id is not None],
+            )
+            delivery_time_slots = await delivery_time_slot_repository.get_by_ids(
+                session=session,
+                slot_ids=[order.delivery_time_slot_id for order in orders if order.delivery_time_slot_id is not None],
+            )
+            products = await product_repository.get_by_ids(
+                session=session,
+                product_ids=list({item.product_id for item in order_items}),
+            )
+
+            items_by_order_id: dict[int, list] = {}
+            for item in order_items:
+                items_by_order_id.setdefault(item.order_id, []).append(item)
+            payments_by_order_id = {payment.order_id: payment for payment in payments}
+            addresses_by_id = {address.id: address for address in addresses}
+            pickup_points_by_id = {pickup_point.id: pickup_point for pickup_point in pickup_points}
+            slots_by_id = {slot.id: slot for slot in delivery_time_slots}
+            products_by_id = {product.id: product for product in products}
+
+            for order in orders:
+                processed += 1
+                payload_model = order_payload_builder.build(
+                    order=order,
+                    order_items=items_by_order_id.get(order.id, []),
+                    products_by_id=products_by_id,
+                    address=addresses_by_id.get(order.address_id),
+                    pickup_point=pickup_points_by_id.get(order.pickup_point_id),
+                    payment=payments_by_order_id.get(order.id),
+                    delivery_time_slot=slots_by_id.get(order.delivery_time_slot_id),
+                )
+                payload = payload_model.model_dump(mode="json")
+                now = datetime.now(settings.tz)
+                try:
+                    sync_response = await one_c_client.sync_order(payload=payload)
+                    external_1c_id = sync_response.get("external_1c_id") or sync_response.get("id") or order.external_1c_id
+                    await order_repository.update_sync_success(
+                        session=session,
+                        order=order,
+                        external_1c_id=external_1c_id,
+                        last_sync_at=now,
+                    )
+                    await integration_log_repository.create(
+                        session=session,
+                        system="1c",
+                        entity_type="orders",
+                        entity_id=order.id,
+                        action="manual_sync_order",
+                        status="success",
+                        request_payload=payload,
+                        response_payload=sync_response,
+                        error_message=None,
+                    )
+                    synced += 1
+                except Exception as error:
+                    error_message = self._sanitize_error_message(str(error))
+                    await order_repository.update_sync_error(
+                        session=session,
+                        order=order,
+                        sync_error=error_message,
+                        sync_error_code=None,
+                        last_sync_at=now,
+                    )
+                    await integration_log_repository.create(
+                        session=session,
+                        system="1c",
+                        entity_type="orders",
+                        entity_id=order.id,
+                        action="manual_sync_order",
+                        status="error",
+                        request_payload=payload,
+                        response_payload=None,
+                        error_message=error_message,
+                    )
+                    errors += 1
+
+            result_payload = {"processed": processed, "synced": synced, "errors": errors}
+            await integration_job_service.finish_job(
+                session=session,
+                integration_job_repository=integration_job_repository,
+                job=job,
+                status="success",
+                result_payload=result_payload,
+            )
+            await integration_log_repository.create(
+                session=session,
+                system="1c",
+                entity_type="orders",
+                entity_id=job.id,
+                action="manual_sync_finished",
+                status="success",
+                request_payload=data.model_dump(),
+                response_payload=result_payload,
+                error_message=None,
+            )
+            await commiter.commit()
+
+            await admin_order_cache_service.invalidate_all(redis_service=redis_service)
+            await order_cache_service.invalidate_all(redis_service=redis_service)
+
+            return AdminOneCOrderSyncResponse(
+                status="success",
+                job_id=job.id,
+                processed=processed,
+                synced=synced,
+                errors=errors,
+            )
+        except Exception as error:
+            await commiter.rollback()
+            error_message = self._sanitize_error_message(str(error))
+            if job is not None:
+                await integration_job_service.finish_job(
+                    session=session,
+                    integration_job_repository=integration_job_repository,
+                    job=job,
+                    status="error",
+                    result_payload={"processed": processed, "synced": synced, "errors": errors},
+                    error_message=error_message,
+                )
+                await integration_log_repository.create(
+                    session=session,
+                    system="1c",
+                    entity_type="orders",
+                    entity_id=job.id,
+                    action="manual_sync_finished",
+                    status="error",
+                    request_payload=data.model_dump(),
+                    response_payload={"processed": processed, "synced": synced, "errors": errors},
+                    error_message=error_message,
+                )
+                await commiter.commit()
+            raise OneCSyncError(error_message) from error
+        finally:
+            await redis_lock_service.release(redis_service=redis_service, key=self._orders_lock_key)
 
     def _sanitize_error_message(self, message: str) -> str:
         if settings.one_c.api_token:

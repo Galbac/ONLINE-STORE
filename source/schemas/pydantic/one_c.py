@@ -177,6 +177,21 @@ class AdminOneCSyncResponse(BaseModel):
     errors: list[OneCImportItemErrorResponse] | None = None
 
 
+class AdminOneCOrderSyncRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    limit: int = Field(default=50, ge=1, le=200)
+    only_errors: bool = False
+
+
+class AdminOneCOrderSyncResponse(BaseModel):
+    status: Literal["success"]
+    job_id: int
+    processed: int
+    synced: int
+    errors: int
+
+
 class OneCOrdersPendingQueryParams(BaseModel):
     limit: int = Field(default=50, ge=1, le=200)
     status: OneCOrderSyncStatus | None = None

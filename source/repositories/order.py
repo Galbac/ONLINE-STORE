@@ -56,6 +56,14 @@ class OrderRepository:
         )
         return list(result.scalars().all())
 
+    async def get_error_sync(
+        self,
+        *,
+        session: AsyncSession,
+        limit: int,
+    ) -> list[Order]:
+        return await self.get_pending_sync(session=session, limit=limit, sync_status="error")
+
     async def exists_active_by_delivery_zone_id(
         self,
         *,

@@ -7,3 +7,7 @@ class AdminOrderCacheService:
         order_cache_service = OrderCacheService()
         await order_cache_service.invalidate_admin_detail(redis_service=redis_service, order_id=order_id)
         await order_cache_service.invalidate_admin_list(redis_service=redis_service)
+
+    async def invalidate_all(self, *, redis_service: RedisService) -> None:
+        order_cache_service = OrderCacheService()
+        await order_cache_service.invalidate_admin_orders(redis_service=redis_service)
