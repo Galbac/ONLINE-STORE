@@ -169,6 +169,73 @@ async def admin_sync_one_c_prices(
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Ошибка подключения к 1С") from error
 
 
+@router.post(
+    "/admin/integration/1c/sync/stocks",
+    response_model=AdminOneCSyncResponse,
+    response_model_exclude_none=True,
+    status_code=status.HTTP_200_OK,
+)
+@inject
+async def admin_sync_one_c_stocks(
+    body: AdminOneCSyncRequest,
+    current_user=Depends(require_permission("admin:integration_1c:sync")),
+    session: FromDishka[AsyncSession] = None,
+    redis_service: FromDishka[RedisService] = None,
+    commiter: FromDishka[Commiter] = None,
+    config: FromDishka[Settings] = None,
+    admin_one_c_integration_service: FromDishka[AdminOneCIntegrationService] = None,
+    one_c_client: FromDishka[OneCClient] = None,
+    one_c_import_service: FromDishka[OneCImportService] = None,
+    product_stock_sync_service: FromDishka[ProductStockSyncService] = None,
+    stock_movement_service: FromDishka[StockMovementService] = None,
+    integration_job_service: FromDishka[IntegrationJobService] = None,
+    integration_log_service: FromDishka[IntegrationLogService] = None,
+    redis_lock_service: FromDishka[RedisLockService] = None,
+    permission_service: FromDishka[PermissionService] = None,
+    integration_job_repository: FromDishka[IntegrationJobRepository] = None,
+    integration_log_repository: FromDishka[IntegrationLogRepository] = None,
+    product_repository: FromDishka[ProductRepository] = None,
+    stock_movement_repository: FromDishka[StockMovementRepository] = None,
+    product_cache_service: FromDishka[ProductCacheService] = None,
+    cart_cache_service: FromDishka[CartCacheService] = None,
+    admin_dashboard_cache_service: FromDishka[AdminDashboardCacheService] = None,
+    admin_product_cache_service: FromDishka[AdminProductCacheService] = None,
+) -> AdminOneCSyncResponse:
+    try:
+        return await admin_one_c_integration_service.sync_stocks(
+            session=session,
+            redis_service=redis_service,
+            user=current_user,
+            data=body,
+            commiter=commiter,
+            config=config,
+            permission_service=permission_service,
+            redis_lock_service=redis_lock_service,
+            one_c_client=one_c_client,
+            one_c_import_service=one_c_import_service,
+            product_stock_sync_service=product_stock_sync_service,
+            stock_movement_service=stock_movement_service,
+            integration_job_service=integration_job_service,
+            integration_log_service=integration_log_service,
+            integration_job_repository=integration_job_repository,
+            integration_log_repository=integration_log_repository,
+            product_repository=product_repository,
+            stock_movement_repository=stock_movement_repository,
+            product_cache_service=product_cache_service,
+            cart_cache_service=cart_cache_service,
+            admin_dashboard_cache_service=admin_dashboard_cache_service,
+            admin_product_cache_service=admin_product_cache_service,
+        )
+    except (AdminAuthAccessDeniedError, InactiveUserError) as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Недостаточно прав") from error
+    except OneCIntegrationDisabledError as error:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Интеграция с 1С отключена") from error
+    except OneCSyncAlreadyRunningError as error:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Синхронизация остатков уже выполняется") from error
+    except OneCSyncError as error:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Ошибка подключения к 1С") from error
+
+
 @router.get(
     "/integration/1c/orders/pending",
     response_model=OneCOrdersPendingResponse,

@@ -161,6 +161,35 @@ class OneCClient:
             payload = {"items": payload}
         return OneCPriceImportRequest.model_validate(payload)
 
+    async def fetch_stocks(self, *, full_sync: bool = False) -> OneCStockImportRequest:
+        if not settings.one_c.api_url:
+            raise OneCSyncError("1C API URL is not configured")
+
+        query = urlencode({"full_sync": str(full_sync).lower()})
+        url = settings.one_c.api_url.rstrip("/") + f"/stocks?{query}"
+        headers = {"Accept": "application/json"}
+        if settings.one_c.api_token:
+            headers["Authorization"] = f"Bearer {settings.one_c.api_token}"
+
+        request = Request(url, headers=headers, method="GET")
+        try:
+            with urlopen(request, timeout=30) as response:
+                response_body = response.read().decode("utf-8")
+        except HTTPError as error:
+            error_body = error.read().decode("utf-8", errors="ignore")
+            raise OneCSyncError(error_body or f"1C HTTP error {error.code}") from error
+        except URLError as error:
+            raise OneCSyncError(str(error.reason)) from error
+
+        try:
+            payload = json.loads(response_body)
+        except json.JSONDecodeError as error:
+            raise OneCSyncError("Invalid 1C response") from error
+
+        if isinstance(payload, list):
+            payload = {"items": payload}
+        return OneCStockImportRequest.model_validate(payload)
+
 
 class OneCOrderPayloadBuilder:
     def build_order_payload(
@@ -1505,6 +1534,7 @@ class OneCImportService:
 class AdminOneCIntegrationService:
     _products_lock_key = "integration:1c:lock:products"
     _prices_lock_key = "integration:1c:lock:prices"
+    _stocks_lock_key = "integration:1c:lock:stocks"
 
     def _check_sync_permission(self, *, user, permission_service) -> None:
         if not user.is_active or user.is_deleted:
@@ -1780,6 +1810,142 @@ class AdminOneCIntegrationService:
             raise OneCSyncError(error_message) from error
         finally:
             await redis_lock_service.release(redis_service=redis_service, key=self._prices_lock_key)
+
+    async def sync_stocks(
+        self,
+        *,
+        session,
+        redis_service,
+        user,
+        data: AdminOneCSyncRequest,
+        commiter,
+        config,
+        permission_service,
+        redis_lock_service,
+        one_c_client: OneCClient,
+        one_c_import_service: OneCImportService,
+        product_stock_sync_service: ProductStockSyncService,
+        stock_movement_service,
+        integration_job_service: IntegrationJobService,
+        integration_log_service: IntegrationLogService,
+        integration_job_repository,
+        integration_log_repository,
+        product_repository,
+        stock_movement_repository,
+        product_cache_service,
+        cart_cache_service,
+        admin_dashboard_cache_service,
+        admin_product_cache_service,
+    ) -> AdminOneCSyncResponse:
+        self._check_sync_permission(user=user, permission_service=permission_service)
+        if not config.one_c.sync_enabled or not config.one_c.api_url:
+            raise OneCIntegrationDisabledError
+
+        lock_acquired = await redis_lock_service.acquire(
+            redis_service=redis_service,
+            key=self._stocks_lock_key,
+            ttl_seconds=config.one_c.sync_lock_ttl_seconds,
+        )
+        if not lock_acquired:
+            raise OneCSyncAlreadyRunningError
+
+        job = None
+        try:
+            job = await integration_job_service.create_job(
+                session=session,
+                integration_job_repository=integration_job_repository,
+                job_type="stocks",
+                started_by=user.id,
+                full_sync=data.full_sync,
+            )
+            await integration_log_repository.create(
+                session=session,
+                system="1c",
+                entity_type="product_stocks",
+                entity_id=job.id,
+                action="manual_sync_started",
+                status="started",
+                request_payload={"full_sync": data.full_sync},
+                response_payload=None,
+                error_message=None,
+            )
+            await commiter.commit()
+
+            stocks = await one_c_client.fetch_stocks(full_sync=data.full_sync)
+            result = await one_c_import_service.import_stocks(
+                session=session,
+                redis_service=redis_service,
+                data=stocks,
+                commiter=commiter,
+                product_repository=product_repository,
+                stock_movement_repository=stock_movement_repository,
+                integration_log_repository=integration_log_repository,
+                product_stock_sync_service=product_stock_sync_service,
+                stock_movement_service=stock_movement_service,
+                integration_log_service=integration_log_service,
+                product_cache_service=product_cache_service,
+                cart_cache_service=cart_cache_service,
+                admin_dashboard_cache_service=admin_dashboard_cache_service,
+                admin_product_cache_service=admin_product_cache_service,
+            )
+            await product_cache_service.invalidate_by_stock_changes(redis_service=redis_service, products=[])
+            await cart_cache_service.invalidate_all(redis_service=redis_service)
+            await admin_dashboard_cache_service.invalidate_low_stock(redis_service=redis_service)
+            await admin_product_cache_service.invalidate_all(redis_service=redis_service)
+
+            result_payload = result.model_dump()
+            await integration_job_service.finish_job(
+                session=session,
+                integration_job_repository=integration_job_repository,
+                job=job,
+                status="success",
+                result_payload=result_payload,
+            )
+            await integration_log_repository.create(
+                session=session,
+                system="1c",
+                entity_type="product_stocks",
+                entity_id=job.id,
+                action="manual_sync_finished",
+                status="success",
+                request_payload={"full_sync": data.full_sync},
+                response_payload=result_payload,
+                error_message=None,
+            )
+            await commiter.commit()
+
+            return AdminOneCSyncResponse(
+                status="success",
+                job_id=job.id,
+                updated=result.updated,
+                errors=result.errors,
+            )
+        except Exception as error:
+            await commiter.rollback()
+            error_message = self._sanitize_error_message(str(error))
+            if job is not None:
+                await integration_job_service.finish_job(
+                    session=session,
+                    integration_job_repository=integration_job_repository,
+                    job=job,
+                    status="error",
+                    error_message=error_message,
+                )
+                await integration_log_repository.create(
+                    session=session,
+                    system="1c",
+                    entity_type="product_stocks",
+                    entity_id=job.id,
+                    action="manual_sync_finished",
+                    status="error",
+                    request_payload={"full_sync": data.full_sync},
+                    response_payload=None,
+                    error_message=error_message,
+                )
+                await commiter.commit()
+            raise OneCSyncError(error_message) from error
+        finally:
+            await redis_lock_service.release(redis_service=redis_service, key=self._stocks_lock_key)
 
     def _sanitize_error_message(self, message: str) -> str:
         if settings.one_c.api_token:
