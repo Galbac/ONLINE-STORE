@@ -1,6 +1,6 @@
 from datetime import datetime, time
 
-from sqlalchemy import desc, func, or_, select
+from sqlalchemy import delete, desc, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from source.db.models.category import Category
@@ -17,6 +17,20 @@ class PromoCodeRepository:
         **data,
     ) -> PromoCode:
         promo_code = PromoCode(**data)
+        session.add(promo_code)
+        await session.flush()
+        await session.refresh(promo_code)
+        return promo_code
+
+    async def update(
+        self,
+        *,
+        session: AsyncSession,
+        promo_code: PromoCode,
+        data: dict,
+    ) -> PromoCode:
+        for field, value in data.items():
+            setattr(promo_code, field, value)
         session.add(promo_code)
         await session.flush()
         await session.refresh(promo_code)
@@ -168,6 +182,13 @@ class PromoCodeProductRepository:
         )
         return list(result.scalars().all())
 
+    async def replace_products(self, *, session: AsyncSession, promo_code_id: int, product_ids: list[int]) -> list[PromoCodeProduct]:
+        await session.execute(delete(PromoCodeProduct).where(PromoCodeProduct.promo_code_id == promo_code_id))
+        if not product_ids:
+            await session.flush()
+            return []
+        return await self.bulk_create(session=session, promo_code_id=promo_code_id, product_ids=product_ids)
+
 
 class PromoCodeCategoryRepository:
     async def bulk_create(self, *, session: AsyncSession, promo_code_id: int, category_ids: list[int]) -> list[PromoCodeCategory]:
@@ -190,3 +211,10 @@ class PromoCodeCategoryRepository:
             .order_by(Category.name.asc(), Category.id.asc()),
         )
         return list(result.scalars().all())
+
+    async def replace_categories(self, *, session: AsyncSession, promo_code_id: int, category_ids: list[int]) -> list[PromoCodeCategory]:
+        await session.execute(delete(PromoCodeCategory).where(PromoCodeCategory.promo_code_id == promo_code_id))
+        if not category_ids:
+            await session.flush()
+            return []
+        return await self.bulk_create(session=session, promo_code_id=promo_code_id, category_ids=category_ids)

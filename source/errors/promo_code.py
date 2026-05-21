@@ -4,3 +4,11 @@ class PromoCodeAlreadyExistsError(Exception):
 
 class PromoCodeNotFoundError(Exception):
     pass
+
+
+class EmptyPromoCodeUpdateError(Exception):
+    pass
+
+
+class PromoCodeUsageLimitExceededError(Exception):
+    pass

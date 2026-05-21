@@ -56,7 +56,12 @@ from source.errors.product import (
     ProductSkuAlreadyExistsError,
     ProductSlugAlreadyExistsError,
 )
-from source.errors.promo_code import PromoCodeAlreadyExistsError, PromoCodeNotFoundError
+from source.errors.promo_code import (
+    EmptyPromoCodeUpdateError,
+    PromoCodeAlreadyExistsError,
+    PromoCodeNotFoundError,
+    PromoCodeUsageLimitExceededError,
+)
 from source.errors.upload import UploadFileMissingError, UploadFileTooLargeError, UploadNotFoundError, UploadStorageError, UploadUnsupportedFormatError
 from source.repositories.admin_audit_log import AdminAuditLogRepository
 from source.repositories.address import AddressRepository
@@ -151,6 +156,7 @@ from source.schemas.pydantic.promo_code import (
     AdminPromoCodeDetailResponse,
     AdminPromoCodeListQueryParams,
     AdminPromoCodeListResponse,
+    AdminPromoCodeUpdateRequest,
 )
 from source.schemas.pydantic.user import (
     AdminUserBlockRequest,
@@ -392,6 +398,87 @@ async def get_admin_promo_code_detail(
     except PromoCodeNotFoundError as error:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Промокод не найден") from error
     except Exception as error:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Внутренняя ошибка сервера") from error
+
+
+@router.patch("/promo-codes/{promo_code_id}", response_model=AdminPromoCodeDetailResponse, status_code=status.HTTP_200_OK)
+@inject
+async def update_admin_promo_code(
+    request: Request,
+    payload: dict = Body(...),
+    promo_code_id: int = Path(..., gt=0),
+    token_payload: dict = Depends(verify_access_token),
+    current_user: User = Depends(get_current_user),
+    session: FromDishka[AsyncSession] = None,
+    commiter: FromDishka[Commiter] = None,
+    redis_service: FromDishka[RedisService] = None,
+    admin_promo_code_service: FromDishka[AdminPromoCodeService] = None,
+    permission_service: FromDishka[PermissionService] = None,
+    promo_code_repository: FromDishka[PromoCodeRepository] = None,
+    promo_code_usage_repository: FromDishka[PromoCodeUsageRepository] = None,
+    promo_code_product_repository: FromDishka[PromoCodeProductRepository] = None,
+    promo_code_category_repository: FromDishka[PromoCodeCategoryRepository] = None,
+    product_repository: FromDishka[ProductRepository] = None,
+    category_repository: FromDishka[CategoryRepository] = None,
+    audit_log_service: FromDishka[AuditLogService] = None,
+    admin_audit_log_repository: FromDishka[AdminAuditLogRepository] = None,
+) -> AdminPromoCodeDetailResponse:
+    if token_payload.get("token_type") != "access":
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь не авторизован")
+    try:
+        return await admin_promo_code_service.update_promo_code(
+            session=session,
+            redis_service=redis_service,
+            user=current_user,
+            promo_code_id=promo_code_id,
+            data=AdminPromoCodeUpdateRequest.model_validate(payload),
+            commiter=commiter,
+            permission_service=permission_service,
+            promo_code_repository=promo_code_repository,
+            promo_code_usage_repository=promo_code_usage_repository,
+            promo_code_product_repository=promo_code_product_repository,
+            promo_code_category_repository=promo_code_category_repository,
+            product_repository=product_repository,
+            category_repository=category_repository,
+            audit_log_service=audit_log_service,
+            admin_audit_log_repository=admin_audit_log_repository,
+            ip_address=request.client.host if request.client else None,
+            user_agent=request.headers.get("user-agent"),
+        )
+    except ValidationError as error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Неверные данные промокода") from error
+    except EmptyPromoCodeUpdateError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Не передано ни одного поля для изменения") from error
+    except ValueError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Неверные данные промокода") from error
+    except InvalidCredentialsError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь не авторизован") from error
+    except AdminAuthAccessDeniedError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Недостаточно прав") from error
+    except InactiveUserError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Пользователь заблокирован") from error
+    except PromoCodeNotFoundError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Промокод не найден") from error
+    except ProductNotFoundError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Товар не найден") from error
+    except CategoryNotFoundError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Категория не найдена") from error
+    except PromoCodeAlreadyExistsError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Промокод с таким code уже существует") from error
+    except PromoCodeUsageLimitExceededError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="usage_limit меньше уже использованного количества") from error
+    except Exception as error:
+        await commiter.rollback()
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Внутренняя ошибка сервера") from error
 
 
