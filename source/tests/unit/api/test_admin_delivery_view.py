@@ -1,0 +1,95 @@
+from types import SimpleNamespace
+
+import pytest
+from fastapi import HTTPException
+
+from source.api.api_v1.views.admin_dashboard import get_admin_delivery_settings
+from source.db.models.choises.enum import UserRole
+from source.services.admin_auth import PermissionService
+from source.services.admin_delivery import AdminDeliveryService
+from source.services.admin_delivery_cache import AdminDeliveryCacheService
+
+
+class FakeRedisService:
+    async def get(self, key: str):
+        return None
+
+    async def set(self, key: str, value: str, *, ttl_seconds: int | None = None) -> None:
+        return None
+
+
+class FakeCommiter:
+    async def commit(self) -> None:
+        return None
+
+
+class FakeDeliverySettingsRepository:
+    async def get_or_create_default(self, *, session):
+        return SimpleNamespace(
+            delivery_enabled=True,
+            pickup_enabled=True,
+            min_order_amount=1000,
+            base_price=250,
+            free_from_amount=3000,
+            has_time_slots=True,
+            delivery_description="Доставка по городу",
+            pickup_description="Самовывоз",
+            default_city="Москва",
+            currency="RUB",
+            updated_date=None,
+        ), False
+
+
+def build_user(*, role=UserRole.CUSTOMER):
+    return SimpleNamespace(id=1, role=role, is_active=True, is_deleted=False, is_blocked=False)
+
+
+@pytest.mark.asyncio
+async def test_admin_delivery_settings_customer_role_returns_403() -> None:
+    with pytest.raises(HTTPException) as exc_info:
+        await get_admin_delivery_settings.__dishka_orig_func__(
+            token_payload={"token_type": "access"},
+            current_user=build_user(role=UserRole.CUSTOMER),
+            commiter=FakeCommiter(),
+            redis_service=FakeRedisService(),
+            admin_delivery_service=AdminDeliveryService(),
+            admin_delivery_cache_service=AdminDeliveryCacheService(),
+            permission_service=PermissionService(),
+            delivery_settings_repository=FakeDeliverySettingsRepository(),
+        )
+
+    assert exc_info.value.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_admin_delivery_settings_without_permission_returns_403() -> None:
+    with pytest.raises(HTTPException) as exc_info:
+        await get_admin_delivery_settings.__dishka_orig_func__(
+            token_payload={"token_type": "access"},
+            current_user=build_user(role=UserRole.CONTENT_MANAGER),
+            commiter=FakeCommiter(),
+            redis_service=FakeRedisService(),
+            admin_delivery_service=AdminDeliveryService(),
+            admin_delivery_cache_service=AdminDeliveryCacheService(),
+            permission_service=PermissionService(),
+            delivery_settings_repository=FakeDeliverySettingsRepository(),
+        )
+
+    assert exc_info.value.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_admin_delivery_settings_non_access_token_returns_401() -> None:
+    with pytest.raises(HTTPException) as exc_info:
+        await get_admin_delivery_settings.__dishka_orig_func__(
+            token_payload={"token_type": "refresh"},
+            current_user=build_user(role=UserRole.ADMIN),
+            commiter=FakeCommiter(),
+            redis_service=FakeRedisService(),
+            admin_delivery_service=AdminDeliveryService(),
+            admin_delivery_cache_service=AdminDeliveryCacheService(),
+            permission_service=PermissionService(),
+            delivery_settings_repository=FakeDeliverySettingsRepository(),
+        )
+
+    assert exc_info.value.status_code == 401

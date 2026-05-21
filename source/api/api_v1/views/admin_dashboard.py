@@ -6,7 +6,7 @@ from fastapi.responses import HTMLResponse
 from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from source.api.dependencies import get_current_user, verify_access_token
+from source.api.dependencies import get_current_user, require_permission, verify_access_token
 from source.common.commiter import Commiter
 from source.db.models.user import User
 from source.errors.category import CategoryCycleError, CategoryNotFoundError, CategorySlugAlreadyExistsError
@@ -66,6 +66,7 @@ from source.errors.upload import UploadFileMissingError, UploadFileTooLargeError
 from source.repositories.admin_audit_log import AdminAuditLogRepository
 from source.repositories.address import AddressRepository
 from source.repositories.category import CategoryRepository
+from source.repositories.delivery_settings import DeliverySettingsRepository
 from source.repositories.discount import DiscountCategoryRepository, DiscountProductRepository, DiscountRepository
 from source.repositories.integration_log import IntegrationLogRepository
 from source.repositories.order import OrderRepository
@@ -101,6 +102,7 @@ from source.schemas.pydantic.discount import (
     AdminDiscountUpdateRequest,
     MessageResponse as AdminDiscountMessageResponse,
 )
+from source.schemas.pydantic.delivery import AdminDeliverySettingsResponse
 from source.schemas.pydantic.admin_role import AdminRoleListResponse
 from source.schemas.pydantic.admin_category import (
     AdminCategoryCreateRequest,
@@ -181,6 +183,8 @@ from source.services.admin_discount import AdminDiscountService, DiscountConflic
 from source.services.admin_discount_cache import AdminDiscountCacheService
 from source.services.admin_dashboard import AdminDashboardService
 from source.services.admin_dashboard_cache import AdminDashboardCacheService
+from source.services.admin_delivery import AdminDeliveryService
+from source.services.admin_delivery_cache import AdminDeliveryCacheService
 from source.services.admin_order import AdminOrderService
 from source.services.admin_order_print import AdminOrderPrintService
 from source.services.admin_product import AdminProductService
@@ -208,6 +212,41 @@ from source.services.upload import UploadService
 from source.services.user_cache import UserCacheService
 
 router = APIRouter(prefix="/admin", tags=["admin-dashboard"])
+
+
+@router.get("/delivery/settings", response_model=AdminDeliverySettingsResponse, status_code=status.HTTP_200_OK)
+@inject
+async def get_admin_delivery_settings(
+    token_payload: dict = Depends(verify_access_token),
+    current_user: User = Depends(require_permission("admin:delivery:read")),
+    session: FromDishka[AsyncSession] = None,
+    commiter: FromDishka[Commiter] = None,
+    redis_service: FromDishka[RedisService] = None,
+    admin_delivery_service: FromDishka[AdminDeliveryService] = None,
+    admin_delivery_cache_service: FromDishka[AdminDeliveryCacheService] = None,
+    permission_service: FromDishka[PermissionService] = None,
+    delivery_settings_repository: FromDishka[DeliverySettingsRepository] = None,
+) -> AdminDeliverySettingsResponse:
+    if token_payload.get("token_type") != "access":
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь не авторизован")
+    try:
+        return await admin_delivery_service.get_settings(
+            session=session,
+            redis_service=redis_service,
+            user=current_user,
+            commiter=commiter,
+            permission_service=permission_service,
+            admin_delivery_cache_service=admin_delivery_cache_service,
+            delivery_settings_repository=delivery_settings_repository,
+        )
+    except InvalidCredentialsError as error:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь не авторизован") from error
+    except AdminAuthAccessDeniedError as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Недостаточно прав") from error
+    except InactiveUserError as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Пользователь заблокирован") from error
+    except Exception as error:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Внутренняя ошибка сервера") from error
 
 
 @router.get("/roles", response_model=AdminRoleListResponse, status_code=status.HTTP_200_OK)

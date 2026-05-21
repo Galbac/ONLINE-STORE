@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -21,6 +21,20 @@ class DeliveryOptionItemResponse(BaseModel):
 class DeliveryOptionsResponse(BaseModel):
     delivery: DeliveryOptionItemResponse
     pickup: DeliveryOptionItemResponse
+
+
+class AdminDeliverySettingsResponse(BaseModel):
+    delivery_enabled: bool
+    pickup_enabled: bool
+    min_order_amount: Decimal
+    base_delivery_price: Decimal
+    free_delivery_from: Decimal | None = None
+    time_slots_enabled: bool
+    delivery_comment: str | None = None
+    pickup_comment: str | None = None
+    default_city: str
+    currency: str
+    updated_at: datetime | None = None
 
 
 class DeliveryCalculateRequest(BaseModel):

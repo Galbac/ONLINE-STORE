@@ -401,6 +401,12 @@ class DeliveryTimeSlotsSettings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 
+class AdminDeliverySettings(BaseSettings):
+    settings_cache_ttl_seconds: int = Field(default=600, alias="ADMIN_DELIVERY_SETTINGS_CACHE_TTL_SECONDS")
+
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+
 class DiscountsSettings(BaseSettings):
     active_cache_ttl_seconds: int = Field(default=120, alias="DISCOUNTS_ACTIVE_CACHE_TTL_SECONDS")
     products_cache_ttl_seconds: int = Field(default=120, alias="DISCOUNT_PRODUCTS_CACHE_TTL_SECONDS")
@@ -497,6 +503,7 @@ class Settings(BaseSettings):
     delivery_calculate: DeliveryCalculateSettings = DeliveryCalculateSettings()
     delivery_pickup_points: DeliveryPickupPointsSettings = DeliveryPickupPointsSettings()
     delivery_time_slots: DeliveryTimeSlotsSettings = DeliveryTimeSlotsSettings()
+    admin_delivery: AdminDeliverySettings = AdminDeliverySettings()
     discounts: DiscountsSettings = DiscountsSettings()
     promo_codes: PromoCodesSettings = PromoCodesSettings()
     favorites: FavoritesSettings = FavoritesSettings()

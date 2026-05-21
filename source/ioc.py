@@ -54,6 +54,8 @@ from source.services.admin_discount_cache import AdminDiscountCacheService
 from source.services.admin_auth_cache import AdminAuthCacheService
 from source.services.admin_dashboard import AdminDashboardService
 from source.services.admin_dashboard_cache import AdminDashboardCacheService
+from source.services.admin_delivery import AdminDeliveryService
+from source.services.admin_delivery_cache import AdminDeliveryCacheService
 from source.services.admin_order import AdminOrderService
 from source.services.admin_order_print import AdminOrderPrintService
 from source.services.admin_product import AdminProductService
@@ -455,6 +457,14 @@ class AppProvider(Provider):
     )
     admin_dashboard_cache_service = provide(
         AdminDashboardCacheService,
+        scope=Scope.REQUEST,
+    )
+    admin_delivery_service = provide(
+        AdminDeliveryService,
+        scope=Scope.REQUEST,
+    )
+    admin_delivery_cache_service = provide(
+        AdminDeliveryCacheService,
         scope=Scope.REQUEST,
     )
     admin_discount_service = provide(
