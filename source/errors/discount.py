@@ -1,0 +1,2 @@
+class DiscountNotFoundError(Exception):
+    pass

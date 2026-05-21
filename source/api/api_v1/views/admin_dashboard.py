@@ -11,6 +11,7 @@ from source.common.commiter import Commiter
 from source.db.models.user import User
 from source.errors.category import CategoryCycleError, CategoryNotFoundError, CategorySlugAlreadyExistsError
 from source.errors.category import CategoryHasActiveChildrenError, CategoryHasActiveProductsError
+from source.errors.discount import DiscountNotFoundError
 from source.errors.auth import (
     AdminAuthAccessDeniedError,
     AdminRoleNotFoundError,
@@ -332,6 +333,45 @@ async def create_admin_discount(
     except Exception:
         await commiter.rollback()
         raise
+
+
+@router.get("/discounts/{discount_id}", response_model=AdminDiscountDetailResponse, status_code=status.HTTP_200_OK)
+@inject
+async def get_admin_discount_detail(
+    token_payload: dict = Depends(verify_access_token),
+    current_user: User = Depends(get_current_user),
+    discount_id: int = Path(ge=1),
+    session: FromDishka[AsyncSession] = None,
+    redis_service: FromDishka[RedisService] = None,
+    admin_discount_service: FromDishka[AdminDiscountService] = None,
+    admin_discount_cache_service: FromDishka[AdminDiscountCacheService] = None,
+    permission_service: FromDishka[PermissionService] = None,
+    discount_repository: FromDishka[DiscountRepository] = None,
+    discount_product_repository: FromDishka[DiscountProductRepository] = None,
+    discount_category_repository: FromDishka[DiscountCategoryRepository] = None,
+) -> AdminDiscountDetailResponse:
+    if token_payload.get("token_type") != "access":
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь не авторизован")
+    try:
+        return await admin_discount_service.get_discount_detail(
+            session=session,
+            redis_service=redis_service,
+            user=current_user,
+            discount_id=discount_id,
+            permission_service=permission_service,
+            discount_repository=discount_repository,
+            discount_product_repository=discount_product_repository,
+            discount_category_repository=discount_category_repository,
+            admin_discount_cache_service=admin_discount_cache_service,
+        )
+    except InvalidCredentialsError as error:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь не авторизован") from error
+    except AdminAuthAccessDeniedError as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Недостаточно прав") from error
+    except InactiveUserError as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Пользователь заблокирован") from error
+    except DiscountNotFoundError as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Скидка не найдена") from error
 
 
 @router.get("/staff", response_model=AdminStaffListResponse, status_code=status.HTTP_200_OK)
