@@ -54,6 +54,7 @@ ADMIN_PERMISSIONS_BY_ROLE = {
         "admin:discounts:update",
         "admin:discounts:delete",
         "admin:promo_codes:read",
+        "admin:promo_codes:create",
         "admin:orders:read",
         "admin:orders:manage",
         "admin:orders:cancel",

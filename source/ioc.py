@@ -40,7 +40,7 @@ from source.repositories.pickup_point import PickupPointRepository
 from source.repositories.product import ProductRepository
 from source.repositories.product_availability_log import ProductAvailabilityLogRepository
 from source.repositories.product_image import ProductImageRepository
-from source.repositories.promo_code import PromoCodeRepository, PromoCodeUsageRepository
+from source.repositories.promo_code import PromoCodeCategoryRepository, PromoCodeProductRepository, PromoCodeRepository, PromoCodeUsageRepository
 from source.repositories.stock_movement import StockMovementRepository
 from source.repositories.user import UserRepository
 from source.repositories.upload import UploadRepository
@@ -283,6 +283,14 @@ class AppProvider(Provider):
     )
     promo_code_usage_repository = provide(
         PromoCodeUsageRepository,
+        scope=Scope.REQUEST,
+    )
+    promo_code_product_repository = provide(
+        PromoCodeProductRepository,
+        scope=Scope.REQUEST,
+    )
+    promo_code_category_repository = provide(
+        PromoCodeCategoryRepository,
         scope=Scope.REQUEST,
     )
     category_repository = provide(

@@ -1,0 +1,2 @@
+class PromoCodeAlreadyExistsError(Exception):
+    pass

@@ -3,11 +3,23 @@ from datetime import datetime, time
 from sqlalchemy import desc, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from source.db.models.promo_code import PromoCode, PromoCodeUsage
+from source.db.models.promo_code import PromoCode, PromoCodeCategory, PromoCodeProduct, PromoCodeUsage
 from source.schemas.pydantic.promo_code import AdminPromoCodeListQueryParams
 
 
 class PromoCodeRepository:
+    async def create(
+        self,
+        *,
+        session: AsyncSession,
+        **data,
+    ) -> PromoCode:
+        promo_code = PromoCode(**data)
+        session.add(promo_code)
+        await session.flush()
+        await session.refresh(promo_code)
+        return promo_code
+
     async def admin_get_list(
         self,
         *,
@@ -115,3 +127,25 @@ class PromoCodeUsageRepository:
             usage.status = "cancelled"
             session.add(usage)
             await session.flush()
+
+
+class PromoCodeProductRepository:
+    async def bulk_create(self, *, session: AsyncSession, promo_code_id: int, product_ids: list[int]) -> list[PromoCodeProduct]:
+        relations = [
+            PromoCodeProduct(promo_code_id=promo_code_id, product_id=product_id)
+            for product_id in product_ids
+        ]
+        session.add_all(relations)
+        await session.flush()
+        return relations
+
+
+class PromoCodeCategoryRepository:
+    async def bulk_create(self, *, session: AsyncSession, promo_code_id: int, category_ids: list[int]) -> list[PromoCodeCategory]:
+        relations = [
+            PromoCodeCategory(promo_code_id=promo_code_id, category_id=category_id)
+            for category_id in category_ids
+        ]
+        session.add_all(relations)
+        await session.flush()
+        return relations

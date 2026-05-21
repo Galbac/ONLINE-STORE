@@ -3,12 +3,15 @@ from decimal import Decimal
 from types import SimpleNamespace
 
 import pytest
+from pydantic import ValidationError
 
 from source.config.settings import settings
 from source.db.models.choises.enum import UserRole
 from source.errors.auth import AdminAuthAccessDeniedError
-from source.schemas.pydantic.promo_code import AdminPromoCodeListQueryParams
-from source.services.admin_auth import PermissionService
+from source.errors.product import ProductNotFoundError
+from source.errors.promo_code import PromoCodeAlreadyExistsError
+from source.schemas.pydantic.promo_code import AdminPromoCodeCreateRequest, AdminPromoCodeListQueryParams
+from source.services.admin_auth import AuditLogService, PermissionService
 from source.services.admin_promo_code import AdminPromoCodeService
 
 
@@ -25,6 +28,9 @@ class FakeRedisService:
         if ttl_seconds is not None:
             self.ttls[key] = ttl_seconds
 
+    async def delete_by_pattern(self, pattern: str) -> None:
+        self.ttls[pattern] = 0
+
 
 class FakePromoCodeRepository:
     def __init__(self, promo_codes=None) -> None:
@@ -33,6 +39,7 @@ class FakePromoCodeRepository:
             build_promo_code(promo_code_id=2, code="FIXED500", name="500 рублей", discount_type="fixed_amount", is_active=False),
             build_promo_code(promo_code_id=3, code="SUMMER", name="Летняя скидка", is_active=True),
         ]
+        self.created = []
 
     async def admin_get_list(self, *, session, query: AdminPromoCodeListQueryParams):
         promo_codes = self._filter(query=query)
@@ -41,6 +48,31 @@ class FakePromoCodeRepository:
 
     async def admin_count(self, *, session, query: AdminPromoCodeListQueryParams) -> int:
         return len(self._filter(query=query))
+
+    async def get_by_code(self, *, session, code: str):
+        return next((promo_code for promo_code in self.promo_codes if promo_code.code == code), None)
+
+    async def create(self, *, session, **data):
+        promo_code = build_promo_code(
+            promo_code_id=len(self.promo_codes) + 1,
+            code=data["code"],
+            name=data["name"],
+            discount_type=data["discount_type"],
+            is_active=data["is_active"],
+        )
+        promo_code.discount_value = data["discount_value"]
+        promo_code.min_order_amount = data["min_order_amount"]
+        promo_code.max_discount_amount = data["max_discount_amount"]
+        promo_code.usage_limit = data["usage_limit"]
+        promo_code.per_user_usage_limit = data["per_user_usage_limit"]
+        promo_code.description = data["description"]
+        promo_code.starts_at = data["starts_at"]
+        promo_code.ends_at = data["ends_at"]
+        promo_code.applicable_product_id = data["applicable_product_id"]
+        promo_code.applicable_category_id = data["applicable_category_id"]
+        self.created.append(data)
+        self.promo_codes.append(promo_code)
+        return promo_code
 
     def _filter(self, *, query: AdminPromoCodeListQueryParams):
         promo_codes = list(self.promo_codes)
@@ -73,6 +105,61 @@ class FakePromoCodeUsageRepository:
         }
 
 
+class FakePromoCodeProductRepository:
+    def __init__(self) -> None:
+        self.created = []
+
+    async def bulk_create(self, *, session, promo_code_id: int, product_ids: list[int]):
+        self.created.append((promo_code_id, product_ids))
+        return []
+
+
+class FakePromoCodeCategoryRepository:
+    def __init__(self) -> None:
+        self.created = []
+
+    async def bulk_create(self, *, session, promo_code_id: int, category_ids: list[int]):
+        self.created.append((promo_code_id, category_ids))
+        return []
+
+
+class FakeProductRepository:
+    def __init__(self, product_ids=None) -> None:
+        self.product_ids = product_ids if product_ids is not None else [55]
+
+    async def get_by_ids(self, *, session, product_ids: list[int]):
+        return [SimpleNamespace(id=product_id) for product_id in product_ids if product_id in self.product_ids]
+
+
+class FakeCategoryRepository:
+    def __init__(self, category_ids=None) -> None:
+        self.category_ids = category_ids if category_ids is not None else [2]
+
+    async def get_by_ids(self, *, session, category_ids: list[int]):
+        return [SimpleNamespace(id=category_id) for category_id in category_ids if category_id in self.category_ids]
+
+
+class FakeCommiter:
+    def __init__(self) -> None:
+        self.committed = False
+        self.rolled_back = False
+
+    async def commit(self) -> None:
+        self.committed = True
+
+    async def rollback(self) -> None:
+        self.rolled_back = True
+
+
+class FakeAuditLogRepository:
+    def __init__(self) -> None:
+        self.logs = []
+
+    async def create(self, *, session, **data):
+        self.logs.append(data)
+        return SimpleNamespace(**data)
+
+
 def build_user(*, role=UserRole.ADMIN):
     return SimpleNamespace(
         id=1,
@@ -100,8 +187,12 @@ def build_promo_code(
         discount_type=discount_type,
         discount_value=Decimal("10"),
         min_order_amount=Decimal("1000.00"),
+        max_discount_amount=Decimal("500.00"),
         usage_limit=100,
         per_user_usage_limit=1,
+        description=None,
+        applicable_product_id=None,
+        applicable_category_id=None,
         is_active=is_active,
         starts_at=datetime(2026, 5, 1, 0, 0, 0),
         ends_at=datetime(2026, 5, 31, 23, 59, 59),
@@ -125,6 +216,64 @@ async def get_promo_codes(
         permission_service=PermissionService(),
         promo_code_repository=promo_code_repository or FakePromoCodeRepository(),
         promo_code_usage_repository=promo_code_usage_repository or FakePromoCodeUsageRepository(),
+    )
+
+
+async def create_promo_code(
+    *,
+    data: AdminPromoCodeCreateRequest | None = None,
+    redis_service=None,
+    role=UserRole.ADMIN,
+    promo_code_repository=None,
+    promo_code_product_repository=None,
+    promo_code_category_repository=None,
+    product_repository=None,
+    category_repository=None,
+    audit_log_repository=None,
+    commiter=None,
+):
+    redis_service = redis_service or FakeRedisService()
+    audit_log_repository = audit_log_repository or FakeAuditLogRepository()
+    commiter = commiter or FakeCommiter()
+    promo_code_product_repository = promo_code_product_repository or FakePromoCodeProductRepository()
+    promo_code_category_repository = promo_code_category_repository or FakePromoCodeCategoryRepository()
+    response = await AdminPromoCodeService().create_promo_code(
+        session=None,
+        redis_service=redis_service,
+        user=build_user(role=role),
+        data=data or AdminPromoCodeCreateRequest(
+            code=" promo10 ",
+            name="Скидка 10%",
+            description="Промокод на первый заказ",
+            discount_type="percent",
+            discount_value=Decimal("10"),
+            min_order_amount=Decimal("1000.00"),
+            max_discount_amount=Decimal("500.00"),
+            usage_limit=100,
+            user_usage_limit=1,
+            starts_at=datetime(2026, 5, 1, 0, 0, 0),
+            ends_at=datetime(2026, 5, 31, 23, 59, 59),
+            is_active=True,
+            product_ids=[55],
+            category_ids=[],
+        ),
+        commiter=commiter,
+        permission_service=PermissionService(),
+        promo_code_repository=promo_code_repository or FakePromoCodeRepository(promo_codes=[]),
+        promo_code_product_repository=promo_code_product_repository,
+        promo_code_category_repository=promo_code_category_repository,
+        product_repository=product_repository or FakeProductRepository(),
+        category_repository=category_repository or FakeCategoryRepository(),
+        audit_log_service=AuditLogService(),
+        admin_audit_log_repository=audit_log_repository,
+    )
+    return SimpleNamespace(
+        response=response,
+        redis_service=redis_service,
+        audit_log_repository=audit_log_repository,
+        commiter=commiter,
+        promo_code_product_repository=promo_code_product_repository,
+        promo_code_category_repository=promo_code_category_repository,
     )
 
 
@@ -190,3 +339,103 @@ async def test_admin_get_promo_codes_response_is_cached() -> None:
     assert len(redis_service.values) == 1
     assert next(iter(redis_service.values.values())).startswith('{"items"')
     assert next(iter(redis_service.ttls.values())) == settings.promo_codes.admin_list_cache_ttl_seconds
+
+
+@pytest.mark.asyncio
+async def test_admin_create_percent_promo_code_success() -> None:
+    result = await create_promo_code()
+
+    assert result.response.code == "PROMO10"
+    assert result.response.discount_type == "percent"
+    assert result.response.discount_value == Decimal("10")
+    assert result.response.min_order_amount == Decimal("1000.00")
+    assert result.response.usage_limit == 100
+    assert result.response.user_usage_limit == 1
+    assert result.response.is_active is True
+    assert result.promo_code_product_repository.created == [(1, [55])]
+    assert result.commiter.committed is True
+
+
+@pytest.mark.asyncio
+async def test_admin_create_fixed_amount_promo_code_success() -> None:
+    result = await create_promo_code(
+        data=AdminPromoCodeCreateRequest(
+            code="fixed500",
+            name="500 рублей",
+            discount_type="fixed_amount",
+            discount_value=Decimal("500"),
+            is_active=True,
+        ),
+    )
+
+    assert result.response.code == "FIXED500"
+    assert result.response.discount_type == "fixed_amount"
+    assert result.response.discount_value == Decimal("500")
+
+
+def test_admin_create_promo_code_normalizes_code_uppercase() -> None:
+    data = AdminPromoCodeCreateRequest(
+        code=" promo10 ",
+        name="Скидка 10%",
+        discount_type="percent",
+        discount_value=Decimal("10"),
+    )
+
+    assert data.code == "PROMO10"
+
+
+@pytest.mark.asyncio
+async def test_admin_create_promo_code_already_exists_error() -> None:
+    with pytest.raises(PromoCodeAlreadyExistsError):
+        await create_promo_code(promo_code_repository=FakePromoCodeRepository())
+
+
+def test_admin_create_promo_code_percent_above_100_error() -> None:
+    with pytest.raises(ValidationError):
+        AdminPromoCodeCreateRequest(
+            code="PROMO101",
+            name="Скидка",
+            discount_type="percent",
+            discount_value=Decimal("101"),
+        )
+
+
+def test_admin_create_promo_code_starts_after_ends_error() -> None:
+    with pytest.raises(ValidationError):
+        AdminPromoCodeCreateRequest(
+            code="PROMO10",
+            name="Скидка",
+            discount_type="percent",
+            discount_value=Decimal("10"),
+            starts_at=datetime(2026, 6, 1, 0, 0, 0),
+            ends_at=datetime(2026, 5, 1, 0, 0, 0),
+        )
+
+
+@pytest.mark.asyncio
+async def test_admin_create_promo_code_product_not_found_error() -> None:
+    with pytest.raises(ProductNotFoundError):
+        await create_promo_code(product_repository=FakeProductRepository(product_ids=[]))
+
+
+@pytest.mark.asyncio
+async def test_admin_create_promo_code_invalidates_cache() -> None:
+    redis_service = FakeRedisService()
+
+    await create_promo_code(redis_service=redis_service)
+
+    assert redis_service.ttls["admin:promo_codes:*"] == 0
+
+
+@pytest.mark.asyncio
+async def test_admin_create_promo_code_audit_log_created() -> None:
+    result = await create_promo_code()
+
+    assert result.audit_log_repository.logs[0]["event"] == "admin_promo_code_create"
+    assert result.audit_log_repository.logs[0]["details"] == {
+        "promo_code_id": 1,
+        "code": "PROMO10",
+        "discount_type": "percent",
+        "product_ids": [55],
+        "category_ids": [],
+    }

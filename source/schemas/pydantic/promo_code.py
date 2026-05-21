@@ -80,6 +80,75 @@ class AdminPromoCodeListResponse(BaseModel):
         )
 
 
+class AdminPromoCodeCreateRequest(BaseModel):
+    code: str = Field(min_length=1, max_length=50)
+    name: str = Field(min_length=1, max_length=255)
+    description: str | None = Field(default=None, max_length=1000)
+    discount_type: AdminPromoCodeDiscountType
+    discount_value: Decimal = Field(gt=0)
+    min_order_amount: Decimal | None = Field(default=None, ge=0)
+    max_discount_amount: Decimal | None = Field(default=None, ge=0)
+    usage_limit: int | None = Field(default=None, ge=1)
+    user_usage_limit: int | None = Field(default=None, ge=1)
+    starts_at: datetime | None = None
+    ends_at: datetime | None = None
+    is_active: bool = True
+    product_ids: list[int] = Field(default_factory=list)
+    category_ids: list[int] = Field(default_factory=list)
+
+    @field_validator("code", mode="before")
+    @classmethod
+    def normalize_code(cls, value: str) -> str:
+        if isinstance(value, str):
+            return value.strip().upper()
+        return value
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def normalize_name(cls, value: str) -> str:
+        if isinstance(value, str):
+            return " ".join(value.strip().split())
+        return value
+
+    @field_validator("description", mode="before")
+    @classmethod
+    def normalize_description(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        if isinstance(value, str):
+            normalized_value = value.strip()
+            return normalized_value or None
+        return value
+
+    @field_validator("product_ids", "category_ids")
+    @classmethod
+    def validate_ids(cls, value: list[int]) -> list[int]:
+        unique_ids = list(dict.fromkeys(value))
+        if any(item_id <= 0 for item_id in unique_ids):
+            raise ValueError("ids must be positive")
+        return unique_ids
+
+    @model_validator(mode="after")
+    def validate_promo_code(self) -> "AdminPromoCodeCreateRequest":
+        if self.discount_type == "percent" and not Decimal("1") <= self.discount_value <= Decimal("100"):
+            raise ValueError("percent discount_value must be between 1 and 100")
+        if self.starts_at is not None and self.ends_at is not None and self.starts_at >= self.ends_at:
+            raise ValueError("starts_at must be less than ends_at")
+        return self
+
+
+class AdminPromoCodeDetailResponse(BaseModel):
+    id: int
+    code: str
+    name: str | None = None
+    discount_type: str
+    discount_value: Decimal
+    min_order_amount: Decimal | None = None
+    usage_limit: int | None = None
+    user_usage_limit: int | None = None
+    is_active: bool
+
+
 class PromoCodeCheckRequest(BaseModel):
     code: str = Field(min_length=2, max_length=50)
     cart_total: Decimal | None = Field(default=None, ge=0)
