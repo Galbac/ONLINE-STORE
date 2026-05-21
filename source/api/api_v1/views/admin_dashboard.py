@@ -56,7 +56,7 @@ from source.errors.product import (
     ProductSkuAlreadyExistsError,
     ProductSlugAlreadyExistsError,
 )
-from source.errors.promo_code import PromoCodeAlreadyExistsError
+from source.errors.promo_code import PromoCodeAlreadyExistsError, PromoCodeNotFoundError
 from source.errors.upload import UploadFileMissingError, UploadFileTooLargeError, UploadNotFoundError, UploadStorageError, UploadUnsupportedFormatError
 from source.repositories.admin_audit_log import AdminAuditLogRepository
 from source.repositories.address import AddressRepository
@@ -351,6 +351,47 @@ async def create_admin_promo_code(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Промокод с таким code уже существует") from error
     except Exception as error:
         await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Внутренняя ошибка сервера") from error
+
+
+@router.get("/promo-codes/{promo_code_id}", response_model=AdminPromoCodeDetailResponse, status_code=status.HTTP_200_OK)
+@inject
+async def get_admin_promo_code_detail(
+    promo_code_id: int = Path(..., gt=0),
+    token_payload: dict = Depends(verify_access_token),
+    current_user: User = Depends(get_current_user),
+    session: FromDishka[AsyncSession] = None,
+    redis_service: FromDishka[RedisService] = None,
+    admin_promo_code_service: FromDishka[AdminPromoCodeService] = None,
+    permission_service: FromDishka[PermissionService] = None,
+    promo_code_repository: FromDishka[PromoCodeRepository] = None,
+    promo_code_usage_repository: FromDishka[PromoCodeUsageRepository] = None,
+    promo_code_product_repository: FromDishka[PromoCodeProductRepository] = None,
+    promo_code_category_repository: FromDishka[PromoCodeCategoryRepository] = None,
+) -> AdminPromoCodeDetailResponse:
+    if token_payload.get("token_type") != "access":
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь не авторизован")
+    try:
+        return await admin_promo_code_service.get_promo_code_detail(
+            session=session,
+            redis_service=redis_service,
+            user=current_user,
+            promo_code_id=promo_code_id,
+            permission_service=permission_service,
+            promo_code_repository=promo_code_repository,
+            promo_code_usage_repository=promo_code_usage_repository,
+            promo_code_product_repository=promo_code_product_repository,
+            promo_code_category_repository=promo_code_category_repository,
+        )
+    except InvalidCredentialsError as error:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь не авторизован") from error
+    except AdminAuthAccessDeniedError as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Недостаточно прав") from error
+    except InactiveUserError as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Пользователь заблокирован") from error
+    except PromoCodeNotFoundError as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Промокод не найден") from error
+    except Exception as error:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Внутренняя ошибка сервера") from error
 
 

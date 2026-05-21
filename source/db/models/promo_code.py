@@ -23,6 +23,7 @@ class PromoCode(IdBigIntPkMixin, CreateUpdateMixin, Base):
     applicable_product_id: Mapped[int | None] = mapped_column(ForeignKey("products.id", ondelete="SET NULL"), index=True)
     allow_discounted_products: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true", nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true", nullable=False)
+    is_deleted: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false", nullable=False)
     starts_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     ends_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 

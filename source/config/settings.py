@@ -412,6 +412,7 @@ class DiscountsSettings(BaseSettings):
 
 class PromoCodesSettings(BaseSettings):
     admin_list_cache_ttl_seconds: int = Field(default=60, alias="ADMIN_PROMO_CODES_LIST_CACHE_TTL_SECONDS")
+    admin_detail_cache_ttl_seconds: int = Field(default=120, alias="ADMIN_PROMO_CODES_DETAIL_CACHE_TTL_SECONDS")
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

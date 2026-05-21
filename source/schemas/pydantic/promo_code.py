@@ -137,16 +137,34 @@ class AdminPromoCodeCreateRequest(BaseModel):
         return self
 
 
+class AdminPromoCodeProductResponse(BaseModel):
+    id: int
+    name: str
+    price: Decimal
+
+
+class AdminPromoCodeCategoryResponse(BaseModel):
+    id: int
+    name: str
+
+
 class AdminPromoCodeDetailResponse(BaseModel):
     id: int
     code: str
     name: str | None = None
+    description: str | None = None
     discount_type: str
     discount_value: Decimal
     min_order_amount: Decimal | None = None
+    max_discount_amount: Decimal | None = None
     usage_limit: int | None = None
+    usage_count: int = 0
     user_usage_limit: int | None = None
+    starts_at: datetime | None = None
+    ends_at: datetime | None = None
     is_active: bool
+    products: list[AdminPromoCodeProductResponse] = Field(default_factory=list)
+    categories: list[AdminPromoCodeCategoryResponse] = Field(default_factory=list)
 
 
 class PromoCodeCheckRequest(BaseModel):

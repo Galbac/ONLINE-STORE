@@ -3,7 +3,7 @@ from types import SimpleNamespace
 import pytest
 from fastapi import HTTPException
 
-from source.api.api_v1.views.admin_dashboard import get_admin_promo_codes
+from source.api.api_v1.views.admin_dashboard import get_admin_promo_code_detail, get_admin_promo_codes
 from source.db.models.choises.enum import UserRole
 from source.services.admin_auth import PermissionService
 from source.services.admin_promo_code import AdminPromoCodeService
@@ -24,10 +24,26 @@ class FakePromoCodeRepository:
     async def admin_count(self, *, session, query) -> int:
         return 0
 
+    async def admin_get_by_id(self, *, session, promo_code_id: int):
+        return None
+
 
 class FakePromoCodeUsageRepository:
     async def count_grouped_by_promo_code_ids(self, *, session, promo_code_ids: list[int]) -> dict[int, int]:
         return {}
+
+    async def count_by_promo_code_id(self, *, session, promo_code_id: int) -> int:
+        return 0
+
+
+class FakePromoCodeProductRepository:
+    async def get_products(self, *, session, promo_code_id: int):
+        return []
+
+
+class FakePromoCodeCategoryRepository:
+    async def get_categories(self, *, session, promo_code_id: int):
+        return []
 
 
 def build_user(*, role=UserRole.MANAGER):
@@ -52,6 +68,25 @@ async def test_admin_get_promo_codes_no_permission_returns_403() -> None:
             permission_service=PermissionService(),
             promo_code_repository=FakePromoCodeRepository(),
             promo_code_usage_repository=FakePromoCodeUsageRepository(),
+        )
+
+    assert exc_info.value.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_admin_get_promo_code_detail_no_permission_returns_403() -> None:
+    with pytest.raises(HTTPException) as exc_info:
+        await get_admin_promo_code_detail.__dishka_orig_func__(
+            token_payload={"token_type": "access"},
+            current_user=build_user(role=UserRole.MANAGER),
+            promo_code_id=1,
+            redis_service=FakeRedisService(),
+            admin_promo_code_service=AdminPromoCodeService(),
+            permission_service=PermissionService(),
+            promo_code_repository=FakePromoCodeRepository(),
+            promo_code_usage_repository=FakePromoCodeUsageRepository(),
+            promo_code_product_repository=FakePromoCodeProductRepository(),
+            promo_code_category_repository=FakePromoCodeCategoryRepository(),
         )
 
     assert exc_info.value.status_code == 403

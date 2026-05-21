@@ -2,13 +2,15 @@ from source.config.settings import settings
 from source.errors.auth import AdminAuthAccessDeniedError, InactiveUserError
 from source.errors.category import CategoryNotFoundError
 from source.errors.product import ProductNotFoundError
-from source.errors.promo_code import PromoCodeAlreadyExistsError
+from source.errors.promo_code import PromoCodeAlreadyExistsError, PromoCodeNotFoundError
 from source.schemas.pydantic.promo_code import (
+    AdminPromoCodeCategoryResponse,
     AdminPromoCodeCreateRequest,
     AdminPromoCodeDetailResponse,
     AdminPromoCodeListItemResponse,
     AdminPromoCodeListQueryParams,
     AdminPromoCodeListResponse,
+    AdminPromoCodeProductResponse,
 )
 from source.services.admin_auth import STAFF_ROLES
 from source.services.redis import RedisService
@@ -78,6 +80,51 @@ class AdminPromoCodeService:
             cache_key,
             response.model_dump_json(),
             ttl_seconds=settings.promo_codes.admin_list_cache_ttl_seconds,
+        )
+        return response
+
+    async def get_promo_code_detail(
+        self,
+        *,
+        session,
+        redis_service: RedisService,
+        user,
+        promo_code_id: int,
+        permission_service,
+        promo_code_repository,
+        promo_code_usage_repository,
+        promo_code_product_repository,
+        promo_code_category_repository,
+    ) -> AdminPromoCodeDetailResponse:
+        self._check_read_permission(user=user, permission_service=permission_service)
+
+        cache_key = self._detail_key(promo_code_id=promo_code_id)
+        cached_promo_code = await redis_service.get(cache_key)
+        if cached_promo_code is not None:
+            if isinstance(cached_promo_code, bytes):
+                cached_promo_code = cached_promo_code.decode("utf-8")
+            return AdminPromoCodeDetailResponse.model_validate_json(cached_promo_code)
+
+        promo_code = await promo_code_repository.admin_get_by_id(session=session, promo_code_id=promo_code_id)
+        if promo_code is None:
+            raise PromoCodeNotFoundError
+
+        usage_count = await promo_code_usage_repository.count_by_promo_code_id(
+            session=session,
+            promo_code_id=promo_code.id,
+        )
+        products = await promo_code_product_repository.get_products(session=session, promo_code_id=promo_code.id)
+        categories = await promo_code_category_repository.get_categories(session=session, promo_code_id=promo_code.id)
+        response = self._build_detail_response(
+            promo_code=promo_code,
+            usage_count=usage_count,
+            products=products,
+            categories=categories,
+        )
+        await redis_service.set(
+            cache_key,
+            response.model_dump_json(),
+            ttl_seconds=settings.promo_codes.admin_detail_cache_ttl_seconds,
         )
         return response
 
@@ -171,6 +218,9 @@ class AdminPromoCodeService:
     def _list_key(self, *, query_hash: str) -> str:
         return f"admin:promo_codes:list:{query_hash}"
 
+    def _detail_key(self, *, promo_code_id: int) -> str:
+        return f"admin:promo_codes:detail:{promo_code_id}"
+
     def _build_promo_code_response(self, *, promo_code, usage_count: int) -> AdminPromoCodeListItemResponse:
         return AdminPromoCodeListItemResponse(
             id=promo_code.id,
@@ -187,15 +237,42 @@ class AdminPromoCodeService:
             ends_at=promo_code.ends_at,
         )
 
-    def _build_detail_response(self, *, promo_code) -> AdminPromoCodeDetailResponse:
+    def _build_detail_response(
+        self,
+        *,
+        promo_code,
+        usage_count: int = 0,
+        products=None,
+        categories=None,
+    ) -> AdminPromoCodeDetailResponse:
         return AdminPromoCodeDetailResponse(
             id=promo_code.id,
             code=promo_code.code,
             name=getattr(promo_code, "name", None),
+            description=getattr(promo_code, "description", None),
             discount_type=promo_code.discount_type,
             discount_value=promo_code.discount_value,
             min_order_amount=promo_code.min_order_amount,
+            max_discount_amount=getattr(promo_code, "max_discount_amount", None),
             usage_limit=promo_code.usage_limit,
+            usage_count=usage_count,
             user_usage_limit=promo_code.per_user_usage_limit,
+            starts_at=promo_code.starts_at,
+            ends_at=promo_code.ends_at,
             is_active=promo_code.is_active,
+            products=[
+                AdminPromoCodeProductResponse(
+                    id=product.id,
+                    name=product.name,
+                    price=product.price,
+                )
+                for product in products or []
+            ],
+            categories=[
+                AdminPromoCodeCategoryResponse(
+                    id=category.id,
+                    name=category.name,
+                )
+                for category in categories or []
+            ],
         )

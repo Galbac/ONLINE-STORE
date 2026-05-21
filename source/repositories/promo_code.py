@@ -3,7 +3,9 @@ from datetime import datetime, time
 from sqlalchemy import desc, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from source.db.models.category import Category
 from source.db.models.promo_code import PromoCode, PromoCodeCategory, PromoCodeProduct, PromoCodeUsage
+from source.db.models.product import Product
 from source.schemas.pydantic.promo_code import AdminPromoCodeListQueryParams
 
 
@@ -42,8 +44,17 @@ class PromoCodeRepository:
         result = await session.execute(select(func.count()).select_from(subquery))
         return int(result.scalar_one())
 
+    async def admin_get_by_id(self, *, session: AsyncSession, promo_code_id: int) -> PromoCode | None:
+        result = await session.execute(
+            select(PromoCode).where(
+                PromoCode.id == promo_code_id,
+                PromoCode.is_deleted.is_(False),
+            ),
+        )
+        return result.scalar_one_or_none()
+
     def _admin_statement(self, *, query: AdminPromoCodeListQueryParams):
-        statement = select(PromoCode)
+        statement = select(PromoCode).where(PromoCode.is_deleted.is_(False))
         if query.q is not None:
             statement = statement.where(
                 or_(
@@ -75,6 +86,12 @@ class PromoCodeRepository:
 
 
 class PromoCodeUsageRepository:
+    async def count_by_promo_code_id(self, *, session: AsyncSession, promo_code_id: int) -> int:
+        result = await session.execute(
+            select(func.count(PromoCodeUsage.id)).where(PromoCodeUsage.promo_code_id == promo_code_id),
+        )
+        return int(result.scalar_one())
+
     async def count_grouped_by_promo_code_ids(
         self,
         *,
@@ -139,6 +156,18 @@ class PromoCodeProductRepository:
         await session.flush()
         return relations
 
+    async def get_products(self, *, session: AsyncSession, promo_code_id: int) -> list[Product]:
+        result = await session.execute(
+            select(Product)
+            .join(PromoCodeProduct, PromoCodeProduct.product_id == Product.id)
+            .where(
+                PromoCodeProduct.promo_code_id == promo_code_id,
+                Product.is_deleted.is_(False),
+            )
+            .order_by(Product.name.asc(), Product.id.asc()),
+        )
+        return list(result.scalars().all())
+
 
 class PromoCodeCategoryRepository:
     async def bulk_create(self, *, session: AsyncSession, promo_code_id: int, category_ids: list[int]) -> list[PromoCodeCategory]:
@@ -149,3 +178,15 @@ class PromoCodeCategoryRepository:
         session.add_all(relations)
         await session.flush()
         return relations
+
+    async def get_categories(self, *, session: AsyncSession, promo_code_id: int) -> list[Category]:
+        result = await session.execute(
+            select(Category)
+            .join(PromoCodeCategory, PromoCodeCategory.category_id == Category.id)
+            .where(
+                PromoCodeCategory.promo_code_id == promo_code_id,
+                Category.is_deleted.is_(False),
+            )
+            .order_by(Category.name.asc(), Category.id.asc()),
+        )
+        return list(result.scalars().all())
