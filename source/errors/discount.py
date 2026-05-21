@@ -8,3 +8,7 @@ class EmptyDiscountUpdateError(Exception):
 
 class DiscountConflictError(Exception):
     pass
+
+
+class DiscountExpiredError(Exception):
+    pass

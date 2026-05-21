@@ -4,7 +4,7 @@ from decimal import Decimal
 from source.config.settings import settings
 from source.errors.auth import AdminAuthAccessDeniedError, InactiveUserError
 from source.errors.category import CategoryNotFoundError
-from source.errors.discount import DiscountConflictError, DiscountNotFoundError, EmptyDiscountUpdateError
+from source.errors.discount import DiscountConflictError, DiscountExpiredError, DiscountNotFoundError, EmptyDiscountUpdateError
 from source.errors.product import ProductNotFoundError
 from source.schemas.pydantic.discount import (
     AdminDiscountCreateRequest,
@@ -14,6 +14,7 @@ from source.schemas.pydantic.discount import (
     AdminDiscountListQueryParams,
     AdminDiscountListResponse,
     AdminDiscountProductResponse,
+    AdminDiscountStatusResponse,
     AdminDiscountUpdateRequest,
     MessageResponse,
 )
@@ -488,6 +489,91 @@ class AdminDiscountService:
         )
 
         return MessageResponse(message="Скидка удалена")
+
+    async def activate_discount(
+        self,
+        *,
+        session,
+        redis_service: RedisService,
+        user,
+        discount_id: int,
+        commiter,
+        permission_service,
+        discount_repository,
+        discount_product_repository,
+        discount_category_repository,
+        discount_conflict_service,
+        audit_log_service,
+        admin_audit_log_repository,
+        admin_discount_cache_service,
+        ip_address: str | None = None,
+        user_agent: str | None = None,
+    ) -> AdminDiscountStatusResponse:
+        self._check_update_permission(user=user, permission_service=permission_service)
+
+        discount = await discount_repository.admin_get_by_id(session=session, discount_id=discount_id)
+        if discount is None:
+            raise DiscountNotFoundError
+
+        now = datetime.now(settings.tz)
+        if self._is_discount_expired(discount=discount, now=now):
+            raise DiscountExpiredError
+
+        products = await discount_product_repository.get_products(session=session, discount_id=discount.id)
+        categories = await discount_category_repository.get_categories(session=session, discount_id=discount.id)
+        product_ids = [product.id for product in products]
+        category_ids = [category.id for category in categories]
+
+        await discount_conflict_service.check_conflicts(
+            session=session,
+            discount_repository=discount_repository,
+            discount_id=discount.id,
+            type=discount.type,
+            product_ids=product_ids,
+            category_ids=category_ids,
+            starts_at=discount.starts_at,
+            ends_at=discount.ends_at,
+            is_active=True,
+        )
+
+        activated_discount = await discount_repository.update_active(
+            session=session,
+            discount=discount,
+            is_active=True,
+        )
+        await audit_log_service.log_action(
+            session=session,
+            audit_log_repository=admin_audit_log_repository,
+            user_id=user.id,
+            login=getattr(user, "email", None) or getattr(user, "phone", None) or str(user.id),
+            event="admin_discount_activate",
+            status="success",
+            ip_address=ip_address,
+            user_agent=user_agent,
+            details={
+                "discount_id": activated_discount.id,
+                "name": activated_discount.name,
+                "type": activated_discount.type,
+            },
+        )
+        await commiter.commit()
+
+        await self._invalidate_discount_cache(
+            redis_service=redis_service,
+            admin_discount_cache_service=admin_discount_cache_service,
+        )
+
+        return AdminDiscountStatusResponse(
+            id=activated_discount.id,
+            is_active=activated_discount.is_active,
+            message="Скидка активирована",
+        )
+
+    def _is_discount_expired(self, *, discount, now: datetime) -> bool:
+        if discount.ends_at is None:
+            return False
+        comparable_now = now if discount.ends_at.tzinfo is not None else now.replace(tzinfo=None)
+        return discount.ends_at < comparable_now
 
     def _resolve_discount_type(
         self,

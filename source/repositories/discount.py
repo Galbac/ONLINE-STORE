@@ -89,6 +89,19 @@ class DiscountRepository:
         await session.refresh(discount)
         return discount
 
+    async def update_active(
+        self,
+        *,
+        session: AsyncSession,
+        discount: Discount,
+        is_active: bool,
+    ) -> Discount:
+        discount.is_active = is_active
+        session.add(discount)
+        await session.flush()
+        await session.refresh(discount)
+        return discount
+
     async def has_conflicts(
         self,
         *,

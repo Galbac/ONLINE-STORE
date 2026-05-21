@@ -9,7 +9,7 @@ from source.config.settings import settings
 from source.db.models.choises.enum import UserRole
 from source.errors.auth import AdminAuthAccessDeniedError
 from source.errors.category import CategoryNotFoundError
-from source.errors.discount import DiscountNotFoundError, EmptyDiscountUpdateError
+from source.errors.discount import DiscountConflictError, DiscountExpiredError, DiscountNotFoundError, EmptyDiscountUpdateError
 from source.errors.product import ProductNotFoundError
 from source.schemas.pydantic.discount import AdminDiscountCreateRequest, AdminDiscountDetailResponse, AdminDiscountListQueryParams, AdminDiscountListResponse, AdminDiscountUpdateRequest
 from source.services.admin_auth import AuditLogService, PermissionService
@@ -49,6 +49,8 @@ class FakeDiscountRepository:
         self.detail_calls = 0
         self.updated = []
         self.soft_deleted = []
+        self.active_updates = []
+        self.has_conflicts_result = False
 
     async def admin_get_list(self, *, session, query: AdminDiscountListQueryParams):
         self.list_calls += 1
@@ -88,8 +90,14 @@ class FakeDiscountRepository:
         discount.updated_date = deleted_at
         return discount
 
+    async def update_active(self, *, session, discount, is_active: bool):
+        self.active_updates.append((discount.id, is_active))
+        discount.is_active = is_active
+        discount.updated_date = datetime(2026, 5, 12, 12, 0, 0)
+        return discount
+
     async def has_conflicts(self, **kwargs) -> bool:
-        return False
+        return self.has_conflicts_result
 
     def _filter(self, *, query: AdminDiscountListQueryParams):
         discounts = [discount for discount in self.discounts if not discount.is_deleted]
@@ -142,8 +150,8 @@ def build_discount(
         is_deleted=False,
         deleted_at=extra.get("deleted_at"),
         deleted_by=extra.get("deleted_by"),
-        starts_at=datetime(2026, 5, 1, 0, 0, 0),
-        ends_at=datetime(2026, 5, 31, 23, 59, 59),
+        starts_at=extra.get("starts_at", datetime(2026, 5, 1, 0, 0, 0)),
+        ends_at=extra.get("ends_at", datetime(2026, 5, 31, 23, 59, 59)),
         created_date=created_date,
         updated_date=extra.get("updated_date", created_date),
         applicable_product_id=extra.get("applicable_product_id"),
@@ -423,6 +431,49 @@ async def delete_discount(
         audit_log_repository=audit_log_repository,
         commiter=commiter,
         discount_repository=discount_repository,
+    )
+
+
+async def activate_discount(
+    *,
+    discount_id: int = 1,
+    redis_service=None,
+    role=UserRole.ADMIN,
+    discount_repository=None,
+    discount_product_repository=None,
+    discount_category_repository=None,
+    audit_log_repository=None,
+    commiter=None,
+):
+    redis_service = redis_service or FakeRedisService()
+    audit_log_repository = audit_log_repository or FakeAuditLogRepository()
+    commiter = commiter or FakeCommiter()
+    discount_repository = discount_repository or FakeDiscountRepository()
+    discount_product_repository = discount_product_repository or FakeDiscountProductRepository()
+    discount_category_repository = discount_category_repository or FakeDiscountCategoryRepository()
+    response = await AdminDiscountService().activate_discount(
+        session=None,
+        redis_service=redis_service,
+        user=build_user(role=role),
+        discount_id=discount_id,
+        commiter=commiter,
+        permission_service=PermissionService(),
+        discount_repository=discount_repository,
+        discount_product_repository=discount_product_repository,
+        discount_category_repository=discount_category_repository,
+        discount_conflict_service=DiscountConflictService(),
+        audit_log_service=AuditLogService(),
+        admin_audit_log_repository=audit_log_repository,
+        admin_discount_cache_service=AdminDiscountCacheService(),
+    )
+    return SimpleNamespace(
+        response=response,
+        redis_service=redis_service,
+        audit_log_repository=audit_log_repository,
+        commiter=commiter,
+        discount_repository=discount_repository,
+        discount_product_repository=discount_product_repository,
+        discount_category_repository=discount_category_repository,
     )
 
 
@@ -797,3 +848,79 @@ async def test_admin_delete_discount_audit_log_created() -> None:
         "type": "product",
         "discount_type": "percent",
     }
+
+
+@pytest.mark.asyncio
+async def test_admin_activate_discount_success() -> None:
+    repository = FakeDiscountRepository(
+        discounts=[
+            build_discount(discount_id=1, name="Скидка на яблоки", is_active=False),
+        ],
+    )
+
+    result = await activate_discount(discount_repository=repository)
+
+    assert result.response.id == 1
+    assert result.response.is_active is True
+    assert result.response.message == "Скидка активирована"
+    assert repository.active_updates == [(1, True)]
+    assert result.commiter.committed is True
+
+
+@pytest.mark.asyncio
+async def test_admin_activate_discount_expired_error() -> None:
+    repository = FakeDiscountRepository(
+        discounts=[
+            build_discount(
+                discount_id=1,
+                name="Скидка на яблоки",
+                is_active=False,
+                ends_at=datetime(2026, 1, 1, 0, 0, 0),
+            ),
+        ],
+    )
+
+    with pytest.raises(DiscountExpiredError):
+        await activate_discount(discount_repository=repository)
+
+
+@pytest.mark.asyncio
+async def test_admin_activate_deleted_discount_not_found_error() -> None:
+    deleted_discount = build_discount(discount_id=1, name="Скидка на яблоки", is_active=False)
+    deleted_discount.is_deleted = True
+    repository = FakeDiscountRepository(discounts=[deleted_discount])
+
+    with pytest.raises(DiscountNotFoundError):
+        await activate_discount(discount_repository=repository)
+
+
+@pytest.mark.asyncio
+async def test_admin_activate_discount_conflict_error() -> None:
+    repository = FakeDiscountRepository(
+        discounts=[
+            build_discount(discount_id=1, name="Скидка на яблоки", is_active=False),
+        ],
+    )
+    repository.has_conflicts_result = True
+
+    with pytest.raises(DiscountConflictError):
+        await activate_discount(discount_repository=repository)
+
+
+@pytest.mark.asyncio
+async def test_admin_activate_discount_invalidates_cache() -> None:
+    repository = FakeDiscountRepository(
+        discounts=[
+            build_discount(discount_id=1, name="Скидка на яблоки", is_active=False),
+        ],
+    )
+
+    result = await activate_discount(discount_repository=repository)
+
+    assert "admin:discounts:*" in result.redis_service.deleted_patterns
+    assert "discounts:*" in result.redis_service.deleted_patterns
+    assert "products:list:*" in result.redis_service.deleted_patterns
+    assert "products:detail:*" in result.redis_service.deleted_patterns
+    assert "products:slug:*" in result.redis_service.deleted_patterns
+    assert "products:discounted:*" in result.redis_service.deleted_patterns
+    assert "cart:*" in result.redis_service.deleted_patterns

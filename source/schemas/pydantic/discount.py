@@ -17,6 +17,12 @@ class MessageResponse(BaseModel):
     message: str
 
 
+class AdminDiscountStatusResponse(BaseModel):
+    id: int
+    is_active: bool
+    message: str
+
+
 class ActiveDiscountsQueryParams(BaseModel):
     limit: int = Field(default=20, ge=1, le=100)
     offset: int = Field(default=0, ge=0)
