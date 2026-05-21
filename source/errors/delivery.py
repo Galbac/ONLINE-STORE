@@ -48,3 +48,7 @@ class DeliveryZoneNotFoundError(Exception):
 
 class EmptyDeliveryZoneUpdateError(Exception):
     pass
+
+
+class DeliveryZoneActiveOrdersError(Exception):
+    pass

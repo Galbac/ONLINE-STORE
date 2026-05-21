@@ -7,6 +7,10 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from source.utils.delivery import normalize_address_part
 
 
+class MessageResponse(BaseModel):
+    message: str
+
+
 class DeliveryOptionItemResponse(BaseModel):
     enabled: bool
     title: str

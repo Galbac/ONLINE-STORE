@@ -1,6 +1,9 @@
+from datetime import datetime
+
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from source.config.settings import settings
 from source.db.models.delivery_zone import DeliveryZone
 from source.schemas.pydantic.delivery import AdminDeliveryZoneCreateRequest, AdminDeliveryZoneListQueryParams
 
@@ -67,6 +70,22 @@ class DeliveryZoneRepository:
         await session.refresh(zone)
         return zone
 
+    async def soft_delete(
+        self,
+        *,
+        session: AsyncSession,
+        zone: DeliveryZone,
+        deleted_by: int,
+    ) -> DeliveryZone:
+        zone.is_deleted = True
+        zone.is_active = False
+        zone.deleted_at = datetime.now(settings.tz)
+        zone.deleted_by = deleted_by
+        session.add(zone)
+        await session.flush()
+        await session.refresh(zone)
+        return zone
+
     def _admin_statement(self, *, query: AdminDeliveryZoneListQueryParams):
         statement = select(DeliveryZone)
         if not query.include_deleted:
@@ -121,6 +140,7 @@ class DeliveryZoneRepository:
             .where(
                 func.lower(DeliveryZone.city) == city.lower(),
                 DeliveryZone.is_active.is_(True),
+                DeliveryZone.is_deleted.is_(False),
             )
             .order_by(DeliveryZone.id.asc())
             .limit(1),

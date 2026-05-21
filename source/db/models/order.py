@@ -24,6 +24,10 @@ class Order(IdBigIntPkMixin, CreateUpdateMixin, Base):
         ForeignKey("pickup_points.id", ondelete="SET NULL"),
         index=True,
     )
+    delivery_zone_id: Mapped[int | None] = mapped_column(
+        ForeignKey("delivery_zones.id", ondelete="SET NULL"),
+        index=True,
+    )
     order_number: Mapped[str] = mapped_column(String(50), unique=True, index=True, nullable=False)
     status: Mapped[str] = mapped_column(String(50), index=True, nullable=False)
     payment_method: Mapped[str | None] = mapped_column(String(50))

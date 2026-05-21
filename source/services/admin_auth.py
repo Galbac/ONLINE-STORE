@@ -57,6 +57,7 @@ ADMIN_PERMISSIONS_BY_ROLE = {
         "admin:delivery:read_deleted",
         "admin:delivery:create",
         "admin:delivery:update",
+        "admin:delivery:delete",
         "admin:promo_codes:read",
         "admin:promo_codes:create",
         "admin:promo_codes:update",

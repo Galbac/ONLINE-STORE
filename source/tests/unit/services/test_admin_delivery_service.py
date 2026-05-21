@@ -11,6 +11,7 @@ from source.config.settings import settings
 from source.db.models.choises.enum import UserRole
 from source.errors.auth import AdminAuthAccessDeniedError
 from source.errors.delivery import (
+    DeliveryZoneActiveOrdersError,
     DeliveryZoneAlreadyExistsError,
     DeliveryZoneNotFoundError,
     EmptyDeliverySettingsUpdateError,
@@ -127,6 +128,13 @@ class FakeDeliveryZoneRepository:
         zone.updated_date = datetime(2026, 5, 12, 11, 0, 0)
         return zone
 
+    async def soft_delete(self, *, session, zone, deleted_by: int):
+        zone.is_deleted = True
+        zone.is_active = False
+        zone.deleted_at = datetime(2026, 5, 12, 11, 0, 0)
+        zone.deleted_by = deleted_by
+        return zone
+
     async def get_list(self, *, session, query: AdminDeliveryZoneListQueryParams):
         self.get_list_calls += 1
         zones = self._filter(query=query)
@@ -175,6 +183,16 @@ class FakeAuditLogRepository:
     async def create(self, *, session, **data):
         self.logs.append(data)
         return SimpleNamespace(**data)
+
+
+class FakeOrderRepository:
+    def __init__(self, *, exists_active: bool = False) -> None:
+        self.exists_active = exists_active
+        self.checked_delivery_zone_ids = []
+
+    async def exists_active_by_delivery_zone_id(self, *, session, delivery_zone_id: int) -> bool:
+        self.checked_delivery_zone_ids.append(delivery_zone_id)
+        return self.exists_active
 
 
 def build_user(*, role=UserRole.ADMIN):
@@ -235,6 +253,8 @@ def build_delivery_zone(
         is_active=is_active,
         is_deleted=is_deleted,
         sort_order=sort_order,
+        deleted_at=None,
+        deleted_by=None,
         created_date=datetime(2026, 5, 12, 10, 0, 0),
         updated_date=datetime(2026, 5, 12, 10, 0, 0),
     )
@@ -374,6 +394,49 @@ async def update_zone(
         response=response,
         redis_service=redis_service,
         repository=repository,
+        commiter=commiter,
+        audit_log_repository=audit_log_repository,
+    )
+
+
+async def delete_zone(
+    *,
+    zone_id: int = 1,
+    redis_service=None,
+    role=UserRole.ADMIN,
+    repository=None,
+    order_repository=None,
+    commiter=None,
+    audit_log_repository=None,
+):
+    redis_service = redis_service or FakeRedisService()
+    repository = repository or FakeDeliveryZoneRepository(
+        zones=[build_delivery_zone(zone_id=1, name="Центральная зона", city="Москва")],
+    )
+    order_repository = order_repository or FakeOrderRepository()
+    commiter = commiter or FakeCommiter()
+    audit_log_repository = audit_log_repository or FakeAuditLogRepository()
+    response = await AdminDeliveryService().delete_zone(
+        session=None,
+        redis_service=redis_service,
+        user=build_user(role=role),
+        zone_id=zone_id,
+        commiter=commiter,
+        permission_service=PermissionService(),
+        admin_delivery_cache_service=AdminDeliveryCacheService(),
+        delivery_cache_service=DeliveryCacheService(),
+        delivery_zone_repository=repository,
+        order_repository=order_repository,
+        audit_log_service=AuditLogService(),
+        admin_audit_log_repository=audit_log_repository,
+        ip_address="127.0.0.1",
+        user_agent="pytest",
+    )
+    return SimpleNamespace(
+        response=response,
+        redis_service=redis_service,
+        repository=repository,
+        order_repository=order_repository,
         commiter=commiter,
         audit_log_repository=audit_log_repository,
     )
@@ -874,3 +937,73 @@ async def test_admin_delivery_zone_update_audit_log_created() -> None:
         "old": "250.00",
         "new": "300.00",
     }
+
+
+@pytest.mark.asyncio
+async def test_admin_delivery_zone_delete_success() -> None:
+    result = await delete_zone()
+
+    assert result.response.message == "Зона доставки удалена"
+    assert result.commiter.committed is True
+    assert result.order_repository.checked_delivery_zone_ids == [1]
+
+
+@pytest.mark.asyncio
+async def test_admin_delivery_zone_delete_not_found_error() -> None:
+    repository = FakeDeliveryZoneRepository(zones=[])
+
+    with pytest.raises(DeliveryZoneNotFoundError):
+        await delete_zone(repository=repository)
+
+
+@pytest.mark.asyncio
+async def test_admin_delivery_zone_delete_already_deleted_error() -> None:
+    repository = FakeDeliveryZoneRepository(
+        zones=[build_delivery_zone(zone_id=1, name="Удалённая зона", city="Москва", is_deleted=True)],
+    )
+
+    with pytest.raises(DeliveryZoneNotFoundError):
+        await delete_zone(repository=repository)
+
+
+@pytest.mark.asyncio
+async def test_admin_delivery_zone_delete_active_orders_error() -> None:
+    with pytest.raises(DeliveryZoneActiveOrdersError):
+        await delete_zone(order_repository=FakeOrderRepository(exists_active=True))
+
+
+@pytest.mark.asyncio
+async def test_admin_delivery_zone_delete_sets_is_deleted_true() -> None:
+    result = await delete_zone()
+
+    assert result.repository.zones[0].is_deleted is True
+    assert result.repository.zones[0].deleted_by == 1
+    assert result.repository.zones[0].deleted_at == datetime(2026, 5, 12, 11, 0, 0)
+
+
+@pytest.mark.asyncio
+async def test_admin_delivery_zone_delete_sets_is_active_false() -> None:
+    result = await delete_zone()
+
+    assert result.repository.zones[0].is_active is False
+
+
+@pytest.mark.asyncio
+async def test_admin_delivery_zone_delete_invalidates_cache() -> None:
+    result = await delete_zone()
+
+    assert "admin:delivery:zones:*" in result.redis_service.deleted
+    assert "delivery:calculate:*" in result.redis_service.deleted
+    assert "delivery:options" in result.redis_service.deleted
+
+
+@pytest.mark.asyncio
+async def test_admin_delivery_zone_delete_audit_log_created() -> None:
+    result = await delete_zone()
+
+    assert result.audit_log_repository.logs[0]["event"] == "delete_delivery_zone"
+    assert result.audit_log_repository.logs[0]["user_id"] == 1
+    assert result.audit_log_repository.logs[0]["ip_address"] == "127.0.0.1"
+    assert result.audit_log_repository.logs[0]["user_agent"] == "pytest"
+    assert result.audit_log_repository.logs[0]["details"]["actor_id"] == 1
+    assert result.audit_log_repository.logs[0]["details"]["zone_id"] == 1

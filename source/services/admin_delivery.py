@@ -1,6 +1,7 @@
 from source.config.settings import settings
 from source.errors.auth import AdminAuthAccessDeniedError, InactiveUserError
 from source.errors.delivery import (
+    DeliveryZoneActiveOrdersError,
     DeliveryZoneAlreadyExistsError,
     DeliveryZoneNotFoundError,
     EmptyDeliverySettingsUpdateError,
@@ -14,6 +15,7 @@ from source.schemas.pydantic.delivery import (
     AdminDeliveryZoneListResponse,
     AdminDeliveryZoneResponse,
     AdminDeliveryZoneUpdateRequest,
+    MessageResponse,
 )
 from source.services.admin_auth import STAFF_ROLES
 from source.services.admin_delivery_cache import AdminDeliveryCacheService
@@ -46,6 +48,14 @@ class AdminDeliveryService:
         if user.role not in STAFF_ROLES:
             raise AdminAuthAccessDeniedError
         if "admin:delivery:create" not in permission_service.get_user_permissions(role=user.role):
+            raise AdminAuthAccessDeniedError
+
+    def _check_delete_permission(self, *, user, permission_service) -> None:
+        if not user.is_active or user.is_deleted or user.is_blocked:
+            raise InactiveUserError
+        if user.role not in STAFF_ROLES:
+            raise AdminAuthAccessDeniedError
+        if "admin:delivery:delete" not in permission_service.get_user_permissions(role=user.role):
             raise AdminAuthAccessDeniedError
 
     async def get_settings(
@@ -257,6 +267,64 @@ class AdminDeliveryService:
         await delivery_cache_service.invalidate_options(redis_service=redis_service)
 
         return self._build_zone_response(zone=updated_zone)
+
+    async def delete_zone(
+        self,
+        *,
+        session,
+        redis_service: RedisService,
+        user,
+        zone_id: int,
+        commiter,
+        permission_service,
+        admin_delivery_cache_service: AdminDeliveryCacheService,
+        delivery_cache_service: DeliveryCacheService,
+        delivery_zone_repository,
+        order_repository,
+        audit_log_service,
+        admin_audit_log_repository,
+        ip_address: str | None = None,
+        user_agent: str | None = None,
+    ) -> MessageResponse:
+        self._check_delete_permission(user=user, permission_service=permission_service)
+        if zone_id <= 0:
+            raise ValueError("Неверный zone_id")
+
+        zone = await delivery_zone_repository.get_by_id(session=session, zone_id=zone_id)
+        if zone is None or zone.is_deleted:
+            raise DeliveryZoneNotFoundError
+
+        if await order_repository.exists_active_by_delivery_zone_id(session=session, delivery_zone_id=zone.id):
+            raise DeliveryZoneActiveOrdersError
+
+        deleted_zone = await delivery_zone_repository.soft_delete(
+            session=session,
+            zone=zone,
+            deleted_by=user.id,
+        )
+        await audit_log_service.log_action(
+            session=session,
+            audit_log_repository=admin_audit_log_repository,
+            user_id=user.id,
+            login=getattr(user, "email", None) or getattr(user, "phone", None) or str(user.id),
+            event="delete_delivery_zone",
+            status="success",
+            ip_address=ip_address,
+            user_agent=user_agent,
+            details={
+                "actor_id": user.id,
+                "zone_id": deleted_zone.id,
+                "name": deleted_zone.name,
+                "city": deleted_zone.city,
+            },
+        )
+        await commiter.commit()
+
+        await admin_delivery_cache_service.invalidate_zones(redis_service=redis_service)
+        await delivery_cache_service.invalidate_calculate(redis_service=redis_service)
+        await delivery_cache_service.invalidate_options(redis_service=redis_service)
+
+        return MessageResponse(message="Зона доставки удалена")
 
     async def update_settings(
         self,
