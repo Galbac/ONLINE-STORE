@@ -2,7 +2,7 @@ import asyncio
 from time import perf_counter
 
 from source.config.settings import Settings
-from source.schemas.pydantic.health import HealthDbResponse, HealthResponse
+from source.schemas.pydantic.health import HealthDbResponse, HealthResponse, HealthStorageResponse
 from source.utils.health import DatabaseHealthChecker
 
 
@@ -31,5 +31,31 @@ class HealthService:
         return HealthDbResponse(
             status="ok",
             database="postgresql",
+            latency_ms=latency_ms,
+        )
+
+    async def check_storage(
+        self,
+        *,
+        config: Settings,
+        storage_service,
+    ) -> HealthStorageResponse:
+        started_at = perf_counter()
+        result = await asyncio.wait_for(
+            storage_service.health_check(check_write=config.app.health_storage_check_write),
+            timeout=config.app.health_storage_timeout_seconds,
+        )
+        latency_ms = int((perf_counter() - started_at) * 1000)
+        if config.media.storage == "local":
+            return HealthStorageResponse(
+                status="ok",
+                storage_type="local",
+                readable=result.get("readable") is True,
+                writable=result.get("writable") if result.get("writable") is not None else None,
+            )
+        return HealthStorageResponse(
+            status="ok",
+            storage_type=config.media.storage,
+            available=result.get("available") is True,
             latency_ms=latency_ms,
         )

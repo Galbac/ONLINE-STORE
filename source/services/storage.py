@@ -1,3 +1,4 @@
+from uuid import uuid4
 from urllib.parse import quote
 
 from source.config.settings import MediaSettings
@@ -24,6 +25,23 @@ class LocalStorageProvider:
         except OSError as error:
             raise UploadStorageError from error
 
+    async def health_check(self, *, check_write: bool = False) -> dict:
+        root = self.media_settings.root
+        if not root or not root.exists() or not root.is_dir():
+            raise UploadStorageError
+        readable = root.stat() is not None
+        writable = False
+        if check_write:
+            temp_path = root / f".health-{uuid4().hex}.tmp"
+            try:
+                temp_path.write_text("ok", encoding="utf-8")
+                writable = True
+            except OSError as error:
+                raise UploadStorageError from error
+            finally:
+                temp_path.unlink(missing_ok=True)
+        return {"readable": readable, "writable": writable if check_write else None}
+
 
 class ExternalStorageProvider:
     def __init__(self, media_settings: MediaSettings) -> None:
@@ -36,6 +54,11 @@ class ExternalStorageProvider:
 
     async def delete(self, *, stored_filename: str) -> None:
         return None
+
+    async def health_check(self, *, check_write: bool = False) -> dict:
+        if not self.media_settings.storage_bucket:
+            raise UploadStorageError
+        return {"available": True}
 
 
 class StorageService:
@@ -63,4 +86,11 @@ class StorageService:
         if storage_type == "external":
             await self.external_provider.delete(stored_filename=stored_filename)
             return
+        raise UploadStorageError
+
+    async def health_check(self, *, check_write: bool = False) -> dict:
+        if self.media_settings.storage == "local":
+            return await self.local_provider.health_check(check_write=check_write)
+        if self.media_settings.storage == "external":
+            return await self.external_provider.health_check(check_write=check_write)
         raise UploadStorageError

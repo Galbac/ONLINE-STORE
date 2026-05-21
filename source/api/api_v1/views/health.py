@@ -6,8 +6,9 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from source.config.settings import Settings, settings
-from source.schemas.pydantic.health import HealthDbResponse, HealthResponse
+from source.schemas.pydantic.health import HealthDbResponse, HealthResponse, HealthStorageResponse
 from source.services.health import HealthService
+from source.services.storage import StorageService
 from source.utils.health import DatabaseHealthChecker
 
 router = APIRouter(tags=["health"])
@@ -46,6 +47,37 @@ async def get_db_health(
                 "status": "error",
                 "database": "postgresql",
                 "message": "Database unavailable",
+            },
+        )
+
+
+@router.get("/health/storage", response_model=HealthStorageResponse, response_model_exclude_none=True)
+@inject
+async def get_storage_health(
+    authorization: str | None = Header(default=None),
+    x_internal_token: str | None = Header(default=None, alias="X-Internal-Token"),
+    config: FromDishka[Settings] = None,
+    health_service: FromDishka[HealthService] = None,
+    storage_service: FromDishka[StorageService] = None,
+):
+    verify_internal_health_token(
+        config=config,
+        authorization=authorization,
+        x_internal_token=x_internal_token,
+    )
+    storage_type = getattr(config.media, "storage", "unknown")
+    try:
+        return await health_service.check_storage(
+            config=config,
+            storage_service=storage_service,
+        )
+    except Exception:
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={
+                "status": "error",
+                "storage_type": storage_type,
+                "message": "Storage unavailable",
             },
         )
 

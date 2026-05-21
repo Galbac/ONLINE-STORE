@@ -13,3 +13,13 @@ class HealthDbResponse(BaseModel):
     database: str
     latency_ms: int | None = None
     message: str | None = None
+
+
+class HealthStorageResponse(BaseModel):
+    status: str
+    storage_type: str
+    readable: bool | None = None
+    writable: bool | None = None
+    available: bool | None = None
+    latency_ms: int | None = None
+    message: str | None = None

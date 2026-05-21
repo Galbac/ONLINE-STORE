@@ -29,6 +29,8 @@ class AppSettings(BaseSettings):
     health_db_timeout_seconds: int = Field(default=3, alias="HEALTH_DB_TIMEOUT_SECONDS")
     health_protect_internal_endpoints: bool = Field(default=False, alias="HEALTH_PROTECT_INTERNAL_ENDPOINTS")
     health_internal_token: str = Field(default="", alias="HEALTH_INTERNAL_TOKEN")
+    health_storage_timeout_seconds: int = Field(default=5, alias="HEALTH_STORAGE_TIMEOUT_SECONDS")
+    health_storage_check_write: bool = Field(default=False, alias="HEALTH_STORAGE_CHECK_WRITE")
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
