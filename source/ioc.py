@@ -26,6 +26,7 @@ from source.repositories.delivery_time_slot import DeliveryTimeSlotRepository
 from source.repositories.delivery_zone import DeliveryZoneRepository
 from source.repositories.discount import DiscountCategoryRepository, DiscountProductRepository, DiscountRepository
 from source.repositories.favorite import FavoriteRepository
+from source.repositories.integration_job import IntegrationJobRepository
 from source.repositories.integration_log import IntegrationLogRepository
 from source.repositories.order import OrderRepository
 from source.repositories.order_item import OrderItemRepository
@@ -88,7 +89,7 @@ from source.services.favorite import FavoriteService
 from source.services.favorite_cache import FavoriteCacheService
 from source.services.health import HealthService
 from source.services.health_cache import HealthCacheService
-from source.services.one_c import CategorySyncService, ImageDownloadService, IntegrationLogService, OneCImportService, OneCIntegrationService, OneCOrderPayloadBuilder, OneCOrderService, ProductImageSyncService, ProductPriceSyncService, ProductStockSyncService, ProductSyncService, SlugService
+from source.services.one_c import AdminOneCIntegrationService, CategorySyncService, ImageDownloadService, IntegrationJobService, IntegrationLogService, OneCClient, OneCImportService, OneCIntegrationService, OneCOrderPayloadBuilder, OneCOrderService, ProductImageSyncService, ProductPriceSyncService, ProductStockSyncService, ProductSyncService, SlugService
 from source.services.order import OrderService
 from source.services.order_cache import OrderCacheService
 from source.services.order_status import OrderStatusService
@@ -100,7 +101,7 @@ from source.services.product import ProductService
 from source.services.product_cache import ProductCacheService
 from source.services.profile import ProfileService
 from source.services.profile_cache import ProfileCacheService
-from source.services.redis import RedisService
+from source.services.redis import RedisLockService, RedisService
 from source.services.refresh_token import RefreshTokenService
 from source.services.role import RoleService
 from source.services.stock import StockMovementService, StockService
@@ -160,6 +161,10 @@ class AppProvider(Provider):
     )
     redis_service = provide(
         RedisService,
+        scope=Scope.REQUEST,
+    )
+    redis_lock_service = provide(
+        RedisLockService,
         scope=Scope.REQUEST,
     )
     user_service = provide(
@@ -240,6 +245,10 @@ class AppProvider(Provider):
     )
     integration_log_repository = provide(
         IntegrationLogRepository,
+        scope=Scope.REQUEST,
+    )
+    integration_job_repository = provide(
+        IntegrationJobRepository,
         scope=Scope.REQUEST,
     )
     payment_repository = provide(
@@ -458,6 +467,14 @@ class AppProvider(Provider):
         OneCIntegrationService,
         scope=Scope.REQUEST,
     )
+    one_c_client = provide(
+        OneCClient,
+        scope=Scope.REQUEST,
+    )
+    admin_one_c_integration_service = provide(
+        AdminOneCIntegrationService,
+        scope=Scope.REQUEST,
+    )
     one_c_import_service = provide(
         OneCImportService,
         scope=Scope.REQUEST,
@@ -500,6 +517,10 @@ class AppProvider(Provider):
     )
     integration_log_service = provide(
         IntegrationLogService,
+        scope=Scope.REQUEST,
+    )
+    integration_job_service = provide(
+        IntegrationJobService,
         scope=Scope.REQUEST,
     )
     cart_cache_service = provide(

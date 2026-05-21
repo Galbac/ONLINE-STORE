@@ -5,12 +5,14 @@ from decimal import Decimal
 from datetime import datetime
 from pathlib import Path
 from urllib.error import HTTPError, URLError
-from urllib.parse import unquote, urlparse
+from urllib.parse import urlencode, unquote, urlparse
 from urllib.request import Request, urlopen
 
 from source.config.settings import settings
-from source.errors.auth import OneCSyncError
+from source.errors.auth import AdminAuthAccessDeniedError, InactiveUserError, OneCIntegrationDisabledError, OneCSyncAlreadyRunningError, OneCSyncError
 from source.schemas.pydantic.one_c import (
+    AdminOneCSyncRequest,
+    AdminOneCSyncResponse,
     OneCCategoryImportItem,
     OneCCategoryImportRequest,
     OneCImageImportItem,
@@ -35,6 +37,7 @@ from source.schemas.pydantic.one_c import (
     OneCStockImportRequest,
     OneCImportResultResponse,
 )
+from source.services.admin_auth import STAFF_ROLES
 from source.utils.upload import detect_mime_type, generate_safe_filename, get_file_extension, validate_file_size
 from source.utils.slug import generate_slug, normalize_slug
 
@@ -97,6 +100,37 @@ class OneCIntegrationService:
             raise OneCSyncError(f"1C HTTP error {error.code}") from error
         except URLError as error:
             raise OneCSyncError("1C unavailable") from error
+
+
+class OneCClient:
+    async def fetch_products(self, *, full_sync: bool = False) -> OneCProductImportRequest:
+        if not settings.one_c.api_url:
+            raise OneCSyncError("1C API URL is not configured")
+
+        query = urlencode({"full_sync": str(full_sync).lower()})
+        url = settings.one_c.api_url.rstrip("/") + f"/products?{query}"
+        headers = {"Accept": "application/json"}
+        if settings.one_c.api_token:
+            headers["Authorization"] = f"Bearer {settings.one_c.api_token}"
+
+        request = Request(url, headers=headers, method="GET")
+        try:
+            with urlopen(request, timeout=30) as response:
+                response_body = response.read().decode("utf-8")
+        except HTTPError as error:
+            error_body = error.read().decode("utf-8", errors="ignore")
+            raise OneCSyncError(error_body or f"1C HTTP error {error.code}") from error
+        except URLError as error:
+            raise OneCSyncError(str(error.reason)) from error
+
+        try:
+            payload = json.loads(response_body)
+        except json.JSONDecodeError as error:
+            raise OneCSyncError("Invalid 1C response") from error
+
+        if isinstance(payload, list):
+            payload = {"items": payload}
+        return OneCProductImportRequest.model_validate(payload)
 
 
 class OneCOrderPayloadBuilder:
@@ -1188,6 +1222,45 @@ class IntegrationLogService:
         )
 
 
+class IntegrationJobService:
+    async def create_job(
+        self,
+        *,
+        session,
+        integration_job_repository,
+        job_type: str,
+        started_by: int,
+        full_sync: bool,
+    ):
+        return await integration_job_repository.create(
+            session=session,
+            type=job_type,
+            status="started",
+            started_by=started_by,
+            full_sync=full_sync,
+            started_at=datetime.now(settings.tz),
+        )
+
+    async def finish_job(
+        self,
+        *,
+        session,
+        integration_job_repository,
+        job,
+        status: str,
+        result_payload: dict | None = None,
+        error_message: str | None = None,
+    ):
+        return await integration_job_repository.update_status(
+            session=session,
+            job=job,
+            status=status,
+            finished_at=datetime.now(settings.tz),
+            result_payload=result_payload,
+            error_message=error_message,
+        )
+
+
 class OneCImportService:
     async def import_categories(
         self,
@@ -1398,3 +1471,154 @@ class OneCImportService:
                 product_id=product.id,
             )
         return result
+
+
+class AdminOneCIntegrationService:
+    _products_lock_key = "integration:1c:lock:products"
+
+    def _check_sync_permission(self, *, user, permission_service) -> None:
+        if not user.is_active or user.is_deleted:
+            raise InactiveUserError
+        if user.role not in STAFF_ROLES:
+            raise AdminAuthAccessDeniedError
+        if "admin:integration_1c:sync" not in permission_service.get_user_permissions(role=user.role):
+            raise AdminAuthAccessDeniedError
+
+    async def sync_products(
+        self,
+        *,
+        session,
+        redis_service,
+        user,
+        data: AdminOneCSyncRequest,
+        commiter,
+        config,
+        permission_service,
+        redis_lock_service,
+        one_c_client: OneCClient,
+        one_c_import_service: OneCImportService,
+        product_sync_service: ProductSyncService,
+        slug_service: SlugService,
+        integration_job_service: IntegrationJobService,
+        integration_log_service: IntegrationLogService,
+        integration_job_repository,
+        integration_log_repository,
+        product_repository,
+        category_repository,
+        product_cache_service,
+        admin_product_cache_service,
+        category_cache_service,
+    ) -> AdminOneCSyncResponse:
+        self._check_sync_permission(user=user, permission_service=permission_service)
+        if not config.one_c.sync_enabled or not config.one_c.api_url:
+            raise OneCIntegrationDisabledError
+
+        lock_acquired = await redis_lock_service.acquire(
+            redis_service=redis_service,
+            key=self._products_lock_key,
+            ttl_seconds=config.one_c.sync_lock_ttl_seconds,
+        )
+        if not lock_acquired:
+            raise OneCSyncAlreadyRunningError
+
+        job = None
+        try:
+            job = await integration_job_service.create_job(
+                session=session,
+                integration_job_repository=integration_job_repository,
+                job_type="products",
+                started_by=user.id,
+                full_sync=data.full_sync,
+            )
+            await integration_log_repository.create(
+                session=session,
+                system="1c",
+                entity_type="products",
+                entity_id=job.id,
+                action="manual_sync_started",
+                status="started",
+                request_payload={"full_sync": data.full_sync},
+                response_payload=None,
+                error_message=None,
+            )
+            await commiter.commit()
+
+            products = await one_c_client.fetch_products(full_sync=data.full_sync)
+            result = await one_c_import_service.import_products(
+                session=session,
+                redis_service=redis_service,
+                data=products,
+                commiter=commiter,
+                product_repository=product_repository,
+                category_repository=category_repository,
+                integration_log_repository=integration_log_repository,
+                product_sync_service=product_sync_service,
+                slug_service=slug_service,
+                integration_log_service=integration_log_service,
+                product_cache_service=product_cache_service,
+                admin_product_cache_service=admin_product_cache_service,
+                category_cache_service=category_cache_service,
+            )
+            await product_cache_service.invalidate_all(redis_service=redis_service)
+            await admin_product_cache_service.invalidate_all(redis_service=redis_service)
+            await category_cache_service.invalidate_all(redis_service=redis_service)
+
+            result_payload = result.model_dump()
+            await integration_job_service.finish_job(
+                session=session,
+                integration_job_repository=integration_job_repository,
+                job=job,
+                status="success",
+                result_payload=result_payload,
+            )
+            await integration_log_repository.create(
+                session=session,
+                system="1c",
+                entity_type="products",
+                entity_id=job.id,
+                action="manual_sync_finished",
+                status="success",
+                request_payload={"full_sync": data.full_sync},
+                response_payload=result_payload,
+                error_message=None,
+            )
+            await commiter.commit()
+
+            return AdminOneCSyncResponse(
+                status="success",
+                job_id=job.id,
+                created=result.created,
+                updated=result.updated,
+                errors=result.errors,
+            )
+        except Exception as error:
+            await commiter.rollback()
+            error_message = self._sanitize_error_message(str(error))
+            if job is not None:
+                await integration_job_service.finish_job(
+                    session=session,
+                    integration_job_repository=integration_job_repository,
+                    job=job,
+                    status="error",
+                    error_message=error_message,
+                )
+                await integration_log_repository.create(
+                    session=session,
+                    system="1c",
+                    entity_type="products",
+                    entity_id=job.id,
+                    action="manual_sync_finished",
+                    status="error",
+                    request_payload={"full_sync": data.full_sync},
+                    response_payload=None,
+                    error_message=error_message,
+                )
+                await commiter.commit()
+            raise OneCSyncError(error_message) from error
+        finally:
+            await redis_lock_service.release(redis_service=redis_service, key=self._products_lock_key)
+
+    def _sanitize_error_message(self, message: str) -> str:
+        if settings.one_c.api_token:
+            return message.replace(settings.one_c.api_token, "***")
+        return message

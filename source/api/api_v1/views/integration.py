@@ -2,12 +2,13 @@ from dishka.integrations.fastapi import FromDishka, inject
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from source.api.dependencies import verify_one_c_token
+from source.api.dependencies import require_permission, verify_one_c_token
 from source.common.commiter import Commiter
 from source.config.settings import Settings
 from source.repositories.category import CategoryRepository
 from source.repositories.address import AddressRepository
 from source.repositories.delivery_time_slot import DeliveryTimeSlotRepository
+from source.repositories.integration_job import IntegrationJobRepository
 from source.repositories.integration_log import IntegrationLogRepository
 from source.repositories.order import OrderRepository
 from source.repositories.order_item import OrderItemRepository
@@ -18,21 +19,88 @@ from source.repositories.product_image import ProductImageRepository
 from source.repositories.product_price_history import ProductPriceHistoryRepository
 from source.repositories.stock_movement import StockMovementRepository
 from source.repositories.upload import UploadRepository
-from source.schemas.pydantic.one_c import OneCCategoryImportRequest, OneCImageImportRequest, OneCImportResultResponse, OneCMarkOrderSyncedRequest, OneCOrderSyncErrorRequest, OneCOrderSyncResponse, OneCOrderSyncStatus, OneCOrdersPendingQueryParams, OneCOrdersPendingResponse, OneCPriceImportRequest, OneCProductImportRequest, OneCStockImportRequest
+from source.errors.auth import AdminAuthAccessDeniedError, InactiveUserError, OneCIntegrationDisabledError, OneCSyncAlreadyRunningError, OneCSyncError
+from source.schemas.pydantic.one_c import AdminOneCSyncRequest, AdminOneCSyncResponse, OneCCategoryImportRequest, OneCImageImportRequest, OneCImportResultResponse, OneCMarkOrderSyncedRequest, OneCOrderSyncErrorRequest, OneCOrderSyncResponse, OneCOrderSyncStatus, OneCOrdersPendingQueryParams, OneCOrdersPendingResponse, OneCPriceImportRequest, OneCProductImportRequest, OneCStockImportRequest
 from source.services.admin_order_cache import AdminOrderCacheService
 from source.services.admin_dashboard_cache import AdminDashboardCacheService
 from source.services.admin_product_cache import AdminProductCacheService
 from source.services.admin_category_cache import AdminCategoryCacheService
+from source.services.admin_auth import PermissionService
 from source.services.cart_cache import CartCacheService
 from source.services.category_cache import CategoryCacheService
-from source.services.one_c import CategorySyncService, ImageDownloadService, IntegrationLogService, OneCImportService, OneCOrderPayloadBuilder, OneCOrderService, ProductImageSyncService, ProductPriceSyncService, ProductStockSyncService, ProductSyncService, SlugService
+from source.services.one_c import AdminOneCIntegrationService, CategorySyncService, ImageDownloadService, IntegrationJobService, IntegrationLogService, OneCClient, OneCImportService, OneCOrderPayloadBuilder, OneCOrderService, ProductImageSyncService, ProductPriceSyncService, ProductStockSyncService, ProductSyncService, SlugService
 from source.services.order_cache import OrderCacheService
 from source.services.product_cache import ProductCacheService
-from source.services.redis import RedisService
+from source.services.redis import RedisLockService, RedisService
 from source.services.storage import StorageService
 from source.services.stock import StockMovementService
 
 router = APIRouter(tags=["integration"])
+
+
+@router.post(
+    "/admin/integration/1c/sync/products",
+    response_model=AdminOneCSyncResponse,
+    response_model_exclude_none=True,
+    status_code=status.HTTP_200_OK,
+)
+@inject
+async def admin_sync_one_c_products(
+    body: AdminOneCSyncRequest,
+    current_user=Depends(require_permission("admin:integration_1c:sync")),
+    session: FromDishka[AsyncSession] = None,
+    redis_service: FromDishka[RedisService] = None,
+    commiter: FromDishka[Commiter] = None,
+    config: FromDishka[Settings] = None,
+    admin_one_c_integration_service: FromDishka[AdminOneCIntegrationService] = None,
+    one_c_client: FromDishka[OneCClient] = None,
+    one_c_import_service: FromDishka[OneCImportService] = None,
+    product_sync_service: FromDishka[ProductSyncService] = None,
+    slug_service: FromDishka[SlugService] = None,
+    integration_job_service: FromDishka[IntegrationJobService] = None,
+    integration_log_service: FromDishka[IntegrationLogService] = None,
+    redis_lock_service: FromDishka[RedisLockService] = None,
+    permission_service: FromDishka[PermissionService] = None,
+    integration_job_repository: FromDishka[IntegrationJobRepository] = None,
+    integration_log_repository: FromDishka[IntegrationLogRepository] = None,
+    product_repository: FromDishka[ProductRepository] = None,
+    category_repository: FromDishka[CategoryRepository] = None,
+    product_cache_service: FromDishka[ProductCacheService] = None,
+    admin_product_cache_service: FromDishka[AdminProductCacheService] = None,
+    category_cache_service: FromDishka[CategoryCacheService] = None,
+) -> AdminOneCSyncResponse:
+    try:
+        return await admin_one_c_integration_service.sync_products(
+            session=session,
+            redis_service=redis_service,
+            user=current_user,
+            data=body,
+            commiter=commiter,
+            config=config,
+            permission_service=permission_service,
+            redis_lock_service=redis_lock_service,
+            one_c_client=one_c_client,
+            one_c_import_service=one_c_import_service,
+            product_sync_service=product_sync_service,
+            slug_service=slug_service,
+            integration_job_service=integration_job_service,
+            integration_log_service=integration_log_service,
+            integration_job_repository=integration_job_repository,
+            integration_log_repository=integration_log_repository,
+            product_repository=product_repository,
+            category_repository=category_repository,
+            product_cache_service=product_cache_service,
+            admin_product_cache_service=admin_product_cache_service,
+            category_cache_service=category_cache_service,
+        )
+    except (AdminAuthAccessDeniedError, InactiveUserError) as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Недостаточно прав") from error
+    except OneCIntegrationDisabledError as error:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Интеграция с 1С отключена") from error
+    except OneCSyncAlreadyRunningError as error:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Синхронизация товаров уже выполняется") from error
+    except OneCSyncError as error:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Ошибка подключения к 1С") from error
 
 
 @router.get(

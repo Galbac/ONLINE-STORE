@@ -303,6 +303,14 @@ class OneCSyncError(Exception):
     pass
 
 
+class OneCIntegrationDisabledError(Exception):
+    pass
+
+
+class OneCSyncAlreadyRunningError(Exception):
+    pass
+
+
 class OrderPaidCancellationRequiresManagerError(Exception):
     pass
 

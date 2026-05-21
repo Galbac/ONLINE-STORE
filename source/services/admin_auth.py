@@ -70,6 +70,7 @@ ADMIN_PERMISSIONS_BY_ROLE = {
         "admin:orders:sync_1c",
         "admin:orders:update",
         "admin:orders:update_status",
+        "admin:integration_1c:sync",
         "admin:users:read",
         "admin:users:update",
         "admin:users:block",

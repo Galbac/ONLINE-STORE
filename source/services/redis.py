@@ -13,6 +13,9 @@ class RedisService:
     async def set(self, key: str, value: str, *, ttl_seconds: int | None = None) -> None:
         await self._redis.set(key, value, ex=ttl_seconds)
 
+    async def set_if_not_exists(self, key: str, value: str, *, ttl_seconds: int | None = None) -> bool:
+        return bool(await self._redis.set(key, value, ex=ttl_seconds, nx=True))
+
     async def delete(self, key: str) -> None:
         await self._redis.delete(key)
 
@@ -29,3 +32,11 @@ class RedisService:
 
     async def expire(self, key: str, ttl_seconds: int) -> None:
         await self._redis.expire(key, ttl_seconds)
+
+
+class RedisLockService:
+    async def acquire(self, *, redis_service: RedisService, key: str, ttl_seconds: int) -> bool:
+        return await redis_service.set_if_not_exists(key, "1", ttl_seconds=ttl_seconds)
+
+    async def release(self, *, redis_service: RedisService, key: str) -> None:
+        await redis_service.delete(key)

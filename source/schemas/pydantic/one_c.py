@@ -155,11 +155,26 @@ class OneCImportItemErrorResponse(BaseModel):
     field: str | None = None
 
 
+class AdminOneCSyncRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    full_sync: bool = False
+
+
 class OneCImportResultResponse(BaseModel):
     created: int = 0
     updated: int = 0
     skipped: int = 0
     errors: list[OneCImportItemErrorResponse] = Field(default_factory=list)
+
+
+class AdminOneCSyncResponse(BaseModel):
+    status: Literal["started", "success", "error"]
+    job_id: int
+    message: str | None = None
+    created: int | None = None
+    updated: int | None = None
+    errors: list[OneCImportItemErrorResponse] | None = None
 
 
 class OneCOrdersPendingQueryParams(BaseModel):

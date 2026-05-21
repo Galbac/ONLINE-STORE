@@ -341,6 +341,7 @@ class OneCSettings(BaseSettings):
     sync_enabled: bool = Field(default=True, alias="ONE_C_SYNC_ENABLED")
     api_url: str = Field(default="", alias="ONE_C_API_URL")
     api_token: str = Field(default="", alias="ONE_C_API_TOKEN")
+    sync_lock_ttl_seconds: int = Field(default=1800, alias="ONE_C_SYNC_LOCK_TTL_SECONDS")
     import_max_batch_size: int = Field(default=1000, alias="ONE_C_IMPORT_MAX_BATCH_SIZE")
     health_timeout_seconds: int = Field(default=5, alias="ONE_C_HEALTH_TIMEOUT_SECONDS")
     auto_availability_from_stock: bool = Field(default=True, alias="AUTO_AVAILABILITY_FROM_STOCK")
