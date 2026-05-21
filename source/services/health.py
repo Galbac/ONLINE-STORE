@@ -2,7 +2,7 @@ import asyncio
 from time import perf_counter
 
 from source.config.settings import Settings
-from source.schemas.pydantic.health import HealthDbResponse, HealthResponse, HealthStorageResponse
+from source.schemas.pydantic.health import HealthDbResponse, HealthOneCResponse, HealthResponse, HealthStorageResponse
 from source.utils.health import DatabaseHealthChecker
 
 
@@ -57,5 +57,38 @@ class HealthService:
             status="ok",
             storage_type=config.media.storage,
             available=result.get("available") is True,
+            latency_ms=latency_ms,
+        )
+
+    async def check_1c(
+        self,
+        *,
+        config: Settings,
+        one_c_integration_service,
+    ) -> HealthOneCResponse:
+        if not config.one_c.sync_enabled:
+            return HealthOneCResponse(
+                status="disabled",
+                enabled=False,
+                available=False,
+            )
+        if not config.one_c.api_url:
+            return HealthOneCResponse(
+                status="error",
+                enabled=True,
+                available=False,
+                message="1C unavailable",
+            )
+
+        started_at = perf_counter()
+        await asyncio.wait_for(
+            one_c_integration_service.health_check(timeout_seconds=config.one_c.health_timeout_seconds),
+            timeout=config.one_c.health_timeout_seconds,
+        )
+        latency_ms = int((perf_counter() - started_at) * 1000)
+        return HealthOneCResponse(
+            status="ok",
+            enabled=True,
+            available=True,
             latency_ms=latency_ms,
         )

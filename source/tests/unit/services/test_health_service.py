@@ -5,10 +5,11 @@ from fastapi import HTTPException
 from fastapi.responses import JSONResponse
 
 from source.api.api_v1.views.health import get_db_health, verify_internal_health_token
-from source.api.api_v1.views.health import get_storage_health
+from source.api.api_v1.views.health import get_one_c_health, get_storage_health
 from source.config.settings import settings
 from source.config.settings import MediaSettings
 from source.services.health import HealthService
+from source.services.health_cache import HealthCacheService
 from source.services.storage import LocalStorageProvider, StorageService
 
 
@@ -35,6 +36,7 @@ def build_config(*, protect: bool = False):
             health_internal_token="secret",
             health_storage_timeout_seconds=5,
             health_storage_check_write=False,
+            health_1c_cache_ttl_seconds=30,
         ),
         media=SimpleNamespace(storage="local"),
     )
@@ -49,6 +51,31 @@ class FakeStorageService:
         if self.fail is not None:
             raise self.fail
         return self.result
+
+
+class FakeRedisService:
+    def __init__(self) -> None:
+        self.values: dict[str, str] = {}
+        self.ttls: dict[str, int] = {}
+
+    async def get(self, key: str):
+        return self.values.get(key)
+
+    async def set(self, key: str, value: str, *, ttl_seconds: int | None = None) -> None:
+        self.values[key] = value
+        if ttl_seconds is not None:
+            self.ttls[key] = ttl_seconds
+
+
+class FakeOneCIntegrationService:
+    def __init__(self, *, fail: Exception | None = None) -> None:
+        self.fail = fail
+        self.called = False
+
+    async def health_check(self, *, timeout_seconds: int) -> None:
+        self.called = True
+        if self.fail is not None:
+            raise self.fail
 
 
 def test_health_service_returns_ok() -> None:
@@ -243,3 +270,142 @@ async def test_health_storage_write_check_removes_temp_file(tmp_path) -> None:
 
     assert response.writable is True
     assert list(tmp_path.glob(".health-*.tmp")) == []
+
+
+@pytest.mark.asyncio
+async def test_health_one_c_enabled_available() -> None:
+    config = build_config()
+    config.one_c = SimpleNamespace(sync_enabled=True, api_url="https://1c.example/api", health_timeout_seconds=5)
+
+    response = await HealthService().check_1c(
+        config=config,
+        one_c_integration_service=FakeOneCIntegrationService(),
+    )
+
+    assert response.status == "ok"
+    assert response.enabled is True
+    assert response.available is True
+    assert response.latency_ms is not None
+
+
+@pytest.mark.asyncio
+async def test_health_one_c_disabled_returns_disabled() -> None:
+    config = build_config()
+    config.one_c = SimpleNamespace(sync_enabled=False, api_url="", health_timeout_seconds=5)
+
+    response = await HealthService().check_1c(
+        config=config,
+        one_c_integration_service=FakeOneCIntegrationService(),
+    )
+
+    assert response.status == "disabled"
+    assert response.enabled is False
+    assert response.available is False
+
+
+@pytest.mark.asyncio
+async def test_health_one_c_missing_url_returns_503() -> None:
+    config = build_config()
+    config.one_c = SimpleNamespace(sync_enabled=True, api_url="", health_timeout_seconds=5)
+
+    response = await get_one_c_health.__dishka_orig_func__(
+        authorization=None,
+        x_internal_token=None,
+        config=config,
+        redis_service=FakeRedisService(),
+        health_service=HealthService(),
+        health_cache_service=HealthCacheService(),
+        one_c_integration_service=FakeOneCIntegrationService(),
+    )
+
+    assert response.status_code == 503
+
+
+@pytest.mark.asyncio
+async def test_health_one_c_unavailable_returns_503() -> None:
+    config = build_config()
+    config.one_c = SimpleNamespace(sync_enabled=True, api_url="https://1c.example/api", health_timeout_seconds=5)
+
+    response = await get_one_c_health.__dishka_orig_func__(
+        authorization=None,
+        x_internal_token=None,
+        config=config,
+        redis_service=FakeRedisService(),
+        health_service=HealthService(),
+        health_cache_service=HealthCacheService(),
+        one_c_integration_service=FakeOneCIntegrationService(fail=RuntimeError("ONE_C_API_TOKEN=secret")),
+    )
+
+    assert response.status_code == 503
+    assert "secret" not in response.body.decode("utf-8").lower()
+
+
+@pytest.mark.asyncio
+async def test_health_one_c_token_not_returned() -> None:
+    config = build_config()
+    config.one_c = SimpleNamespace(sync_enabled=True, api_url="https://1c.example/api", health_timeout_seconds=5)
+
+    response = await HealthService().check_1c(
+        config=config,
+        one_c_integration_service=FakeOneCIntegrationService(),
+    )
+
+    assert "token" not in response.model_dump_json().lower()
+    assert "secret" not in response.model_dump_json().lower()
+
+
+@pytest.mark.asyncio
+async def test_health_one_c_cache_works() -> None:
+    config = build_config()
+    config.one_c = SimpleNamespace(sync_enabled=True, api_url="https://1c.example/api", health_timeout_seconds=5)
+    redis_service = FakeRedisService()
+    one_c_service = FakeOneCIntegrationService()
+
+    first = await get_one_c_health.__dishka_orig_func__(
+        authorization=None,
+        x_internal_token=None,
+        config=config,
+        redis_service=redis_service,
+        health_service=HealthService(),
+        health_cache_service=HealthCacheService(),
+        one_c_integration_service=one_c_service,
+    )
+    one_c_service.called = False
+    second = await get_one_c_health.__dishka_orig_func__(
+        authorization=None,
+        x_internal_token=None,
+        config=config,
+        redis_service=redis_service,
+        health_service=HealthService(),
+        health_cache_service=HealthCacheService(),
+        one_c_integration_service=one_c_service,
+    )
+
+    assert first.status == "ok"
+    assert second.status == "ok"
+    assert one_c_service.called is False
+    assert redis_service.ttls["health:1c"] == config.app.health_1c_cache_ttl_seconds
+
+
+@pytest.mark.asyncio
+async def test_health_one_c_timeout_returns_503() -> None:
+    config = build_config()
+    config.one_c = SimpleNamespace(sync_enabled=True, api_url="https://1c.example/api", health_timeout_seconds=0.001)
+
+    class SlowOneCIntegrationService:
+        async def health_check(self, *, timeout_seconds: int) -> None:
+            import asyncio
+
+            await asyncio.sleep(0.01)
+
+    response = await get_one_c_health.__dishka_orig_func__(
+        authorization=None,
+        x_internal_token=None,
+        config=config,
+        redis_service=FakeRedisService(),
+        health_service=HealthService(),
+        health_cache_service=HealthCacheService(),
+        one_c_integration_service=SlowOneCIntegrationService(),
+    )
+
+    assert response.status_code == 503

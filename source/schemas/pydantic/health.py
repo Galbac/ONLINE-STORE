@@ -23,3 +23,11 @@ class HealthStorageResponse(BaseModel):
     available: bool | None = None
     latency_ms: int | None = None
     message: str | None = None
+
+
+class HealthOneCResponse(BaseModel):
+    status: str
+    enabled: bool
+    available: bool
+    latency_ms: int | None = None
+    message: str | None = None

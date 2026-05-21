@@ -31,6 +31,7 @@ class AppSettings(BaseSettings):
     health_internal_token: str = Field(default="", alias="HEALTH_INTERNAL_TOKEN")
     health_storage_timeout_seconds: int = Field(default=5, alias="HEALTH_STORAGE_TIMEOUT_SECONDS")
     health_storage_check_write: bool = Field(default=False, alias="HEALTH_STORAGE_CHECK_WRITE")
+    health_1c_cache_ttl_seconds: int = Field(default=30, alias="HEALTH_1C_CACHE_TTL_SECONDS")
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
@@ -341,6 +342,7 @@ class OneCSettings(BaseSettings):
     api_url: str = Field(default="", alias="ONE_C_API_URL")
     api_token: str = Field(default="", alias="ONE_C_API_TOKEN")
     import_max_batch_size: int = Field(default=1000, alias="ONE_C_IMPORT_MAX_BATCH_SIZE")
+    health_timeout_seconds: int = Field(default=5, alias="ONE_C_HEALTH_TIMEOUT_SECONDS")
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

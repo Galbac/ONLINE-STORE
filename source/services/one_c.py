@@ -55,6 +55,24 @@ class OneCIntegrationService:
         except json.JSONDecodeError as error:
             raise OneCSyncError("Invalid 1C response") from error
 
+    async def health_check(self, *, timeout_seconds: int) -> None:
+        if not settings.one_c.api_url:
+            raise OneCSyncError("1C API URL is not configured")
+
+        url = settings.one_c.api_url.rstrip("/") + "/health"
+        headers = {}
+        if settings.one_c.api_token:
+            headers["Authorization"] = f"Bearer {settings.one_c.api_token}"
+        request = Request(url, headers=headers, method="GET")
+        try:
+            with urlopen(request, timeout=timeout_seconds) as response:
+                if response.status >= 400:
+                    raise OneCSyncError("1C health check failed")
+        except HTTPError as error:
+            raise OneCSyncError(f"1C HTTP error {error.code}") from error
+        except URLError as error:
+            raise OneCSyncError("1C unavailable") from error
+
 
 class CategorySyncService:
     async def upsert_categories_from_1c(

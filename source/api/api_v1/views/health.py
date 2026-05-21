@@ -6,8 +6,11 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from source.config.settings import Settings, settings
-from source.schemas.pydantic.health import HealthDbResponse, HealthResponse, HealthStorageResponse
+from source.schemas.pydantic.health import HealthDbResponse, HealthOneCResponse, HealthResponse, HealthStorageResponse
+from source.services.health_cache import HealthCacheService
 from source.services.health import HealthService
+from source.services.one_c import OneCIntegrationService
+from source.services.redis import RedisService
 from source.services.storage import StorageService
 from source.utils.health import DatabaseHealthChecker
 
@@ -79,6 +82,65 @@ async def get_storage_health(
                 "storage_type": storage_type,
                 "message": "Storage unavailable",
             },
+        )
+
+
+@router.get("/health/1c", response_model=HealthOneCResponse, response_model_exclude_none=True)
+@inject
+async def get_one_c_health(
+    authorization: str | None = Header(default=None),
+    x_internal_token: str | None = Header(default=None, alias="X-Internal-Token"),
+    config: FromDishka[Settings] = None,
+    redis_service: FromDishka[RedisService] = None,
+    health_service: FromDishka[HealthService] = None,
+    health_cache_service: FromDishka[HealthCacheService] = None,
+    one_c_integration_service: FromDishka[OneCIntegrationService] = None,
+):
+    verify_internal_health_token(
+        config=config,
+        authorization=authorization,
+        x_internal_token=x_internal_token,
+    )
+    cached_status = await health_cache_service.get_1c_status(redis_service=redis_service)
+    if cached_status is not None:
+        if cached_status.status == "error":
+            return JSONResponse(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                content=cached_status.model_dump(exclude_none=True),
+            )
+        return cached_status
+
+    try:
+        response = await health_service.check_1c(
+            config=config,
+            one_c_integration_service=one_c_integration_service,
+        )
+        await health_cache_service.set_1c_status(
+            redis_service=redis_service,
+            response=response,
+            ttl_seconds=config.app.health_1c_cache_ttl_seconds,
+        )
+        if response.status == "error":
+            return JSONResponse(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                content=response.model_dump(exclude_none=True),
+            )
+        return response
+    except Exception:
+        response = HealthOneCResponse(
+            status="error",
+            enabled=True,
+            available=False,
+            message="1C unavailable",
+        )
+        await health_cache_service.set_1c_status(
+            redis_service=redis_service,
+            response=response,
+            ttl_seconds=config.app.health_1c_cache_ttl_seconds,
+        )
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content=response.model_dump(exclude_none=True),
         )
 
 

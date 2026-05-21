@@ -85,6 +85,7 @@ from source.services.discount_cache import DiscountCacheService
 from source.services.favorite import FavoriteService
 from source.services.favorite_cache import FavoriteCacheService
 from source.services.health import HealthService
+from source.services.health_cache import HealthCacheService
 from source.services.one_c import CategorySyncService, IntegrationLogService, OneCImportService, OneCIntegrationService
 from source.services.order import OrderService
 from source.services.order_cache import OrderCacheService
@@ -429,6 +430,10 @@ class AppProvider(Provider):
     )
     health_service = provide(
         HealthService,
+        scope=Scope.REQUEST,
+    )
+    health_cache_service = provide(
+        HealthCacheService,
         scope=Scope.REQUEST,
     )
     database_health_checker = provide(
