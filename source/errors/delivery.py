@@ -36,3 +36,7 @@ class DeliveryTimeSlotUnavailableError(Exception):
 
 class EmptyDeliverySettingsUpdateError(Exception):
     pass
+
+
+class DeliveryZoneAlreadyExistsError(Exception):
+    pass

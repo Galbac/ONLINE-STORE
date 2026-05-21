@@ -2,10 +2,49 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from source.db.models.delivery_zone import DeliveryZone
-from source.schemas.pydantic.delivery import AdminDeliveryZoneListQueryParams
+from source.schemas.pydantic.delivery import AdminDeliveryZoneCreateRequest, AdminDeliveryZoneListQueryParams
 
 
 class DeliveryZoneRepository:
+    async def get_by_name_and_city(
+        self,
+        *,
+        session: AsyncSession,
+        name: str,
+        city: str,
+    ) -> DeliveryZone | None:
+        result = await session.execute(
+            select(DeliveryZone)
+            .where(
+                func.lower(DeliveryZone.name) == name.lower(),
+                func.lower(DeliveryZone.city) == city.lower(),
+                DeliveryZone.is_deleted.is_(False),
+            )
+            .limit(1),
+        )
+        return result.scalar_one_or_none()
+
+    async def create(
+        self,
+        *,
+        session: AsyncSession,
+        data: AdminDeliveryZoneCreateRequest,
+    ) -> DeliveryZone:
+        zone = DeliveryZone(
+            name=data.name,
+            city=data.city,
+            description=data.description,
+            delivery_price=data.delivery_price,
+            free_delivery_from=data.free_delivery_from,
+            min_order_amount=data.min_order_amount,
+            is_active=data.is_active,
+            sort_order=data.sort_order,
+        )
+        session.add(zone)
+        await session.flush()
+        await session.refresh(zone)
+        return zone
+
     def _admin_statement(self, *, query: AdminDeliveryZoneListQueryParams):
         statement = select(DeliveryZone)
         if not query.include_deleted:

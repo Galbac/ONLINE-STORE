@@ -4,15 +4,17 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
+from pydantic import ValidationError
 
 from source.api.dependencies import resolve_access_token
 from source.config.settings import settings
 from source.db.models.choises.enum import UserRole
 from source.errors.auth import AdminAuthAccessDeniedError
-from source.errors.delivery import EmptyDeliverySettingsUpdateError
+from source.errors.delivery import DeliveryZoneAlreadyExistsError, EmptyDeliverySettingsUpdateError
 from source.schemas.pydantic.delivery import (
     AdminDeliverySettingsResponse,
     AdminDeliverySettingsUpdateRequest,
+    AdminDeliveryZoneCreateRequest,
     AdminDeliveryZoneListQueryParams,
     AdminDeliveryZoneListResponse,
 )
@@ -70,15 +72,40 @@ class FakeDeliverySettingsRepository:
 
 
 class FakeDeliveryZoneRepository:
-    def __init__(self, zones=None) -> None:
-        self.zones = zones or [
+    def __init__(self, zones=None, existing_zone=None) -> None:
+        self.zones = zones if zones is not None else [
             build_delivery_zone(zone_id=3, name="Южная зона", city="Москва", sort_order=20),
             build_delivery_zone(zone_id=1, name="Центральная зона", city="Москва", description="Центральный район", sort_order=10),
             build_delivery_zone(zone_id=2, name="Зона Казань", city="Казань", is_active=False, sort_order=15),
             build_delivery_zone(zone_id=4, name="Удалённая зона", city="Москва", is_deleted=True, sort_order=1),
         ]
+        self.existing_zone = existing_zone
         self.get_list_calls = 0
         self.count_calls = 0
+        self.created = []
+
+    async def get_by_name_and_city(self, *, session, name: str, city: str):
+        if self.existing_zone is not None:
+            return self.existing_zone
+        for zone in self.zones:
+            if zone.name.lower() == name.lower() and zone.city.lower() == city.lower() and not zone.is_deleted:
+                return zone
+        return None
+
+    async def create(self, *, session, data: AdminDeliveryZoneCreateRequest):
+        zone = build_delivery_zone(
+            zone_id=99,
+            name=data.name,
+            city=data.city,
+            description=data.description,
+            delivery_price=data.delivery_price,
+            free_delivery_from=data.free_delivery_from,
+            min_order_amount=data.min_order_amount,
+            is_active=data.is_active,
+            sort_order=data.sort_order,
+        )
+        self.created.append(zone)
+        return zone
 
     async def get_list(self, *, session, query: AdminDeliveryZoneListQueryParams):
         self.get_list_calls += 1
@@ -112,9 +139,13 @@ class FakeDeliveryZoneRepository:
 class FakeCommiter:
     def __init__(self) -> None:
         self.committed = False
+        self.rolled_back = False
 
     async def commit(self) -> None:
         self.committed = True
+
+    async def rollback(self) -> None:
+        self.rolled_back = True
 
 
 class FakeAuditLogRepository:
@@ -238,6 +269,52 @@ async def get_zones(
         response=response,
         redis_service=redis_service,
         repository=repository,
+    )
+
+
+async def create_zone(
+    *,
+    data: AdminDeliveryZoneCreateRequest | None = None,
+    redis_service=None,
+    role=UserRole.ADMIN,
+    repository=None,
+    commiter=None,
+    audit_log_repository=None,
+):
+    redis_service = redis_service or FakeRedisService()
+    repository = repository or FakeDeliveryZoneRepository(zones=[])
+    commiter = commiter or FakeCommiter()
+    audit_log_repository = audit_log_repository or FakeAuditLogRepository()
+    response = await AdminDeliveryService().create_zone(
+        session=None,
+        redis_service=redis_service,
+        user=build_user(role=role),
+        data=data or AdminDeliveryZoneCreateRequest(
+            name=" Центральная зона ",
+            city=" Москва ",
+            description=" Центральный район города ",
+            delivery_price=Decimal("250.00"),
+            free_delivery_from=Decimal("3000.00"),
+            min_order_amount=Decimal("1000.00"),
+            is_active=True,
+            sort_order=10,
+        ),
+        commiter=commiter,
+        permission_service=PermissionService(),
+        admin_delivery_cache_service=AdminDeliveryCacheService(),
+        delivery_cache_service=DeliveryCacheService(),
+        delivery_zone_repository=repository,
+        audit_log_service=AuditLogService(),
+        admin_audit_log_repository=audit_log_repository,
+        ip_address="127.0.0.1",
+        user_agent="pytest",
+    )
+    return SimpleNamespace(
+        response=response,
+        redis_service=redis_service,
+        repository=repository,
+        commiter=commiter,
+        audit_log_repository=audit_log_repository,
     )
 
 
@@ -539,3 +616,98 @@ async def test_admin_delivery_zones_without_permission_error() -> None:
 async def test_admin_delivery_zones_include_deleted_requires_extra_permission() -> None:
     with pytest.raises(AdminAuthAccessDeniedError):
         await get_zones(role=UserRole.MANAGER, query=AdminDeliveryZoneListQueryParams(include_deleted=True))
+
+
+@pytest.mark.asyncio
+async def test_admin_delivery_zone_create_success() -> None:
+    result = await create_zone()
+
+    assert result.response.id == 99
+    assert result.response.name == "Центральная зона"
+    assert result.response.city == "Москва"
+    assert result.response.description == "Центральный район города"
+    assert result.response.delivery_price == Decimal("250.00")
+    assert result.response.free_delivery_from == Decimal("3000.00")
+    assert result.response.min_order_amount == Decimal("1000.00")
+    assert result.response.is_active is True
+    assert result.response.sort_order == 10
+    assert result.commiter.committed is True
+
+
+def test_admin_delivery_zone_create_empty_name_error() -> None:
+    with pytest.raises(ValidationError):
+        AdminDeliveryZoneCreateRequest(
+            name=" ",
+            city="Москва",
+            delivery_price=Decimal("250.00"),
+            min_order_amount=Decimal("1000.00"),
+        )
+
+
+def test_admin_delivery_zone_create_empty_city_error() -> None:
+    with pytest.raises(ValidationError):
+        AdminDeliveryZoneCreateRequest(
+            name="Центральная зона",
+            city=" ",
+            delivery_price=Decimal("250.00"),
+            min_order_amount=Decimal("1000.00"),
+        )
+
+
+def test_admin_delivery_zone_create_negative_delivery_price_error() -> None:
+    with pytest.raises(ValidationError, match="Стоимость доставки"):
+        AdminDeliveryZoneCreateRequest(
+            name="Центральная зона",
+            city="Москва",
+            delivery_price=Decimal("-1.00"),
+            min_order_amount=Decimal("1000.00"),
+        )
+
+
+def test_admin_delivery_zone_create_free_delivery_less_than_min_error() -> None:
+    with pytest.raises(ValidationError, match="Сумма бесплатной доставки"):
+        AdminDeliveryZoneCreateRequest(
+            name="Центральная зона",
+            city="Москва",
+            delivery_price=Decimal("250.00"),
+            free_delivery_from=Decimal("900.00"),
+            min_order_amount=Decimal("1000.00"),
+        )
+
+
+@pytest.mark.asyncio
+async def test_admin_delivery_zone_create_duplicate_name_city_error() -> None:
+    repository = FakeDeliveryZoneRepository(
+        zones=[],
+        existing_zone=build_delivery_zone(zone_id=1, name="Центральная зона", city="Москва"),
+    )
+
+    with pytest.raises(DeliveryZoneAlreadyExistsError):
+        await create_zone(repository=repository)
+
+
+@pytest.mark.asyncio
+async def test_admin_delivery_zone_create_without_permission_error() -> None:
+    with pytest.raises(AdminAuthAccessDeniedError):
+        await create_zone(role=UserRole.CONTENT_MANAGER)
+
+
+@pytest.mark.asyncio
+async def test_admin_delivery_zone_create_invalidates_cache() -> None:
+    result = await create_zone()
+
+    assert "admin:delivery:zones:*" in result.redis_service.deleted
+    assert "delivery:calculate:*" in result.redis_service.deleted
+    assert "delivery:options" in result.redis_service.deleted
+
+
+@pytest.mark.asyncio
+async def test_admin_delivery_zone_create_audit_log_created() -> None:
+    result = await create_zone()
+
+    assert result.audit_log_repository.logs[0]["event"] == "create_delivery_zone"
+    assert result.audit_log_repository.logs[0]["user_id"] == 1
+    assert result.audit_log_repository.logs[0]["ip_address"] == "127.0.0.1"
+    assert result.audit_log_repository.logs[0]["user_agent"] == "pytest"
+    assert result.audit_log_repository.logs[0]["details"]["actor_id"] == 1
+    assert result.audit_log_repository.logs[0]["details"]["zone_id"] == 99

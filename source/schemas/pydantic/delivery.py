@@ -92,6 +92,39 @@ class AdminDeliveryZoneListQueryParams(BaseModel):
         return (self.page - 1) * self.limit
 
 
+class AdminDeliveryZoneCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+    city: str = Field(min_length=1, max_length=100)
+    description: str | None = None
+    delivery_price: Decimal
+    free_delivery_from: Decimal | None = None
+    min_order_amount: Decimal
+    is_active: bool = True
+    sort_order: int = 0
+
+    @model_validator(mode="after")
+    def normalize_and_validate(self) -> "AdminDeliveryZoneCreateRequest":
+        self.name = self.name.strip()
+        self.city = self.city.strip()
+        if not self.name:
+            raise ValueError("name is required")
+        if not self.city:
+            raise ValueError("city is required")
+        if self.description is not None:
+            self.description = self.description.strip() or None
+        if self.delivery_price < 0:
+            raise ValueError("Стоимость доставки не может быть отрицательной")
+        if self.min_order_amount < 0:
+            raise ValueError("Минимальная сумма заказа не может быть отрицательной")
+        if self.free_delivery_from is not None and self.free_delivery_from < 0:
+            raise ValueError("Сумма бесплатной доставки не может быть отрицательной")
+        if self.sort_order < 0:
+            raise ValueError("sort_order не может быть отрицательным")
+        if self.free_delivery_from is not None and self.free_delivery_from < self.min_order_amount:
+            raise ValueError("Сумма бесплатной доставки не может быть меньше минимальной суммы заказа")
+        return self
+
+
 class AdminDeliveryZoneResponse(BaseModel):
     id: int
     name: str

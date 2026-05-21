@@ -1,9 +1,10 @@
 from source.config.settings import settings
 from source.errors.auth import AdminAuthAccessDeniedError, InactiveUserError
-from source.errors.delivery import EmptyDeliverySettingsUpdateError
+from source.errors.delivery import DeliveryZoneAlreadyExistsError, EmptyDeliverySettingsUpdateError
 from source.schemas.pydantic.delivery import (
     AdminDeliverySettingsResponse,
     AdminDeliverySettingsUpdateRequest,
+    AdminDeliveryZoneCreateRequest,
     AdminDeliveryZoneListQueryParams,
     AdminDeliveryZoneListResponse,
     AdminDeliveryZoneResponse,
@@ -31,6 +32,14 @@ class AdminDeliveryService:
         if user.role not in STAFF_ROLES:
             raise AdminAuthAccessDeniedError
         if "admin:delivery:update" not in permission_service.get_user_permissions(role=user.role):
+            raise AdminAuthAccessDeniedError
+
+    def _check_create_permission(self, *, user, permission_service) -> None:
+        if not user.is_active or user.is_deleted or user.is_blocked:
+            raise InactiveUserError
+        if user.role not in STAFF_ROLES:
+            raise AdminAuthAccessDeniedError
+        if "admin:delivery:create" not in permission_service.get_user_permissions(role=user.role):
             raise AdminAuthAccessDeniedError
 
     async def get_settings(
@@ -109,6 +118,59 @@ class AdminDeliveryService:
             ttl_seconds=settings.admin_delivery.zones_cache_ttl_seconds,
         )
         return response
+
+    async def create_zone(
+        self,
+        *,
+        session,
+        redis_service: RedisService,
+        user,
+        data: AdminDeliveryZoneCreateRequest,
+        commiter,
+        permission_service,
+        admin_delivery_cache_service: AdminDeliveryCacheService,
+        delivery_cache_service: DeliveryCacheService,
+        delivery_zone_repository,
+        audit_log_service,
+        admin_audit_log_repository,
+        ip_address: str | None = None,
+        user_agent: str | None = None,
+    ) -> AdminDeliveryZoneResponse:
+        self._check_create_permission(user=user, permission_service=permission_service)
+        self._validate_zone_create(data=data)
+
+        existing_zone = await delivery_zone_repository.get_by_name_and_city(
+            session=session,
+            name=data.name,
+            city=data.city,
+        )
+        if existing_zone is not None:
+            raise DeliveryZoneAlreadyExistsError
+
+        created_zone = await delivery_zone_repository.create(session=session, data=data)
+        await audit_log_service.log_action(
+            session=session,
+            audit_log_repository=admin_audit_log_repository,
+            user_id=user.id,
+            login=getattr(user, "email", None) or getattr(user, "phone", None) or str(user.id),
+            event="create_delivery_zone",
+            status="success",
+            ip_address=ip_address,
+            user_agent=user_agent,
+            details={
+                "actor_id": user.id,
+                "zone_id": created_zone.id,
+                "name": created_zone.name,
+                "city": created_zone.city,
+            },
+        )
+        await commiter.commit()
+
+        await admin_delivery_cache_service.invalidate_zones(redis_service=redis_service)
+        await delivery_cache_service.invalidate_calculate(redis_service=redis_service)
+        await delivery_cache_service.invalidate_options(redis_service=redis_service)
+
+        return self._build_zone_response(zone=created_zone)
 
     async def update_settings(
         self,
@@ -219,6 +281,18 @@ class AdminDeliveryService:
         next_min_order_amount = repository_data.get("min_order_amount", delivery_settings.min_order_amount)
         next_free_from_amount = repository_data.get("free_from_amount", delivery_settings.free_from_amount)
         if next_free_from_amount is not None and next_free_from_amount < next_min_order_amount:
+            raise ValueError("Сумма бесплатной доставки не может быть меньше минимальной суммы заказа")
+
+    def _validate_zone_create(self, *, data: AdminDeliveryZoneCreateRequest) -> None:
+        if data.delivery_price < 0:
+            raise ValueError("Стоимость доставки не может быть отрицательной")
+        if data.min_order_amount < 0:
+            raise ValueError("Минимальная сумма заказа не может быть отрицательной")
+        if data.free_delivery_from is not None and data.free_delivery_from < 0:
+            raise ValueError("Сумма бесплатной доставки не может быть отрицательной")
+        if data.sort_order < 0:
+            raise ValueError("sort_order не может быть отрицательным")
+        if data.free_delivery_from is not None and data.free_delivery_from < data.min_order_amount:
             raise ValueError("Сумма бесплатной доставки не может быть меньше минимальной суммы заказа")
 
     async def _invalidate_cache(
