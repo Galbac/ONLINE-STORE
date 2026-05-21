@@ -98,10 +98,11 @@ class FakeOneCImportService:
 
 
 class FakeIntegrationJobRepository:
-    def __init__(self) -> None:
+    def __init__(self, *, active_count: int = 0) -> None:
         self.created: list[dict] = []
         self.updated: list[dict] = []
         self.next_id = 1001
+        self.active_count = active_count
 
     async def create(self, *, session, **data):
         self.created.append(data)
@@ -114,6 +115,9 @@ class FakeIntegrationJobRepository:
         for field, value in data.items():
             setattr(job, field, value)
         return job
+
+    async def count_active(self, *, session):
+        return self.active_count
 
 
 class FakeIntegrationLogRepository:
@@ -130,6 +134,30 @@ class FakeIntegrationLogRepository:
 
     async def count(self, *, session, query: AdminOneCLogsQueryParams):
         return len(self._filter(query=query))
+
+    async def get_last_success(self, *, session):
+        logs = [log for log in self.logs if log.system == "1c" and log.status == "success"]
+        return max(logs, key=lambda log: (log.created_date, log.id), default=None)
+
+    async def get_last_error(self, *, session):
+        logs = [log for log in self.logs if log.system == "1c" and log.status == "error"]
+        return max(logs, key=lambda log: (log.created_date, log.id), default=None)
+
+    async def get_last_success_by_entity_type(self, *, session, entity_type: str):
+        entity_map = {
+            "categories": {"categories"},
+            "products": {"products"},
+            "prices": {"prices", "product_prices"},
+            "stocks": {"stocks", "product_stocks"},
+            "images": {"images", "product_images"},
+            "orders": {"orders", "order"},
+        }
+        logs = [
+            log
+            for log in self.logs
+            if log.system == "1c" and log.status == "success" and log.entity_type in entity_map[entity_type]
+        ]
+        return max(logs, key=lambda log: (log.created_date, log.id), default=None)
 
     def _filter(self, *, query: AdminOneCLogsQueryParams):
         logs = [log for log in self.logs if log.system == "1c"]
@@ -203,6 +231,15 @@ class FakeAdminOneCIntegrationCacheService:
     def __init__(self) -> None:
         self.values: dict[str, object] = {}
         self.set_calls: list[dict] = []
+        self.status_response = None
+        self.set_status_calls: list[dict] = []
+
+    async def get_status(self, *, redis_service):
+        return self.status_response
+
+    async def set_status(self, *, redis_service, response, ttl_seconds: int) -> None:
+        self.status_response = response
+        self.set_status_calls.append({"ttl_seconds": ttl_seconds})
 
     async def get_logs(self, *, redis_service, query_hash: str):
         return self.values.get(query_hash)
@@ -338,8 +375,20 @@ def build_config(*, sync_enabled: bool = True, api_url: str = "https://1c.exampl
             sync_enabled=sync_enabled,
             api_url=api_url,
             sync_lock_ttl_seconds=1800,
+            health_timeout_seconds=5,
         ),
     )
+
+
+class FakeOneCIntegrationService:
+    def __init__(self, *, error: Exception | None = None) -> None:
+        self.error = error
+        self.timeout_values: list[int] = []
+
+    async def health_check(self, *, timeout_seconds: int) -> None:
+        self.timeout_values.append(timeout_seconds)
+        if self.error is not None:
+            raise self.error
 
 
 def build_dependencies(**overrides):
@@ -469,6 +518,30 @@ def build_logs_dependencies(**overrides):
         "query": AdminOneCLogsQueryParams(),
         "permission_service": FakePermissionService(permissions=["admin:integration_1c:read"]),
         "integration_log_repository": FakeIntegrationLogRepository(logs),
+        "admin_one_c_integration_cache_service": FakeAdminOneCIntegrationCacheService(),
+    }
+    deps.update(overrides)
+    return deps
+
+
+def build_status_dependencies(**overrides):
+    base_date = datetime(2026, 5, 12, 10, 0, 0)
+    logs = [
+        build_integration_log(log_id=1, entity_type="products", status="success", created_date=base_date),
+        build_integration_log(log_id=2, entity_type="product_prices", status="success", created_date=base_date + timedelta(minutes=10)),
+        build_integration_log(log_id=3, entity_type="product_stocks", status="success", created_date=base_date + timedelta(minutes=20)),
+        build_integration_log(log_id=4, entity_type="orders", status="success", created_date=base_date + timedelta(minutes=30)),
+        build_integration_log(log_id=5, entity_type="orders", status="error", error_message="old error", created_date=base_date + timedelta(minutes=40)),
+    ]
+    deps = {
+        "session": object(),
+        "redis_service": object(),
+        "user": build_user(),
+        "config": build_config(),
+        "permission_service": FakePermissionService(permissions=["admin:integration_1c:read"]),
+        "one_c_integration_service": FakeOneCIntegrationService(),
+        "integration_log_repository": FakeIntegrationLogRepository(logs),
+        "integration_job_repository": FakeIntegrationJobRepository(active_count=2),
         "admin_one_c_integration_cache_service": FakeAdminOneCIntegrationCacheService(),
     }
     deps.update(overrides)
@@ -951,3 +1024,117 @@ async def test_admin_one_c_get_logs_hides_raw_without_permission() -> None:
 
     assert response.items[0].request_payload is None
     assert response.items[0].response_payload is None
+
+
+@pytest.mark.asyncio
+async def test_admin_one_c_get_status_enabled_and_available() -> None:
+    service = AdminOneCIntegrationService()
+    deps = build_status_dependencies()
+
+    response = await service.get_status(**deps)
+
+    assert response.enabled is True
+    assert response.available is True
+    assert response.status == "ok"
+    assert response.api_url_configured is True
+    assert response.active_jobs_count == 2
+    assert response.last_success_sync_at == datetime(2026, 5, 12, 10, 30, 0)
+    assert response.last_error_at == datetime(2026, 5, 12, 10, 40, 0)
+    assert response.last_error_message == "old error"
+    assert response.last_products_sync_at == datetime(2026, 5, 12, 10, 0, 0)
+    assert response.last_prices_sync_at == datetime(2026, 5, 12, 10, 10, 0)
+    assert response.last_stocks_sync_at == datetime(2026, 5, 12, 10, 20, 0)
+    assert response.last_orders_sync_at == datetime(2026, 5, 12, 10, 30, 0)
+    assert deps["one_c_integration_service"].timeout_values == [5]
+    assert deps["admin_one_c_integration_cache_service"].set_status_calls == [{"ttl_seconds": 30}]
+
+
+@pytest.mark.asyncio
+async def test_admin_one_c_get_status_disabled() -> None:
+    service = AdminOneCIntegrationService()
+    deps = build_status_dependencies(config=build_config(sync_enabled=False, api_url=""))
+
+    response = await service.get_status(**deps)
+
+    assert response.enabled is False
+    assert response.available is False
+    assert response.status == "disabled"
+    assert response.api_url_configured is False
+    assert response.active_jobs_count == 0
+    assert deps["one_c_integration_service"].timeout_values == []
+
+
+@pytest.mark.asyncio
+async def test_admin_one_c_get_status_unavailable() -> None:
+    service = AdminOneCIntegrationService()
+    deps = build_status_dependencies(one_c_integration_service=FakeOneCIntegrationService(error=OneCSyncError("1C unavailable")))
+
+    response = await service.get_status(**deps)
+
+    assert response.enabled is True
+    assert response.available is False
+    assert response.status == "error"
+    assert response.last_error_message == "old error"
+
+
+@pytest.mark.asyncio
+async def test_admin_one_c_get_status_api_url_not_configured() -> None:
+    service = AdminOneCIntegrationService()
+    deps = build_status_dependencies(
+        config=build_config(sync_enabled=True, api_url=""),
+        integration_log_repository=FakeIntegrationLogRepository([]),
+    )
+
+    response = await service.get_status(**deps)
+
+    assert response.enabled is True
+    assert response.available is False
+    assert response.status == "error"
+    assert response.api_url_configured is False
+    assert response.last_error_message == "1C API URL is not configured"
+    assert deps["one_c_integration_service"].timeout_values == []
+
+
+@pytest.mark.asyncio
+async def test_admin_one_c_get_status_does_not_return_token() -> None:
+    service = AdminOneCIntegrationService()
+    deps = build_status_dependencies(
+        one_c_integration_service=FakeOneCIntegrationService(error=OneCSyncError("secret-token unavailable")),
+        integration_log_repository=FakeIntegrationLogRepository([]),
+    )
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(settings.one_c, "api_token", "secret-token")
+    try:
+        response = await service.get_status(**deps)
+    finally:
+        monkeypatch.undo()
+
+    assert "secret-token" not in str(response.model_dump())
+    assert response.last_error_message == "*** unavailable"
+
+
+@pytest.mark.asyncio
+async def test_admin_one_c_get_status_cache_works() -> None:
+    service = AdminOneCIntegrationService()
+    cache_service = FakeAdminOneCIntegrationCacheService()
+    cache_service.status_response = build_status_dependencies()["admin_one_c_integration_cache_service"].status_response
+    cached_response = await service.get_status(**build_status_dependencies()) 
+    cache_service.status_response = cached_response
+    deps = build_status_dependencies(
+        admin_one_c_integration_cache_service=cache_service,
+        one_c_integration_service=FakeOneCIntegrationService(error=AssertionError("health should not be called")),
+    )
+
+    response = await service.get_status(**deps)
+
+    assert response == cached_response
+    assert cache_service.set_status_calls == []
+
+
+@pytest.mark.asyncio
+async def test_admin_one_c_get_status_without_permission_error() -> None:
+    service = AdminOneCIntegrationService()
+    deps = build_status_dependencies(permission_service=FakePermissionService(permissions=[]))
+
+    with pytest.raises(AdminAuthAccessDeniedError):
+        await service.get_status(**deps)

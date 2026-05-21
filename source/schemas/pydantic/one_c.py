@@ -246,6 +246,21 @@ class AdminOneCLogsResponse(BaseModel):
     pages: int
 
 
+class AdminOneCStatusResponse(BaseModel):
+    enabled: bool
+    available: bool
+    status: Literal["ok", "disabled", "error"]
+    api_url_configured: bool
+    last_success_sync_at: datetime | None = None
+    last_error_at: datetime | None = None
+    last_error_message: str | None = None
+    active_jobs_count: int = 0
+    last_products_sync_at: datetime | None = None
+    last_prices_sync_at: datetime | None = None
+    last_stocks_sync_at: datetime | None = None
+    last_orders_sync_at: datetime | None = None
+
+
 class OneCOrdersPendingQueryParams(BaseModel):
     limit: int = Field(default=50, ge=1, le=200)
     status: OneCOrderSyncStatus | None = None

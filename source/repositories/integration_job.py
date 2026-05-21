@@ -1,3 +1,4 @@
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from source.db.models.integration_job import IntegrationJob
@@ -17,3 +18,9 @@ class IntegrationJobRepository:
         await session.flush()
         await session.refresh(job)
         return job
+
+    async def count_active(self, *, session: AsyncSession) -> int:
+        result = await session.execute(
+            select(func.count(IntegrationJob.id)).where(IntegrationJob.status == "started"),
+        )
+        return int(result.scalar_one() or 0)

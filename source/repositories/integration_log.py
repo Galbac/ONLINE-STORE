@@ -38,6 +38,43 @@ class IntegrationLogRepository:
         result = await session.execute(statement)
         return int(result.scalar_one() or 0)
 
+    async def get_last_success(self, *, session: AsyncSession) -> IntegrationLog | None:
+        result = await session.execute(
+            select(IntegrationLog)
+            .where(
+                IntegrationLog.system == "1c",
+                IntegrationLog.status == "success",
+            )
+            .order_by(IntegrationLog.created_date.desc(), IntegrationLog.id.desc())
+            .limit(1),
+        )
+        return result.scalar_one_or_none()
+
+    async def get_last_error(self, *, session: AsyncSession) -> IntegrationLog | None:
+        result = await session.execute(
+            select(IntegrationLog)
+            .where(
+                IntegrationLog.system == "1c",
+                IntegrationLog.status == "error",
+            )
+            .order_by(IntegrationLog.created_date.desc(), IntegrationLog.id.desc())
+            .limit(1),
+        )
+        return result.scalar_one_or_none()
+
+    async def get_last_success_by_entity_type(self, *, session: AsyncSession, entity_type: str) -> IntegrationLog | None:
+        result = await session.execute(
+            select(IntegrationLog)
+            .where(
+                IntegrationLog.system == "1c",
+                IntegrationLog.status == "success",
+                IntegrationLog.entity_type.in_(ONE_C_LOG_ENTITY_TYPE_MAP[entity_type]),
+            )
+            .order_by(IntegrationLog.created_date.desc(), IntegrationLog.id.desc())
+            .limit(1),
+        )
+        return result.scalar_one_or_none()
+
     def _build_query(self, *, query: AdminOneCLogsQueryParams, count: bool = False):
         statement = select(func.count(IntegrationLog.id)) if count else select(IntegrationLog)
         statement = statement.where(IntegrationLog.system == "1c")

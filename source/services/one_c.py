@@ -16,6 +16,7 @@ from source.schemas.pydantic.one_c import (
     AdminOneCLogsResponse,
     AdminOneCOrderSyncRequest,
     AdminOneCOrderSyncResponse,
+    AdminOneCStatusResponse,
     AdminOneCSyncRequest,
     AdminOneCSyncResponse,
     OneCCategoryImportItem,
@@ -1649,6 +1650,85 @@ class AdminOneCIntegrationService:
             query_hash=query_hash,
             response=response,
             ttl_seconds=60,
+        )
+        return response
+
+    async def get_status(
+        self,
+        *,
+        session,
+        redis_service,
+        user,
+        config,
+        permission_service,
+        one_c_integration_service: OneCIntegrationService,
+        integration_log_repository,
+        integration_job_repository,
+        admin_one_c_integration_cache_service,
+    ) -> AdminOneCStatusResponse:
+        self._check_read_permission(user=user, permission_service=permission_service)
+
+        cached_response = await admin_one_c_integration_cache_service.get_status(redis_service=redis_service)
+        if cached_response is not None:
+            return cached_response
+
+        enabled = bool(config.one_c.sync_enabled)
+        api_url_configured = bool(config.one_c.api_url)
+
+        if not enabled:
+            response = AdminOneCStatusResponse(
+                enabled=False,
+                available=False,
+                status="disabled",
+                api_url_configured=api_url_configured,
+                active_jobs_count=0,
+            )
+            await admin_one_c_integration_cache_service.set_status(
+                redis_service=redis_service,
+                response=response,
+                ttl_seconds=30,
+            )
+            return response
+
+        available = False
+        status = "error"
+        health_error: str | None = None
+        if api_url_configured:
+            try:
+                await one_c_integration_service.health_check(timeout_seconds=config.one_c.health_timeout_seconds)
+                available = True
+                status = "ok"
+            except Exception as error:
+                health_error = self._sanitize_error_message(str(error))
+        else:
+            health_error = "1C API URL is not configured"
+
+        last_success = await integration_log_repository.get_last_success(session=session)
+        last_error = await integration_log_repository.get_last_error(session=session)
+        active_jobs_count = await integration_job_repository.count_active(session=session)
+        last_products_sync = await integration_log_repository.get_last_success_by_entity_type(session=session, entity_type="products")
+        last_prices_sync = await integration_log_repository.get_last_success_by_entity_type(session=session, entity_type="prices")
+        last_stocks_sync = await integration_log_repository.get_last_success_by_entity_type(session=session, entity_type="stocks")
+        last_orders_sync = await integration_log_repository.get_last_success_by_entity_type(session=session, entity_type="orders")
+
+        response = AdminOneCStatusResponse(
+            enabled=True,
+            available=available,
+            status=status,
+            api_url_configured=api_url_configured,
+            last_success_sync_at=last_success.created_date if last_success is not None else None,
+            last_error_at=last_error.created_date if last_error is not None else None,
+            last_error_message=self._sanitize_error_message(last_error.error_message) if last_error is not None and last_error.error_message else health_error,
+            active_jobs_count=active_jobs_count,
+            last_products_sync_at=last_products_sync.created_date if last_products_sync is not None else None,
+            last_prices_sync_at=last_prices_sync.created_date if last_prices_sync is not None else None,
+            last_stocks_sync_at=last_stocks_sync.created_date if last_stocks_sync is not None else None,
+            last_orders_sync_at=last_orders_sync.created_date if last_orders_sync is not None else None,
+        )
+        await admin_one_c_integration_cache_service.set_status(
+            redis_service=redis_service,
+            response=response,
+            ttl_seconds=30,
         )
         return response
 
