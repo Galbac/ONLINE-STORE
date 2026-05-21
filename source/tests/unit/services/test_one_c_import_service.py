@@ -5,7 +5,9 @@ from types import SimpleNamespace
 import pytest
 from fastapi import HTTPException
 
-from source.api.api_v1.views.integration import get_one_c_pending_orders, import_one_c_categories, import_one_c_products, mark_one_c_order_synced
+from pydantic import ValidationError
+
+from source.api.api_v1.views.integration import get_one_c_pending_orders, import_one_c_categories, import_one_c_products, mark_one_c_order_sync_error, mark_one_c_order_synced
 from source.api.dependencies import verify_one_c_token
 from source.config.settings import settings
 from source.schemas.pydantic.one_c import (
@@ -18,10 +20,12 @@ from source.schemas.pydantic.one_c import (
     OneCProductImportItem,
     OneCProductImportRequest,
     OneCMarkOrderSyncedRequest,
+    OneCOrderSyncErrorRequest,
     OneCOrdersPendingQueryParams,
     OneCStockImportItem,
     OneCStockImportRequest,
 )
+from source.services.admin_order_cache import AdminOrderCacheService
 from source.services.admin_dashboard_cache import AdminDashboardCacheService
 from source.services.admin_product_cache import AdminProductCacheService
 from source.services.admin_category_cache import AdminCategoryCacheService
@@ -151,6 +155,14 @@ class FakeOrderRepository:
         order.sync_status = "synced"
         order.external_1c_id = external_1c_id
         order.sync_error = None
+        order.sync_error_code = None
+        order.last_sync_at = last_sync_at
+        return order
+
+    async def update_sync_error(self, *, session, order, sync_error: str, sync_error_code: str | None, last_sync_at):
+        order.sync_status = "error"
+        order.sync_error = sync_error
+        order.sync_error_code = sync_error_code
         order.last_sync_at = last_sync_at
         return order
 
@@ -412,6 +424,7 @@ def build_order(
     payment_status: str | None = "paid",
     external_1c_id: str | None = None,
     sync_error: str | None = "old error",
+    sync_error_code: str | None = None,
 ):
     return SimpleNamespace(
         id=order_id,
@@ -428,6 +441,7 @@ def build_order(
         payment_status=payment_status,
         external_1c_id=external_1c_id,
         sync_error=sync_error,
+        sync_error_code=sync_error_code,
         last_sync_at=None,
         customer_name="Иван Иванов",
         customer_phone="+79990000000",
@@ -746,6 +760,28 @@ async def mark_order_synced(
         order_repository=order_repository or FakeOrderRepository([build_order()]),
         integration_log_repository=integration_log_repository or FakeIntegrationLogRepository(),
         order_cache_service=OrderCacheService(),
+    )
+
+
+async def mark_order_sync_error(
+    *,
+    order_repository=None,
+    redis_service=None,
+    integration_log_repository=None,
+    commiter=None,
+    data=None,
+    order_id: int = 101,
+):
+    return await OneCOrderService().mark_order_sync_error(
+        session=object(),
+        redis_service=redis_service or FakeRedisService(),
+        order_id=order_id,
+        data=data or OneCOrderSyncErrorRequest(error="Не удалось создать документ в 1С", error_code="1C_VALIDATION_ERROR"),
+        commiter=commiter or FakeCommiter(),
+        order_repository=order_repository or FakeOrderRepository([build_order()]),
+        integration_log_repository=integration_log_repository or FakeIntegrationLogRepository(),
+        order_cache_service=OrderCacheService(),
+        admin_order_cache_service=AdminOrderCacheService(),
     )
 
 
@@ -1716,3 +1752,92 @@ async def test_one_c_mark_order_synced_creates_integration_log() -> None:
     assert log["action"] == "inbound_mark_synced"
     assert log["status"] == "success"
     assert log["request_payload"]["direction"] == "inbound"
+
+
+@pytest.mark.asyncio
+async def test_one_c_mark_order_sync_error_success() -> None:
+    order = build_order(sync_status="pending")
+
+    response = await mark_order_sync_error(order_repository=FakeOrderRepository([order]))
+
+    assert response.order_id == 101
+    assert response.order_number == "ORD-000101"
+    assert response.sync_status == "error"
+    assert response.sync_error == "Не удалось создать документ в 1С"
+    assert response.sync_error_code == "1C_VALIDATION_ERROR"
+    assert response.last_sync_at is not None
+    assert order.sync_status == "error"
+    assert order.sync_error == "Не удалось создать документ в 1С"
+    assert order.sync_error_code == "1C_VALIDATION_ERROR"
+
+
+def test_one_c_order_sync_error_request_requires_error() -> None:
+    with pytest.raises(ValidationError):
+        OneCOrderSyncErrorRequest(error="")
+
+
+def test_one_c_order_sync_error_request_rejects_long_error() -> None:
+    with pytest.raises(ValidationError):
+        OneCOrderSyncErrorRequest(error="x" * 2001)
+
+
+@pytest.mark.asyncio
+async def test_one_c_mark_order_sync_error_order_not_found_returns_404() -> None:
+    with pytest.raises(HTTPException) as exc_info:
+        await mark_one_c_order_sync_error.__dishka_orig_func__(
+            order_id=404,
+            body=OneCOrderSyncErrorRequest(error="Не удалось создать документ в 1С"),
+            _token=None,
+            session=object(),
+            redis_service=FakeRedisService(),
+            commiter=FakeCommiter(),
+            one_c_order_service=OneCOrderService(),
+            order_repository=FakeOrderRepository([]),
+            integration_log_repository=FakeIntegrationLogRepository(),
+            order_cache_service=OrderCacheService(),
+            admin_order_cache_service=AdminOrderCacheService(),
+        )
+
+    assert exc_info.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_one_c_mark_order_sync_error_invalid_token_returns_401(monkeypatch) -> None:
+    monkeypatch.setattr(settings.one_c, "api_token", "secret")
+
+    with pytest.raises(HTTPException) as exc_info:
+        await verify_one_c_token(authorization="Bearer wrong")
+
+    assert exc_info.value.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_one_c_mark_order_sync_error_invalidates_cache() -> None:
+    redis_service = FakeRedisService()
+
+    await mark_order_sync_error(redis_service=redis_service)
+
+    assert "admin:orders:list:*" in redis_service.deleted_patterns
+    assert "orders:my:1:*" in redis_service.deleted_patterns
+    assert "orders:detail:1:101" in redis_service.deleted
+    assert "orders:status:1:101" in redis_service.deleted
+    assert "admin:orders:detail:101" in redis_service.deleted
+
+
+@pytest.mark.asyncio
+async def test_one_c_mark_order_sync_error_creates_integration_log() -> None:
+    integration_log_repository = FakeIntegrationLogRepository()
+
+    await mark_order_sync_error(integration_log_repository=integration_log_repository)
+
+    log = integration_log_repository.logs[0]
+    assert log["system"] == "1c"
+    assert log["entity_type"] == "orders"
+    assert log["entity_id"] == 101
+    assert log["action"] == "inbound_sync_error"
+    assert log["status"] == "error"
+    assert log["request_payload"]["direction"] == "inbound"
+    assert log["request_payload"]["order_id"] == 101
+    assert log["request_payload"]["error"] == "Не удалось создать документ в 1С"
+    assert log["request_payload"]["error_code"] == "1C_VALIDATION_ERROR"
+    assert log["error_message"] == "Не удалось создать документ в 1С"

@@ -238,6 +238,9 @@ class AdminOrderService:
             final_price=order.final_price,
             sync_status=order.sync_status,
             external_1c_id=getattr(order, "external_1c_id", None),
+            sync_error=getattr(order, "sync_error", None),
+            sync_error_code=getattr(order, "sync_error_code", None),
+            last_sync_at=getattr(order, "last_sync_at", None),
             created_at=order.created_date,
         )
         await order_cache_service.set_admin_detail(

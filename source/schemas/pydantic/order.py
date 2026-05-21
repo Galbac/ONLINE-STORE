@@ -276,6 +276,9 @@ class AdminOrderDetailResponse(BaseModel):
     final_price: Decimal
     sync_status: str
     external_1c_id: str | None = None
+    sync_error: str | None = None
+    sync_error_code: str | None = None
+    last_sync_at: datetime | None = None
     created_at: datetime
 
 

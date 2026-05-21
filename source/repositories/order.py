@@ -223,11 +223,13 @@ class OrderRepository:
         sync_status: str,
         external_1c_id: str | None = None,
         sync_error: str | None = None,
+        sync_error_code: str | None = None,
         last_sync_at=None,
     ) -> Order:
         order.sync_status = sync_status
         order.external_1c_id = external_1c_id
         order.sync_error = sync_error
+        order.sync_error_code = sync_error_code
         order.last_sync_at = last_sync_at
         session.add(order)
         await session.flush()
@@ -248,6 +250,25 @@ class OrderRepository:
             sync_status="synced",
             external_1c_id=external_1c_id,
             sync_error=None,
+            last_sync_at=last_sync_at,
+        )
+
+    async def update_sync_error(
+        self,
+        *,
+        session: AsyncSession,
+        order: Order,
+        sync_error: str,
+        sync_error_code: str | None,
+        last_sync_at,
+    ) -> Order:
+        return await self.update_sync_status(
+            session=session,
+            order=order,
+            sync_status="error",
+            external_1c_id=order.external_1c_id,
+            sync_error=sync_error,
+            sync_error_code=sync_error_code,
             last_sync_at=last_sync_at,
         )
 

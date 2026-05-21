@@ -16,6 +16,7 @@ from source.schemas.pydantic.one_c import (
     OneCImageImportItem,
     OneCImageImportRequest,
     OneCImportItemErrorResponse,
+    OneCOrderSyncErrorRequest,
     OneCOrderCustomerResponse,
     OneCOrderDeliveryResponse,
     OneCOrderItemResponse,
@@ -288,6 +289,69 @@ class OneCOrderService:
         )
         await commiter.commit()
 
+        await order_cache_service.invalidate_order(
+            redis_service=redis_service,
+            user_id=order.user_id,
+            order_id=order.id,
+        )
+        return response
+
+    async def mark_order_sync_error(
+        self,
+        *,
+        session,
+        redis_service,
+        order_id: int,
+        data: OneCOrderSyncErrorRequest,
+        commiter,
+        order_repository,
+        integration_log_repository,
+        order_cache_service,
+        admin_order_cache_service,
+    ) -> OneCOrderSyncResponse | None:
+        order = await order_repository.get_by_id(session=session, order_id=order_id)
+        if order is None:
+            return None
+
+        now = datetime.now(settings.tz)
+        order = await order_repository.update_sync_error(
+            session=session,
+            order=order,
+            sync_error=data.error,
+            sync_error_code=data.error_code,
+            last_sync_at=now,
+        )
+        response = OneCOrderSyncResponse(
+            order_id=order.id,
+            order_number=order.order_number,
+            sync_status=order.sync_status,
+            external_1c_id=order.external_1c_id,
+            sync_error=order.sync_error,
+            sync_error_code=getattr(order, "sync_error_code", None),
+            last_sync_at=order.last_sync_at,
+        )
+        await integration_log_repository.create(
+            session=session,
+            system="1c",
+            entity_type="orders",
+            entity_id=order.id,
+            action="inbound_sync_error",
+            status="error",
+            request_payload={
+                "direction": "inbound",
+                "order_id": order.id,
+                "error": data.error,
+                "error_code": data.error_code,
+            },
+            response_payload=response.model_dump(),
+            error_message=data.error,
+        )
+        await commiter.commit()
+
+        await admin_order_cache_service.invalidate_order(
+            redis_service=redis_service,
+            order_id=order.id,
+        )
         await order_cache_service.invalidate_order(
             redis_service=redis_service,
             user_id=order.user_id,

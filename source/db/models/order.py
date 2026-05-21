@@ -52,5 +52,6 @@ class Order(IdBigIntPkMixin, CreateUpdateMixin, Base):
     sync_status: Mapped[str] = mapped_column(String(50), default="pending", server_default="pending", nullable=False)
     external_1c_id: Mapped[str | None] = mapped_column(String(100), index=True)
     sync_error: Mapped[str | None] = mapped_column(Text)
+    sync_error_code: Mapped[str | None] = mapped_column(String(100))
     last_sync_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     items_count: Mapped[int] = mapped_column(default=0, server_default="0", nullable=False)

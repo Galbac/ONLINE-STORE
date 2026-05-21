@@ -237,9 +237,33 @@ class OneCMarkOrderSyncedRequest(BaseModel):
         return normalized_value or None
 
 
+class OneCOrderSyncErrorRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    error: str = Field(min_length=1, max_length=2000)
+    error_code: str | None = Field(default=None, max_length=100)
+
+    @field_validator("error", mode="before")
+    @classmethod
+    def normalize_error(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        return value.strip()
+
+    @field_validator("error_code", mode="before")
+    @classmethod
+    def normalize_error_code(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        normalized_value = " ".join(value.strip().split())
+        return normalized_value or None
+
+
 class OneCOrderSyncResponse(BaseModel):
     order_id: int
     order_number: str
     sync_status: str
     external_1c_id: str | None = None
+    sync_error: str | None = None
+    sync_error_code: str | None = None
     last_sync_at: datetime | None = None

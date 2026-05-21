@@ -60,6 +60,7 @@ from source.services.admin_delivery import AdminDeliveryService
 from source.services.admin_delivery_cache import AdminDeliveryCacheService
 from source.services.admin_notification import AdminNotificationService
 from source.services.admin_order import AdminOrderService
+from source.services.admin_order_cache import AdminOrderCacheService
 from source.services.admin_order_print import AdminOrderPrintService
 from source.services.admin_product import AdminProductService
 from source.services.admin_product_cache import AdminProductCacheService
@@ -595,6 +596,10 @@ class AppProvider(Provider):
     )
     admin_order_service = provide(
         AdminOrderService,
+        scope=Scope.REQUEST,
+    )
+    admin_order_cache_service = provide(
+        AdminOrderCacheService,
         scope=Scope.REQUEST,
     )
     admin_user_service = provide(
