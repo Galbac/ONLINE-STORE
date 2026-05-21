@@ -7,6 +7,7 @@ from source.api.api_v1.views.categories import router as categories_router
 from source.api.api_v1.views.delivery import router as delivery_router
 from source.api.api_v1.views.discounts import router as discounts_router
 from source.api.api_v1.views.favorites import router as favorites_router
+from source.api.api_v1.views.health import router as health_router
 from source.api.api_v1.views.integration import router as integration_router
 from source.api.api_v1.views.profile import router as profile_router
 from source.api.api_v1.views.products import router as products_router
@@ -23,6 +24,7 @@ router = APIRouter(
 )
 
 router.include_router(auth_router)
+router.include_router(health_router)
 router.include_router(admin_auth_router)
 router.include_router(admin_dashboard_router)
 router.include_router(cart_router)

@@ -21,6 +21,15 @@ class ProjectName(BaseModel):
     slug: str = "grocery_store"
 
 
+class AppSettings(BaseSettings):
+    name: str = Field(default="supermarket-api", alias="APP_NAME")
+    version: str = Field(default="0.1.0", alias="APP_VERSION")
+    environment: str = Field(default="development", alias="APP_ENV")
+    health_show_environment: bool = Field(default=False, alias="HEALTH_SHOW_ENVIRONMENT")
+
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+
 class ApiV1Prefix(BaseModel):
     prefix: str = "/v1"
 
@@ -492,6 +501,7 @@ class Settings(BaseSettings):
         extra="ignore",
     )
     run: RunConfig = RunConfig()
+    app: AppSettings = AppSettings()
     names: ProjectName = ProjectName()
     api: ApiPrefix = ApiPrefix()
     db: DbSettings = DbSettings()
