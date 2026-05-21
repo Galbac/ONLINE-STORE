@@ -20,6 +20,7 @@ from source.db.models.pickup_point import PickupPoint
 from source.db.models.product import Product
 from source.db.models.product_availability_log import ProductAvailabilityLog
 from source.db.models.product_image import ProductImage
+from source.db.models.product_price_history import ProductPriceHistory
 from source.db.models.promo_code import PromoCode, PromoCodeUsage
 from source.db.models.refresh_token import RefreshToken
 from source.db.models.refund import Refund
@@ -53,6 +54,7 @@ __all__ = (
     "Product",
     "ProductAvailabilityLog",
     "ProductImage",
+    "ProductPriceHistory",
     "PromoCode",
     "PromoCodeUsage",
     "RefreshToken",

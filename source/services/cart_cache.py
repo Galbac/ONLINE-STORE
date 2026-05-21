@@ -82,3 +82,7 @@ class CartCacheService:
 
     async def invalidate_all_summaries(self, *, redis_service: RedisService) -> None:
         await redis_service.delete_by_pattern("cart:summary:*")
+
+    async def invalidate_all(self, *, redis_service: RedisService) -> None:
+        await redis_service.delete_by_pattern("cart:*")
+        await redis_service.delete_by_pattern("cart:summary:*")

@@ -10,13 +10,16 @@ from source.config.settings import settings
 from source.schemas.pydantic.one_c import (
     OneCCategoryImportItem,
     OneCCategoryImportRequest,
+    OneCPriceImportItem,
+    OneCPriceImportRequest,
     OneCProductImportItem,
     OneCProductImportRequest,
 )
 from source.services.admin_product_cache import AdminProductCacheService
 from source.services.admin_category_cache import AdminCategoryCacheService
+from source.services.cart_cache import CartCacheService
 from source.services.category_cache import CategoryCacheService
-from source.services.one_c import CategorySyncService, IntegrationLogService, OneCImportService, ProductSyncService, SlugService
+from source.services.one_c import CategorySyncService, IntegrationLogService, OneCImportService, ProductPriceSyncService, ProductSyncService, SlugService
 from source.services.product_cache import ProductCacheService
 
 
@@ -102,6 +105,18 @@ class FakeProductRepository:
     async def bulk_update(self, *, session, products: list):
         return products
 
+    async def bulk_update_prices(self, *, session, products: list):
+        return products
+
+
+class FakeProductPriceHistoryRepository:
+    def __init__(self) -> None:
+        self.items: list[dict] = []
+
+    async def bulk_create(self, *, session, items: list[dict]):
+        self.items.extend(items)
+        return [SimpleNamespace(id=index + 1, **item) for index, item in enumerate(items)]
+
 
 class FakeIntegrationLogRepository:
     def __init__(self) -> None:
@@ -151,6 +166,9 @@ def build_product(
     quantity_step="0.5",
     min_quantity="0.5",
     price="0",
+    old_price=None,
+    currency: str = "RUB",
+    price_updated_at=None,
     is_active: bool = True,
     is_available: bool = True,
     sync_status: str | None = "synced",
@@ -173,6 +191,9 @@ def build_product(
         quantity_step=quantity_step,
         min_quantity=min_quantity,
         price=price,
+        old_price=old_price,
+        currency=currency,
+        price_updated_at=price_updated_at,
         is_active=is_active,
         is_available=is_available,
         sync_status=sync_status,
@@ -208,6 +229,21 @@ def build_product_item(**kwargs) -> OneCProductImportItem:
     }
     data.update(kwargs)
     return OneCProductImportItem(**data)
+
+
+def build_price_request(*items) -> OneCPriceImportRequest:
+    return OneCPriceImportRequest(items=list(items))
+
+
+def build_price_item(**kwargs) -> OneCPriceImportItem:
+    data = {
+        "product_external_1c_id": "prod-001",
+        "price": "150.00",
+        "old_price": "180.00",
+        "currency": "RUB",
+    }
+    data.update(kwargs)
+    return OneCPriceImportItem(**data)
 
 
 async def import_categories(*, data, repository=None, redis_service=None, integration_log_repository=None, commiter=None):
@@ -249,6 +285,31 @@ async def import_products(
         product_cache_service=ProductCacheService(),
         admin_product_cache_service=AdminProductCacheService(),
         category_cache_service=CategoryCacheService(),
+    )
+
+
+async def import_prices(
+    *,
+    data,
+    product_repository=None,
+    history_repository=None,
+    redis_service=None,
+    integration_log_repository=None,
+    commiter=None,
+):
+    return await OneCImportService().import_prices(
+        session=object(),
+        redis_service=redis_service or FakeRedisService(),
+        data=data,
+        commiter=commiter or FakeCommiter(),
+        product_repository=product_repository or FakeProductRepository([build_product(price="100.00")]),
+        product_price_history_repository=history_repository or FakeProductPriceHistoryRepository(),
+        integration_log_repository=integration_log_repository or FakeIntegrationLogRepository(),
+        product_price_sync_service=ProductPriceSyncService(),
+        integration_log_service=IntegrationLogService(),
+        product_cache_service=ProductCacheService(),
+        cart_cache_service=CartCacheService(),
+        admin_product_cache_service=AdminProductCacheService(),
     )
 
 
@@ -566,4 +627,136 @@ async def test_one_c_import_products_creates_integration_log() -> None:
     log = integration_log_repository.logs[0]
     assert log["system"] == "1c"
     assert log["entity_type"] == "products"
+    assert log["status"] == "success"
+
+
+@pytest.mark.asyncio
+async def test_one_c_import_prices_updates_price() -> None:
+    product = build_product(price="100.00")
+
+    response = await import_prices(
+        product_repository=FakeProductRepository([product]),
+        data=build_price_request(build_price_item(price="150.00")),
+    )
+
+    assert response.updated == 1
+    assert product.price == build_price_item(price="150.00").price
+    assert product.currency == "RUB"
+    assert product.price_updated_at is not None
+    assert product.sync_status == "synced"
+    assert product.last_sync_at is not None
+
+
+@pytest.mark.asyncio
+async def test_one_c_import_prices_updates_old_price() -> None:
+    product = build_product(price="100.00", old_price=None)
+
+    await import_prices(
+        product_repository=FakeProductRepository([product]),
+        data=build_price_request(build_price_item(price="150.00", old_price="180.00")),
+    )
+
+    assert product.old_price == build_price_item(old_price="180.00").old_price
+
+
+@pytest.mark.asyncio
+async def test_one_c_import_prices_negative_price_returns_error() -> None:
+    response = await import_prices(
+        data=build_price_request(build_price_item(price="-1.00")),
+    )
+
+    assert response.updated == 0
+    assert response.skipped == 1
+    assert response.errors[0].field == "price"
+    assert response.errors[0].message == "Цена не может быть отрицательной"
+
+
+@pytest.mark.asyncio
+async def test_one_c_import_prices_unknown_product_returns_error() -> None:
+    response = await import_prices(
+        product_repository=FakeProductRepository([]),
+        data=build_price_request(build_price_item(product_external_1c_id="prod-404")),
+    )
+
+    assert response.updated == 0
+    assert response.skipped == 1
+    assert response.errors[0].product_external_1c_id == "prod-404"
+    assert response.errors[0].message == "Товар не найден"
+
+
+@pytest.mark.asyncio
+async def test_one_c_import_prices_invalid_currency_returns_error() -> None:
+    response = await import_prices(
+        data=build_price_request(build_price_item(currency="USD")),
+    )
+
+    assert response.updated == 0
+    assert response.skipped == 1
+    assert response.errors[0].field == "currency"
+    assert response.errors[0].message == "Валюта не поддерживается"
+
+
+@pytest.mark.asyncio
+async def test_one_c_import_prices_creates_history_when_price_changed() -> None:
+    history_repository = FakeProductPriceHistoryRepository()
+    product = build_product(product_id=10, price="100.00")
+
+    await import_prices(
+        product_repository=FakeProductRepository([product]),
+        history_repository=history_repository,
+        data=build_price_request(build_price_item(price="150.00")),
+    )
+
+    history = history_repository.items[0]
+    assert history["product_id"] == 10
+    assert history["old_price"] == "100.00"
+    assert history["new_price"] == build_price_item(price="150.00").price
+    assert history["source"] == "1c"
+
+
+@pytest.mark.asyncio
+async def test_one_c_import_prices_does_not_create_history_without_price_change() -> None:
+    history_repository = FakeProductPriceHistoryRepository()
+    product = build_product(price=build_price_item(price="150.00").price)
+
+    await import_prices(
+        product_repository=FakeProductRepository([product]),
+        history_repository=history_repository,
+        data=build_price_request(build_price_item(price="150.00")),
+    )
+
+    assert history_repository.items == []
+
+
+@pytest.mark.asyncio
+async def test_one_c_import_prices_invalidates_cache() -> None:
+    redis_service = FakeRedisService()
+
+    await import_prices(
+        redis_service=redis_service,
+        data=build_price_request(build_price_item(price="150.00")),
+    )
+
+    assert "products:list:*" in redis_service.deleted_patterns
+    assert "products:detail:*" in redis_service.deleted_patterns
+    assert "products:slug:*" in redis_service.deleted_patterns
+    assert "products:search:*" in redis_service.deleted_patterns
+    assert "products:discounted:*" in redis_service.deleted_patterns
+    assert "cart:*" in redis_service.deleted_patterns
+    assert "cart:summary:*" in redis_service.deleted_patterns
+    assert "admin:products:list:*" in redis_service.deleted_patterns
+
+
+@pytest.mark.asyncio
+async def test_one_c_import_prices_creates_integration_log() -> None:
+    integration_log_repository = FakeIntegrationLogRepository()
+
+    await import_prices(
+        integration_log_repository=integration_log_repository,
+        data=build_price_request(build_price_item(price="150.00")),
+    )
+
+    log = integration_log_repository.logs[0]
+    assert log["system"] == "1c"
+    assert log["entity_type"] == "product_prices"
     assert log["status"] == "success"

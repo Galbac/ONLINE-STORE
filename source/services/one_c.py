@@ -10,6 +10,8 @@ from source.schemas.pydantic.one_c import (
     OneCCategoryImportItem,
     OneCCategoryImportRequest,
     OneCImportItemErrorResponse,
+    OneCPriceImportItem,
+    OneCPriceImportRequest,
     OneCProductImportItem,
     OneCProductImportRequest,
     OneCImportResultResponse,
@@ -424,6 +426,122 @@ class ProductSyncService:
         return product.slug == generate_slug(product.name)
 
 
+class ProductPriceSyncService:
+    async def update_prices_from_1c(
+        self,
+        *,
+        session,
+        data: OneCPriceImportRequest,
+        product_repository,
+        product_price_history_repository,
+    ) -> OneCImportResultResponse:
+        now = datetime.now(settings.tz)
+        product_external_ids = {item.product_external_1c_id for item in data.items}
+        products = await product_repository.get_by_external_1c_ids(
+            session=session,
+            external_1c_ids=product_external_ids,
+        )
+        products_by_external_id = {
+            product.external_1c_id: product
+            for product in products
+            if product.external_1c_id is not None
+        }
+
+        errors: list[OneCImportItemErrorResponse] = []
+        skipped = 0
+        updated_products = []
+        history_payloads: list[dict] = []
+        seen_external_ids: set[str] = set()
+
+        for item in data.items:
+            item_errors = self._validate_item(item=item)
+            if item_errors:
+                skipped += 1
+                errors.extend(item_errors)
+                continue
+            if item.product_external_1c_id in seen_external_ids:
+                skipped += 1
+                errors.append(
+                    OneCImportItemErrorResponse(
+                        product_external_1c_id=item.product_external_1c_id,
+                        message="Дублирующийся product_external_1c_id в batch",
+                        field="product_external_1c_id",
+                    ),
+                )
+                continue
+            seen_external_ids.add(item.product_external_1c_id)
+
+            product = products_by_external_id.get(item.product_external_1c_id)
+            if product is None:
+                skipped += 1
+                errors.append(
+                    OneCImportItemErrorResponse(
+                        product_external_1c_id=item.product_external_1c_id,
+                        message="Товар не найден",
+                        field="product_external_1c_id",
+                    ),
+                )
+                continue
+
+            previous_price = product.price
+            if previous_price != item.price:
+                history_payloads.append(
+                    {
+                        "product_id": product.id,
+                        "old_price": previous_price,
+                        "new_price": item.price,
+                        "source": "1c",
+                        "changed_at": now,
+                    },
+                )
+            product.price = item.price
+            product.old_price = item.old_price
+            product.currency = item.currency
+            product.price_updated_at = now
+            product.sync_status = "synced"
+            product.last_sync_at = now
+            updated_products.append(product)
+
+        if updated_products:
+            await product_repository.bulk_update_prices(session=session, products=updated_products)
+        if history_payloads:
+            await product_price_history_repository.bulk_create(session=session, items=history_payloads)
+
+        return OneCImportResultResponse(
+            updated=len({product.id for product in updated_products if product.id is not None}),
+            skipped=skipped,
+            errors=errors,
+        )
+
+    def _validate_item(self, *, item: OneCPriceImportItem) -> list[OneCImportItemErrorResponse]:
+        errors: list[OneCImportItemErrorResponse] = []
+        if item.price < 0:
+            errors.append(
+                OneCImportItemErrorResponse(
+                    product_external_1c_id=item.product_external_1c_id,
+                    message="Цена не может быть отрицательной",
+                    field="price",
+                ),
+            )
+        if item.old_price is not None and item.old_price < 0:
+            errors.append(
+                OneCImportItemErrorResponse(
+                    product_external_1c_id=item.product_external_1c_id,
+                    message="Старая цена не может быть отрицательной",
+                    field="old_price",
+                ),
+            )
+        if item.currency not in settings.admin_delivery.supported_currencies:
+            errors.append(
+                OneCImportItemErrorResponse(
+                    product_external_1c_id=item.product_external_1c_id,
+                    message="Валюта не поддерживается",
+                    field="currency",
+                ),
+            )
+        return errors
+
+
 class IntegrationLogService:
     async def create_log(
         self,
@@ -523,4 +641,42 @@ class OneCImportService:
         await product_cache_service.invalidate_all(redis_service=redis_service)
         await admin_product_cache_service.invalidate_all(redis_service=redis_service)
         await category_cache_service.invalidate_tree(redis_service=redis_service)
+        return result
+
+    async def import_prices(
+        self,
+        *,
+        session,
+        redis_service,
+        data: OneCPriceImportRequest,
+        commiter,
+        product_repository,
+        product_price_history_repository,
+        integration_log_repository,
+        product_price_sync_service: ProductPriceSyncService,
+        integration_log_service: IntegrationLogService,
+        product_cache_service,
+        cart_cache_service,
+        admin_product_cache_service,
+    ) -> OneCImportResultResponse:
+        result = await product_price_sync_service.update_prices_from_1c(
+            session=session,
+            data=data,
+            product_repository=product_repository,
+            product_price_history_repository=product_price_history_repository,
+        )
+        status = "partial" if result.errors else "success"
+        await integration_log_service.create_log(
+            session=session,
+            integration_log_repository=integration_log_repository,
+            status=status,
+            request_payload=data.model_dump(),
+            response_payload=result.model_dump(),
+            entity_type="product_prices",
+        )
+        await commiter.commit()
+
+        await product_cache_service.invalidate_all(redis_service=redis_service)
+        await cart_cache_service.invalidate_all(redis_service=redis_service)
+        await admin_product_cache_service.invalidate_all(redis_service=redis_service)
         return result

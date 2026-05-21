@@ -69,14 +69,40 @@ class OneCProductImportRequest(BaseModel):
     items: list[OneCProductImportItem]
 
 
+class OneCPriceImportItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    product_external_1c_id: str = Field(min_length=1, max_length=100)
+    price: Decimal = Field(max_digits=12, decimal_places=2)
+    old_price: Decimal | None = Field(default=None, max_digits=12, decimal_places=2)
+    currency: str = Field(min_length=3, max_length=3)
+
+    @field_validator("product_external_1c_id", "currency", mode="before")
+    @classmethod
+    def normalize_string(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        normalized_value = " ".join(value.strip().split())
+        if not normalized_value:
+            return None
+        return normalized_value.upper() if len(normalized_value) == 3 else normalized_value
+
+
+class OneCPriceImportRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    items: list[OneCPriceImportItem]
+
+
 class OneCImportItemErrorResponse(BaseModel):
-    external_1c_id: str
+    external_1c_id: str | None = None
+    product_external_1c_id: str | None = None
     message: str
     field: str | None = None
 
 
 class OneCImportResultResponse(BaseModel):
-    created: int
-    updated: int
-    skipped: int
-    errors: list[OneCImportItemErrorResponse]
+    created: int = 0
+    updated: int = 0
+    skipped: int = 0
+    errors: list[OneCImportItemErrorResponse] = Field(default_factory=list)

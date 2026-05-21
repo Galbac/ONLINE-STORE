@@ -40,6 +40,7 @@ from source.repositories.pickup_point import PickupPointRepository
 from source.repositories.product import ProductRepository
 from source.repositories.product_availability_log import ProductAvailabilityLogRepository
 from source.repositories.product_image import ProductImageRepository
+from source.repositories.product_price_history import ProductPriceHistoryRepository
 from source.repositories.promo_code import PromoCodeCategoryRepository, PromoCodeProductRepository, PromoCodeRepository, PromoCodeUsageRepository
 from source.repositories.stock_movement import StockMovementRepository
 from source.repositories.settings import SettingsRepository
@@ -86,7 +87,7 @@ from source.services.favorite import FavoriteService
 from source.services.favorite_cache import FavoriteCacheService
 from source.services.health import HealthService
 from source.services.health_cache import HealthCacheService
-from source.services.one_c import CategorySyncService, IntegrationLogService, OneCImportService, OneCIntegrationService, ProductSyncService, SlugService
+from source.services.one_c import CategorySyncService, IntegrationLogService, OneCImportService, OneCIntegrationService, ProductPriceSyncService, ProductSyncService, SlugService
 from source.services.order import OrderService
 from source.services.order_cache import OrderCacheService
 from source.services.order_status import OrderStatusService
@@ -280,6 +281,10 @@ class AppProvider(Provider):
         ProductImageRepository,
         scope=Scope.REQUEST,
     )
+    product_price_history_repository = provide(
+        ProductPriceHistoryRepository,
+        scope=Scope.REQUEST,
+    )
     stock_movement_repository = provide(
         StockMovementRepository,
         scope=Scope.REQUEST,
@@ -462,6 +467,10 @@ class AppProvider(Provider):
     )
     product_sync_service = provide(
         ProductSyncService,
+        scope=Scope.REQUEST,
+    )
+    product_price_sync_service = provide(
+        ProductPriceSyncService,
         scope=Scope.REQUEST,
     )
     slug_service = provide(

@@ -27,6 +27,8 @@ class Product(IdBigIntPkMixin, CreateUpdateMixin, Base):
     product_type: Mapped[str] = mapped_column(String(20), default="piece", server_default="piece", nullable=False)
     price: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
     old_price: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
+    currency: Mapped[str] = mapped_column(String(3), default="RUB", server_default="RUB", nullable=False)
+    price_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     stock_quantity: Mapped[Decimal] = mapped_column(Numeric(12, 3), default=0, server_default="0", nullable=False)
     quantity_step: Mapped[Decimal] = mapped_column(Numeric(12, 3), default=1, server_default="1", nullable=False)
     min_quantity: Mapped[Decimal] = mapped_column(Numeric(12, 3), default=1, server_default="1", nullable=False)
