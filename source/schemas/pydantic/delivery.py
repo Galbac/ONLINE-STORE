@@ -1,5 +1,6 @@
 from datetime import date, datetime
 from decimal import Decimal
+from math import ceil
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -67,6 +68,68 @@ class AdminDeliverySettingsUpdateRequest(BaseModel):
         if isinstance(value, str):
             return value.strip().upper()
         return value
+
+
+class AdminDeliveryZoneListQueryParams(BaseModel):
+    page: int = Field(default=1, ge=1)
+    limit: int = Field(default=50, ge=1, le=100)
+    q: str | None = Field(default=None, min_length=1, max_length=100)
+    city: str | None = Field(default=None, min_length=1, max_length=100)
+    is_active: bool | None = None
+    include_deleted: bool = False
+
+    @model_validator(mode="after")
+    def normalize_strings(self) -> "AdminDeliveryZoneListQueryParams":
+        for field in ("q", "city"):
+            value = getattr(self, field)
+            if value is not None:
+                value = value.strip()
+                setattr(self, field, value or None)
+        return self
+
+    @property
+    def offset(self) -> int:
+        return (self.page - 1) * self.limit
+
+
+class AdminDeliveryZoneResponse(BaseModel):
+    id: int
+    name: str
+    city: str
+    description: str | None = None
+    delivery_price: Decimal | None = None
+    free_delivery_from: Decimal | None = None
+    min_order_amount: Decimal | None = None
+    is_active: bool
+    is_deleted: bool
+    sort_order: int
+    created_at: datetime
+    updated_at: datetime
+
+
+class AdminDeliveryZoneListResponse(BaseModel):
+    items: list[AdminDeliveryZoneResponse]
+    total: int
+    page: int
+    limit: int
+    pages: int
+
+    @classmethod
+    def build(
+        cls,
+        *,
+        items: list[AdminDeliveryZoneResponse],
+        total: int,
+        page: int,
+        limit: int,
+    ) -> "AdminDeliveryZoneListResponse":
+        return cls(
+            items=items,
+            total=total,
+            page=page,
+            limit=limit,
+            pages=ceil(total / limit) if total else 0,
+        )
 
 
 class DeliveryCalculateRequest(BaseModel):

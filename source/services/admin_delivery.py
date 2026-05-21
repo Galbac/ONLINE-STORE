@@ -1,11 +1,19 @@
 from source.config.settings import settings
 from source.errors.auth import AdminAuthAccessDeniedError, InactiveUserError
 from source.errors.delivery import EmptyDeliverySettingsUpdateError
-from source.schemas.pydantic.delivery import AdminDeliverySettingsResponse, AdminDeliverySettingsUpdateRequest
+from source.schemas.pydantic.delivery import (
+    AdminDeliverySettingsResponse,
+    AdminDeliverySettingsUpdateRequest,
+    AdminDeliveryZoneListQueryParams,
+    AdminDeliveryZoneListResponse,
+    AdminDeliveryZoneResponse,
+)
 from source.services.admin_auth import STAFF_ROLES
 from source.services.admin_delivery_cache import AdminDeliveryCacheService
 from source.services.delivery_cache import DeliveryCacheService
 from source.services.redis import RedisService
+from source.utils.query_hash import build_query_hash
+from source.utils.search import normalize_search_query
 
 
 class AdminDeliveryService:
@@ -51,6 +59,54 @@ class AdminDeliveryService:
             redis_service=redis_service,
             response=response,
             ttl_seconds=settings.admin_delivery.settings_cache_ttl_seconds,
+        )
+        return response
+
+    async def get_zones(
+        self,
+        *,
+        session,
+        redis_service: RedisService,
+        user,
+        query: AdminDeliveryZoneListQueryParams,
+        permission_service,
+        admin_delivery_cache_service: AdminDeliveryCacheService,
+        delivery_zone_repository,
+    ) -> AdminDeliveryZoneListResponse:
+        self._check_read_permission(user=user, permission_service=permission_service)
+
+        permissions = permission_service.get_user_permissions(role=user.role)
+        if query.include_deleted and "admin:delivery:read_deleted" not in permissions:
+            raise AdminAuthAccessDeniedError
+
+        normalized_query = query.model_copy(
+            update={
+                "q": normalize_search_query(query.q) if query.q is not None else None,
+                "city": query.city.strip() if query.city is not None else None,
+            },
+        )
+        query_hash = build_query_hash(normalized_query.model_dump())
+        cached_zones = await admin_delivery_cache_service.get_zones(
+            redis_service=redis_service,
+            query_hash=query_hash,
+        )
+        if cached_zones is not None:
+            return cached_zones
+
+        zones = await delivery_zone_repository.get_list(session=session, query=normalized_query)
+        items = [self._build_zone_response(zone=zone) for zone in zones]
+        total = await delivery_zone_repository.count(session=session, query=normalized_query)
+        response = AdminDeliveryZoneListResponse.build(
+            items=items,
+            total=total,
+            page=normalized_query.page,
+            limit=normalized_query.limit,
+        )
+        await admin_delivery_cache_service.set_zones(
+            redis_service=redis_service,
+            query_hash=query_hash,
+            response=response,
+            ttl_seconds=settings.admin_delivery.zones_cache_ttl_seconds,
         )
         return response
 
@@ -173,6 +229,7 @@ class AdminDeliveryService:
         delivery_cache_service: DeliveryCacheService,
     ) -> None:
         await admin_delivery_cache_service.invalidate_settings(redis_service=redis_service)
+        await admin_delivery_cache_service.invalidate_zones(redis_service=redis_service)
         await delivery_cache_service.invalidate_options(redis_service=redis_service)
         await delivery_cache_service.invalidate_calculate(redis_service=redis_service)
         await delivery_cache_service.invalidate_time_slots(redis_service=redis_service)
@@ -191,4 +248,20 @@ class AdminDeliveryService:
             default_city=getattr(delivery_settings, "default_city", "Москва"),
             currency=getattr(delivery_settings, "currency", settings.payments.currency),
             updated_at=getattr(delivery_settings, "updated_date", None),
+        )
+
+    def _build_zone_response(self, *, zone) -> AdminDeliveryZoneResponse:
+        return AdminDeliveryZoneResponse(
+            id=zone.id,
+            name=zone.name,
+            city=zone.city,
+            description=zone.description,
+            delivery_price=zone.delivery_price,
+            free_delivery_from=zone.free_delivery_from,
+            min_order_amount=zone.min_order_amount,
+            is_active=zone.is_active,
+            is_deleted=zone.is_deleted,
+            sort_order=zone.sort_order,
+            created_at=zone.created_date,
+            updated_at=zone.updated_date,
         )

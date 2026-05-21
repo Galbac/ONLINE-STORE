@@ -68,6 +68,7 @@ from source.repositories.admin_audit_log import AdminAuditLogRepository
 from source.repositories.address import AddressRepository
 from source.repositories.category import CategoryRepository
 from source.repositories.delivery_settings import DeliverySettingsRepository
+from source.repositories.delivery_zone import DeliveryZoneRepository
 from source.repositories.discount import DiscountCategoryRepository, DiscountProductRepository, DiscountRepository
 from source.repositories.integration_log import IntegrationLogRepository
 from source.repositories.order import OrderRepository
@@ -103,7 +104,12 @@ from source.schemas.pydantic.discount import (
     AdminDiscountUpdateRequest,
     MessageResponse as AdminDiscountMessageResponse,
 )
-from source.schemas.pydantic.delivery import AdminDeliverySettingsResponse, AdminDeliverySettingsUpdateRequest
+from source.schemas.pydantic.delivery import (
+    AdminDeliverySettingsResponse,
+    AdminDeliverySettingsUpdateRequest,
+    AdminDeliveryZoneListQueryParams,
+    AdminDeliveryZoneListResponse,
+)
 from source.schemas.pydantic.admin_role import AdminRoleListResponse
 from source.schemas.pydantic.admin_category import (
     AdminCategoryCreateRequest,
@@ -214,6 +220,55 @@ from source.services.upload import UploadService
 from source.services.user_cache import UserCacheService
 
 router = APIRouter(prefix="/admin", tags=["admin-dashboard"])
+
+
+@router.get("/delivery/zones", response_model=AdminDeliveryZoneListResponse, status_code=status.HTTP_200_OK)
+@inject
+async def get_admin_delivery_zones(
+    page: int = Query(default=1, ge=1),
+    limit: int = Query(default=50, ge=1, le=100),
+    q: str | None = Query(default=None, min_length=1, max_length=100),
+    city: str | None = Query(default=None, min_length=1, max_length=100),
+    is_active: bool | None = Query(default=None),
+    include_deleted: bool = Query(default=False),
+    token_payload: dict = Depends(verify_access_token),
+    current_user: User = Depends(require_permission("admin:delivery:read")),
+    session: FromDishka[AsyncSession] = None,
+    redis_service: FromDishka[RedisService] = None,
+    admin_delivery_service: FromDishka[AdminDeliveryService] = None,
+    admin_delivery_cache_service: FromDishka[AdminDeliveryCacheService] = None,
+    permission_service: FromDishka[PermissionService] = None,
+    delivery_zone_repository: FromDishka[DeliveryZoneRepository] = None,
+) -> AdminDeliveryZoneListResponse:
+    if token_payload.get("token_type") != "access":
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь не авторизован")
+    try:
+        return await admin_delivery_service.get_zones(
+            session=session,
+            redis_service=redis_service,
+            user=current_user,
+            query=AdminDeliveryZoneListQueryParams(
+                page=page,
+                limit=limit,
+                q=q,
+                city=city,
+                is_active=is_active,
+                include_deleted=include_deleted,
+            ),
+            permission_service=permission_service,
+            admin_delivery_cache_service=admin_delivery_cache_service,
+            delivery_zone_repository=delivery_zone_repository,
+        )
+    except ValidationError as error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Неверные query params") from error
+    except InvalidCredentialsError as error:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь не авторизован") from error
+    except AdminAuthAccessDeniedError as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Недостаточно прав") from error
+    except InactiveUserError as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Пользователь заблокирован") from error
+    except Exception as error:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Внутренняя ошибка сервера") from error
 
 
 @router.get("/delivery/settings", response_model=AdminDeliverySettingsResponse, status_code=status.HTTP_200_OK)

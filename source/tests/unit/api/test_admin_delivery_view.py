@@ -3,7 +3,7 @@ from types import SimpleNamespace
 import pytest
 from fastapi import HTTPException
 
-from source.api.api_v1.views.admin_dashboard import get_admin_delivery_settings, update_admin_delivery_settings
+from source.api.api_v1.views.admin_dashboard import get_admin_delivery_settings, get_admin_delivery_zones, update_admin_delivery_settings
 from source.db.models.choises.enum import UserRole
 from source.services.admin_auth import AuditLogService, PermissionService
 from source.services.admin_delivery import AdminDeliveryService
@@ -55,6 +55,14 @@ class FakeDeliverySettingsRepository:
         return delivery_settings
 
 
+class FakeDeliveryZoneRepository:
+    async def get_list(self, *, session, query):
+        return []
+
+    async def count(self, *, session, query) -> int:
+        return 0
+
+
 class FakeAuditLogRepository:
     async def create(self, *, session, **data):
         return SimpleNamespace(**data)
@@ -76,6 +84,28 @@ async def test_admin_delivery_settings_customer_role_returns_403() -> None:
             admin_delivery_cache_service=AdminDeliveryCacheService(),
             permission_service=PermissionService(),
             delivery_settings_repository=FakeDeliverySettingsRepository(),
+        )
+
+    assert exc_info.value.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_admin_delivery_zones_without_permission_returns_403() -> None:
+    with pytest.raises(HTTPException) as exc_info:
+        await get_admin_delivery_zones.__dishka_orig_func__(
+            page=1,
+            limit=50,
+            q=None,
+            city=None,
+            is_active=None,
+            include_deleted=False,
+            token_payload={"token_type": "access"},
+            current_user=build_user(role=UserRole.CONTENT_MANAGER),
+            redis_service=FakeRedisService(),
+            admin_delivery_service=AdminDeliveryService(),
+            admin_delivery_cache_service=AdminDeliveryCacheService(),
+            permission_service=PermissionService(),
+            delivery_zone_repository=FakeDeliveryZoneRepository(),
         )
 
     assert exc_info.value.status_code == 403
