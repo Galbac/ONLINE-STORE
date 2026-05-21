@@ -5,7 +5,7 @@ import pytest
 from source.config.settings import settings
 from source.db.models.choises.enum import UserRole
 from source.errors.auth import AdminAuthAccessDeniedError, OneCIntegrationDisabledError, OneCSyncAlreadyRunningError, OneCSyncError
-from source.schemas.pydantic.one_c import AdminOneCSyncRequest, OneCImportResultResponse, OneCProductImportRequest
+from source.schemas.pydantic.one_c import AdminOneCSyncRequest, OneCImportResultResponse, OneCPriceImportRequest, OneCProductImportRequest
 from source.services.one_c import AdminOneCIntegrationService, IntegrationJobService
 
 
@@ -47,6 +47,7 @@ class FakeOneCClient:
     def __init__(self, *, error: Exception | None = None) -> None:
         self.error = error
         self.full_sync_values: list[bool] = []
+        self.price_full_sync_values: list[bool] = []
 
     async def fetch_products(self, *, full_sync: bool = False):
         self.full_sync_values.append(full_sync)
@@ -54,14 +55,25 @@ class FakeOneCClient:
             raise self.error
         return OneCProductImportRequest(items=[])
 
+    async def fetch_prices(self, *, full_sync: bool = False):
+        self.price_full_sync_values.append(full_sync)
+        if self.error is not None:
+            raise self.error
+        return OneCPriceImportRequest(items=[])
+
 
 class FakeOneCImportService:
     def __init__(self) -> None:
         self.calls = 0
+        self.price_calls = 0
 
     async def import_products(self, **kwargs):
         self.calls += 1
         return OneCImportResultResponse(created=20, updated=100, errors=[])
+
+    async def import_prices(self, **kwargs):
+        self.price_calls += 1
+        return OneCImportResultResponse(updated=100, errors=[])
 
 
 class FakeIntegrationJobRepository:
@@ -98,6 +110,14 @@ class FakeCacheService:
 
     async def invalidate_all(self, *, redis_service) -> None:
         self.invalidated += 1
+
+
+class FakeDiscountCacheService:
+    def __init__(self) -> None:
+        self.invalidated_products = 0
+
+    async def invalidate_products(self, *, redis_service) -> None:
+        self.invalidated_products += 1
 
 
 def build_user(*, role=UserRole.ADMIN):
@@ -137,6 +157,34 @@ def build_dependencies(**overrides):
         "product_cache_service": FakeCacheService(),
         "admin_product_cache_service": FakeCacheService(),
         "category_cache_service": FakeCacheService(),
+    }
+    deps.update(overrides)
+    return deps
+
+
+def build_price_dependencies(**overrides):
+    deps = {
+        "session": object(),
+        "redis_service": object(),
+        "user": build_user(),
+        "data": AdminOneCSyncRequest(full_sync=False),
+        "commiter": FakeCommiter(),
+        "config": build_config(),
+        "permission_service": FakePermissionService(),
+        "redis_lock_service": FakeRedisLockService(),
+        "one_c_client": FakeOneCClient(),
+        "one_c_import_service": FakeOneCImportService(),
+        "product_price_sync_service": object(),
+        "integration_job_service": IntegrationJobService(),
+        "integration_log_service": object(),
+        "integration_job_repository": FakeIntegrationJobRepository(),
+        "integration_log_repository": FakeIntegrationLogRepository(),
+        "product_repository": object(),
+        "product_price_history_repository": object(),
+        "product_cache_service": FakeCacheService(),
+        "cart_cache_service": FakeCacheService(),
+        "discount_cache_service": FakeDiscountCacheService(),
+        "admin_product_cache_service": FakeCacheService(),
     }
     deps.update(overrides)
     return deps
@@ -224,3 +272,76 @@ async def test_admin_one_c_sync_products_does_not_return_api_token(monkeypatch) 
 
     assert "secret-token" not in str(exc_info.value)
     assert "secret-token" not in deps["integration_log_repository"].logs[-1]["error_message"]
+
+
+@pytest.mark.asyncio
+async def test_admin_one_c_sync_prices_success() -> None:
+    service = AdminOneCIntegrationService()
+    deps = build_price_dependencies(data=AdminOneCSyncRequest(full_sync=True))
+
+    response = await service.sync_prices(**deps)
+
+    assert response.status == "success"
+    assert response.job_id == 1001
+    assert response.updated == 100
+    assert response.errors == []
+    assert deps["one_c_client"].price_full_sync_values == [True]
+    assert deps["one_c_import_service"].price_calls == 1
+    assert deps["redis_lock_service"].release_calls == [{"key": "integration:1c:lock:prices"}]
+
+
+@pytest.mark.asyncio
+async def test_admin_one_c_sync_prices_existing_lock_error() -> None:
+    service = AdminOneCIntegrationService()
+    deps = build_price_dependencies(redis_lock_service=FakeRedisLockService(acquired=False))
+
+    with pytest.raises(OneCSyncAlreadyRunningError):
+        await service.sync_prices(**deps)
+
+
+@pytest.mark.asyncio
+async def test_admin_one_c_sync_prices_disabled_error() -> None:
+    service = AdminOneCIntegrationService()
+    deps = build_price_dependencies(config=build_config(sync_enabled=False))
+
+    with pytest.raises(OneCIntegrationDisabledError):
+        await service.sync_prices(**deps)
+
+
+@pytest.mark.asyncio
+async def test_admin_one_c_sync_prices_without_permission_error() -> None:
+    service = AdminOneCIntegrationService()
+    deps = build_price_dependencies(permission_service=FakePermissionService(permissions=[]))
+
+    with pytest.raises(AdminAuthAccessDeniedError):
+        await service.sync_prices(**deps)
+
+
+@pytest.mark.asyncio
+async def test_admin_one_c_sync_prices_creates_job_and_log() -> None:
+    service = AdminOneCIntegrationService()
+    deps = build_price_dependencies()
+
+    await service.sync_prices(**deps)
+
+    assert deps["integration_job_repository"].created[0]["type"] == "prices"
+    assert deps["integration_job_repository"].created[0]["status"] == "started"
+    assert deps["integration_job_repository"].updated[-1]["status"] == "success"
+    assert [log["action"] for log in deps["integration_log_repository"].logs] == [
+        "manual_sync_started",
+        "manual_sync_finished",
+    ]
+    assert deps["integration_log_repository"].logs[0]["entity_type"] == "product_prices"
+
+
+@pytest.mark.asyncio
+async def test_admin_one_c_sync_prices_invalidates_cache() -> None:
+    service = AdminOneCIntegrationService()
+    deps = build_price_dependencies()
+
+    await service.sync_prices(**deps)
+
+    assert deps["product_cache_service"].invalidated == 1
+    assert deps["cart_cache_service"].invalidated == 1
+    assert deps["discount_cache_service"].invalidated_products == 1
+    assert deps["admin_product_cache_service"].invalidated == 1
