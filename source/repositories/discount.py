@@ -3,12 +3,24 @@ from datetime import datetime, time
 from sqlalchemy import desc, exists, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from source.db.models.discount import Discount
+from source.db.models.discount import Discount, DiscountCategory, DiscountProduct
 from source.db.models.product import Product
 from source.schemas.pydantic.discount import ActiveDiscountsQueryParams, AdminDiscountListQueryParams, DiscountShortResponse
 
 
 class DiscountRepository:
+    async def create(
+        self,
+        *,
+        session: AsyncSession,
+        **data,
+    ) -> Discount:
+        discount = Discount(**data)
+        session.add(discount)
+        await session.flush()
+        await session.refresh(discount)
+        return discount
+
     async def admin_get_list(
         self,
         *,
@@ -138,3 +150,25 @@ class DiscountRepository:
             ends_at=discount.ends_at,
             is_active=discount.is_active,
         )
+
+
+class DiscountProductRepository:
+    async def bulk_create(self, *, session: AsyncSession, discount_id: int, product_ids: list[int]) -> list[DiscountProduct]:
+        relations = [
+            DiscountProduct(discount_id=discount_id, product_id=product_id)
+            for product_id in product_ids
+        ]
+        session.add_all(relations)
+        await session.flush()
+        return relations
+
+
+class DiscountCategoryRepository:
+    async def bulk_create(self, *, session: AsyncSession, discount_id: int, category_ids: list[int]) -> list[DiscountCategory]:
+        relations = [
+            DiscountCategory(discount_id=discount_id, category_id=category_id)
+            for category_id in category_ids
+        ]
+        session.add_all(relations)
+        await session.flush()
+        return relations

@@ -24,7 +24,7 @@ from source.repositories.category import CategoryRepository
 from source.repositories.delivery_settings import DeliverySettingsRepository
 from source.repositories.delivery_time_slot import DeliveryTimeSlotRepository
 from source.repositories.delivery_zone import DeliveryZoneRepository
-from source.repositories.discount import DiscountRepository
+from source.repositories.discount import DiscountCategoryRepository, DiscountProductRepository, DiscountRepository
 from source.repositories.favorite import FavoriteRepository
 from source.repositories.integration_log import IntegrationLogRepository
 from source.repositories.order import OrderRepository
@@ -49,6 +49,7 @@ from source.services.admin_auth import AdminAuthService, AuditLogService, JwtBla
 from source.services.admin_category import AdminCategoryService, CategoryTreeService
 from source.services.admin_category_cache import AdminCategoryCacheService
 from source.services.admin_discount import AdminDiscountService
+from source.services.admin_discount import DiscountConflictService
 from source.services.admin_discount_cache import AdminDiscountCacheService
 from source.services.admin_auth_cache import AdminAuthCacheService
 from source.services.admin_dashboard import AdminDashboardService
@@ -303,6 +304,14 @@ class AppProvider(Provider):
         DiscountRepository,
         scope=Scope.REQUEST,
     )
+    discount_product_repository = provide(
+        DiscountProductRepository,
+        scope=Scope.REQUEST,
+    )
+    discount_category_repository = provide(
+        DiscountCategoryRepository,
+        scope=Scope.REQUEST,
+    )
     favorite_repository = provide(
         FavoriteRepository,
         scope=Scope.REQUEST,
@@ -441,6 +450,10 @@ class AppProvider(Provider):
     )
     admin_discount_service = provide(
         AdminDiscountService,
+        scope=Scope.REQUEST,
+    )
+    discount_conflict_service = provide(
+        DiscountConflictService,
         scope=Scope.REQUEST,
     )
     admin_discount_cache_service = provide(

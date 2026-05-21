@@ -1,7 +1,7 @@
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Numeric, String
+from sqlalchemy import Boolean, DateTime, ForeignKey, Numeric, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from source.db.models.base import Base
@@ -20,3 +20,21 @@ class Discount(IdBigIntPkMixin, CreateUpdateMixin, Base):
     is_deleted: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false", nullable=False)
     starts_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     ends_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class DiscountProduct(IdBigIntPkMixin, CreateUpdateMixin, Base):
+    __table_args__ = (
+        UniqueConstraint("discount_id", "product_id", name="uq_discount_products_discount_id_product_id"),
+    )
+
+    discount_id: Mapped[int] = mapped_column(ForeignKey("discounts.id", ondelete="CASCADE"), index=True, nullable=False)
+    product_id: Mapped[int] = mapped_column(ForeignKey("products.id", ondelete="CASCADE"), index=True, nullable=False)
+
+
+class DiscountCategory(IdBigIntPkMixin, CreateUpdateMixin, Base):
+    __table_args__ = (
+        UniqueConstraint("discount_id", "category_id", name="uq_discount_categories_discount_id_category_id"),
+    )
+
+    discount_id: Mapped[int] = mapped_column(ForeignKey("discounts.id", ondelete="CASCADE"), index=True, nullable=False)
+    category_id: Mapped[int] = mapped_column(ForeignKey("categories.id", ondelete="CASCADE"), index=True, nullable=False)
