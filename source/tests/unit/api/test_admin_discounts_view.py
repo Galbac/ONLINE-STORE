@@ -3,8 +3,9 @@ from types import SimpleNamespace
 import pytest
 from fastapi import HTTPException
 
-from source.api.api_v1.views.admin_dashboard import get_admin_discount_detail, get_admin_discounts
+from source.api.api_v1.views.admin_dashboard import delete_admin_discount, get_admin_discount_detail, get_admin_discounts
 from source.db.models.choises.enum import UserRole
+from source.services.admin_auth import AuditLogService
 from source.services.admin_auth import PermissionService
 from source.services.admin_discount import AdminDiscountService
 from source.services.admin_discount_cache import AdminDiscountCacheService
@@ -15,6 +16,9 @@ class FakeRedisService:
         return None
 
     async def set(self, key: str, value: str, *, ttl_seconds: int | None = None) -> None:
+        return None
+
+    async def delete_by_pattern(self, pattern: str) -> None:
         return None
 
 
@@ -37,6 +41,19 @@ class FakeDiscountProductRepository:
 class FakeDiscountCategoryRepository:
     async def get_categories(self, *, session, discount_id: int):
         return []
+
+
+class FakeCommiter:
+    async def commit(self) -> None:
+        return None
+
+    async def rollback(self) -> None:
+        return None
+
+
+class FakeAuditLogRepository:
+    async def create(self, *, session, **data):
+        return SimpleNamespace(**data)
 
 
 def build_user(*, role=UserRole.MANAGER):
@@ -62,6 +79,27 @@ async def test_admin_get_discounts_no_permission_returns_403() -> None:
             admin_discount_cache_service=AdminDiscountCacheService(),
             permission_service=PermissionService(),
             discount_repository=FakeDiscountRepository(),
+        )
+
+    assert exc_info.value.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_admin_delete_discount_no_permission_returns_403() -> None:
+    with pytest.raises(HTTPException) as exc_info:
+        await delete_admin_discount.__dishka_orig_func__(
+            request=SimpleNamespace(client=SimpleNamespace(host="127.0.0.1"), headers={}),
+            token_payload={"token_type": "access"},
+            current_user=build_user(role=UserRole.MANAGER),
+            discount_id=1,
+            commiter=FakeCommiter(),
+            redis_service=FakeRedisService(),
+            admin_discount_service=AdminDiscountService(),
+            admin_discount_cache_service=AdminDiscountCacheService(),
+            permission_service=PermissionService(),
+            discount_repository=FakeDiscountRepository(),
+            audit_log_service=AuditLogService(),
+            admin_audit_log_repository=FakeAuditLogRepository(),
         )
 
     assert exc_info.value.status_code == 403

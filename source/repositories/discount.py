@@ -72,6 +72,23 @@ class DiscountRepository:
         await session.refresh(discount)
         return discount
 
+    async def soft_delete(
+        self,
+        *,
+        session: AsyncSession,
+        discount: Discount,
+        deleted_at: datetime,
+        deleted_by: int,
+    ) -> Discount:
+        discount.is_deleted = True
+        discount.is_active = False
+        discount.deleted_at = deleted_at
+        discount.deleted_by = deleted_by
+        session.add(discount)
+        await session.flush()
+        await session.refresh(discount)
+        return discount
+
     async def has_conflicts(
         self,
         *,

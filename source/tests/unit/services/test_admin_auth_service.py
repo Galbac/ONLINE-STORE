@@ -15,7 +15,7 @@ from source.errors.auth import (
     RefreshTokenAlreadyRevokedError,
 )
 from source.schemas.pydantic.admin_auth import AdminLoginRequest, AdminLogoutRequest, AdminMeResponse
-from source.services.admin_auth import AdminAuthService, AuditLogService, JwtBlacklistService, JwtService, PermissionService, RateLimitService
+from source.services.admin_auth import ADMIN_PERMISSIONS_BY_ROLE, AdminAuthService, AuditLogService, JwtBlacklistService, JwtService, PermissionService, RateLimitService
 from source.services.admin_auth_cache import AdminAuthCacheService
 from source.services.auth import AuthService
 
@@ -192,28 +192,7 @@ async def test_admin_login_success_admin() -> None:
     response = await login(refresh_token_repository=refresh_repository, audit_log_repository=audit_repository)
 
     assert response.user.role == UserRole.ADMIN
-    assert response.user.permissions == [
-        "admin:dashboard:read",
-        "admin:dashboard:sales:read",
-        "admin:categories:read",
-        "admin:categories:create",
-        "admin:categories:update",
-        "admin:categories:delete",
-        "admin:products:read",
-        "admin:products:create",
-        "admin:products:update",
-        "admin:products:delete",
-        "admin:products:stock:update",
-        "admin:products:manage",
-        "admin:orders:read",
-        "admin:orders:manage",
-        "admin:orders:cancel",
-        "admin:orders:confirm",
-        "admin:orders:print",
-        "admin:orders:sync_1c",
-        "admin:orders:update",
-        "admin:orders:update_status",
-    ]
+    assert response.user.permissions == ADMIN_PERMISSIONS_BY_ROLE[UserRole.ADMIN]
     assert response.token_type == "bearer"
     assert response.access_token
     assert response.refresh_token

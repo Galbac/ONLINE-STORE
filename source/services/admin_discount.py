@@ -1,3 +1,4 @@
+from datetime import datetime
 from decimal import Decimal
 
 from source.config.settings import settings
@@ -14,6 +15,7 @@ from source.schemas.pydantic.discount import (
     AdminDiscountListResponse,
     AdminDiscountProductResponse,
     AdminDiscountUpdateRequest,
+    MessageResponse,
 )
 from source.services.admin_auth import STAFF_ROLES
 from source.services.redis import RedisService
@@ -80,6 +82,14 @@ class AdminDiscountService:
         if user.role not in STAFF_ROLES:
             raise AdminAuthAccessDeniedError
         if "admin:discounts:update" not in permission_service.get_user_permissions(role=user.role):
+            raise AdminAuthAccessDeniedError
+
+    def _check_delete_permission(self, *, user, permission_service) -> None:
+        if not user.is_active or user.is_deleted or user.is_blocked:
+            raise InactiveUserError
+        if user.role not in STAFF_ROLES:
+            raise AdminAuthAccessDeniedError
+        if "admin:discounts:delete" not in permission_service.get_user_permissions(role=user.role):
             raise AdminAuthAccessDeniedError
 
     async def get_discounts(
@@ -425,6 +435,59 @@ class AdminDiscountService:
             products=products,
             categories=categories,
         )
+
+    async def delete_discount(
+        self,
+        *,
+        session,
+        redis_service: RedisService,
+        user,
+        discount_id: int,
+        commiter,
+        permission_service,
+        discount_repository,
+        audit_log_service,
+        admin_audit_log_repository,
+        admin_discount_cache_service,
+        ip_address: str | None = None,
+        user_agent: str | None = None,
+    ) -> MessageResponse:
+        self._check_delete_permission(user=user, permission_service=permission_service)
+
+        discount = await discount_repository.admin_get_by_id(session=session, discount_id=discount_id)
+        if discount is None:
+            raise DiscountNotFoundError
+
+        deleted_discount = await discount_repository.soft_delete(
+            session=session,
+            discount=discount,
+            deleted_at=datetime.now(settings.tz),
+            deleted_by=user.id,
+        )
+        await audit_log_service.log_action(
+            session=session,
+            audit_log_repository=admin_audit_log_repository,
+            user_id=user.id,
+            login=getattr(user, "email", None) or getattr(user, "phone", None) or str(user.id),
+            event="admin_discount_delete",
+            status="success",
+            ip_address=ip_address,
+            user_agent=user_agent,
+            details={
+                "discount_id": deleted_discount.id,
+                "name": deleted_discount.name,
+                "type": deleted_discount.type,
+                "discount_type": deleted_discount.discount_type,
+            },
+        )
+        await commiter.commit()
+
+        await self._invalidate_discount_cache(
+            redis_service=redis_service,
+            admin_discount_cache_service=admin_discount_cache_service,
+        )
+
+        return MessageResponse(message="Скидка удалена")
 
     def _resolve_discount_type(
         self,

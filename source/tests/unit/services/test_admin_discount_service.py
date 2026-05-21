@@ -48,6 +48,7 @@ class FakeDiscountRepository:
         self.count_calls = 0
         self.detail_calls = 0
         self.updated = []
+        self.soft_deleted = []
 
     async def admin_get_list(self, *, session, query: AdminDiscountListQueryParams):
         self.list_calls += 1
@@ -76,6 +77,15 @@ class FakeDiscountRepository:
         for field, value in data.items():
             setattr(discount, field, value)
         discount.updated_date = datetime(2026, 5, 12, 11, 0, 0)
+        return discount
+
+    async def soft_delete(self, *, session, discount, deleted_at: datetime, deleted_by: int):
+        self.soft_deleted.append(discount.id)
+        discount.is_deleted = True
+        discount.is_active = False
+        discount.deleted_at = deleted_at
+        discount.deleted_by = deleted_by
+        discount.updated_date = deleted_at
         return discount
 
     async def has_conflicts(self, **kwargs) -> bool:
@@ -130,6 +140,8 @@ def build_discount(
         discount_value=Decimal("20"),
         is_active=is_active,
         is_deleted=False,
+        deleted_at=extra.get("deleted_at"),
+        deleted_by=extra.get("deleted_by"),
         starts_at=datetime(2026, 5, 1, 0, 0, 0),
         ends_at=datetime(2026, 5, 31, 23, 59, 59),
         created_date=created_date,
@@ -377,6 +389,40 @@ async def update_discount(
         discount_repository=discount_repository,
         discount_product_repository=discount_product_repository,
         discount_category_repository=discount_category_repository,
+    )
+
+
+async def delete_discount(
+    *,
+    discount_id: int = 1,
+    redis_service=None,
+    role=UserRole.ADMIN,
+    discount_repository=None,
+    audit_log_repository=None,
+    commiter=None,
+):
+    redis_service = redis_service or FakeRedisService()
+    audit_log_repository = audit_log_repository or FakeAuditLogRepository()
+    commiter = commiter or FakeCommiter()
+    discount_repository = discount_repository or FakeDiscountRepository()
+    response = await AdminDiscountService().delete_discount(
+        session=None,
+        redis_service=redis_service,
+        user=build_user(role=role),
+        discount_id=discount_id,
+        commiter=commiter,
+        permission_service=PermissionService(),
+        discount_repository=discount_repository,
+        audit_log_service=AuditLogService(),
+        admin_audit_log_repository=audit_log_repository,
+        admin_discount_cache_service=AdminDiscountCacheService(),
+    )
+    return SimpleNamespace(
+        response=response,
+        redis_service=redis_service,
+        audit_log_repository=audit_log_repository,
+        commiter=commiter,
+        discount_repository=discount_repository,
     )
 
 
@@ -698,4 +744,56 @@ async def test_admin_update_discount_audit_log_created() -> None:
     assert result.audit_log_repository.logs[0]["details"]["changes"]["product_ids"] == {
         "old": [55],
         "new": [55, 56],
+    }
+
+
+@pytest.mark.asyncio
+async def test_admin_delete_discount_success() -> None:
+    result = await delete_discount()
+
+    assert result.response.message == "Скидка удалена"
+    assert result.discount_repository.soft_deleted == [1]
+    assert result.commiter.committed is True
+
+
+@pytest.mark.asyncio
+async def test_admin_delete_discount_not_found_error() -> None:
+    with pytest.raises(DiscountNotFoundError):
+        await delete_discount(discount_id=999)
+
+
+@pytest.mark.asyncio
+async def test_admin_delete_discount_sets_inactive_and_deleted_flags() -> None:
+    result = await delete_discount()
+    discount = result.discount_repository.discounts[0]
+
+    assert discount.is_active is False
+    assert discount.is_deleted is True
+    assert discount.deleted_by == 1
+    assert discount.deleted_at is not None
+
+
+@pytest.mark.asyncio
+async def test_admin_delete_discount_invalidates_cache() -> None:
+    result = await delete_discount()
+
+    assert "admin:discounts:*" in result.redis_service.deleted_patterns
+    assert "discounts:*" in result.redis_service.deleted_patterns
+    assert "products:list:*" in result.redis_service.deleted_patterns
+    assert "products:detail:*" in result.redis_service.deleted_patterns
+    assert "products:slug:*" in result.redis_service.deleted_patterns
+    assert "products:discounted:*" in result.redis_service.deleted_patterns
+    assert "cart:*" in result.redis_service.deleted_patterns
+
+
+@pytest.mark.asyncio
+async def test_admin_delete_discount_audit_log_created() -> None:
+    result = await delete_discount()
+
+    assert result.audit_log_repository.logs[0]["event"] == "admin_discount_delete"
+    assert result.audit_log_repository.logs[0]["details"] == {
+        "discount_id": 1,
+        "name": "Скидка на яблоки",
+        "type": "product",
+        "discount_type": "percent",
     }

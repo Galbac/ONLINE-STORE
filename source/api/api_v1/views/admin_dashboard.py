@@ -85,7 +85,14 @@ from source.schemas.pydantic.admin_dashboard import (
     AdminSalesQueryParams,
     AdminSalesResponse,
 )
-from source.schemas.pydantic.discount import AdminDiscountCreateRequest, AdminDiscountDetailResponse, AdminDiscountListQueryParams, AdminDiscountListResponse, AdminDiscountUpdateRequest
+from source.schemas.pydantic.discount import (
+    AdminDiscountCreateRequest,
+    AdminDiscountDetailResponse,
+    AdminDiscountListQueryParams,
+    AdminDiscountListResponse,
+    AdminDiscountUpdateRequest,
+    MessageResponse as AdminDiscountMessageResponse,
+)
 from source.schemas.pydantic.admin_role import AdminRoleListResponse
 from source.schemas.pydantic.admin_category import (
     AdminCategoryCreateRequest,
@@ -452,6 +459,57 @@ async def update_admin_discount(
     except Exception:
         await commiter.rollback()
         raise
+
+
+@router.delete("/discounts/{discount_id}", response_model=AdminDiscountMessageResponse, status_code=status.HTTP_200_OK)
+@inject
+async def delete_admin_discount(
+    request: Request,
+    discount_id: int = Path(..., gt=0),
+    token_payload: dict = Depends(verify_access_token),
+    current_user: User = Depends(get_current_user),
+    session: FromDishka[AsyncSession] = None,
+    commiter: FromDishka[Commiter] = None,
+    redis_service: FromDishka[RedisService] = None,
+    admin_discount_service: FromDishka[AdminDiscountService] = None,
+    admin_discount_cache_service: FromDishka[AdminDiscountCacheService] = None,
+    permission_service: FromDishka[PermissionService] = None,
+    discount_repository: FromDishka[DiscountRepository] = None,
+    audit_log_service: FromDishka[AuditLogService] = None,
+    admin_audit_log_repository: FromDishka[AdminAuditLogRepository] = None,
+) -> AdminDiscountMessageResponse:
+    if token_payload.get("token_type") != "access":
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь не авторизован")
+    try:
+        return await admin_discount_service.delete_discount(
+            session=session,
+            redis_service=redis_service,
+            user=current_user,
+            discount_id=discount_id,
+            commiter=commiter,
+            permission_service=permission_service,
+            discount_repository=discount_repository,
+            audit_log_service=audit_log_service,
+            admin_audit_log_repository=admin_audit_log_repository,
+            admin_discount_cache_service=admin_discount_cache_service,
+            ip_address=request.client.host if request.client else None,
+            user_agent=request.headers.get("user-agent"),
+        )
+    except InvalidCredentialsError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь не авторизован") from error
+    except AdminAuthAccessDeniedError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Недостаточно прав") from error
+    except InactiveUserError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Пользователь заблокирован") from error
+    except DiscountNotFoundError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Скидка не найдена") from error
+    except Exception as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Внутренняя ошибка сервера") from error
 
 
 @router.get("/staff", response_model=AdminStaffListResponse, status_code=status.HTTP_200_OK)
