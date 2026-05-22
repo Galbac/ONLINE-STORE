@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 from dishka.integrations import fastapi as fastapi_integration
 from fastapi import FastAPI, status
 from fastapi.exceptions import RequestValidationError
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from source.api.routers.http import router as http_router
@@ -26,6 +27,13 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title=settings.names.title,
         lifespan=lifespan,
+    )
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.middleware.cors_origins,
+        allow_credentials=settings.middleware.allow_credentials,
+        allow_methods=settings.middleware.allow_methods,
+        allow_headers=settings.middleware.allow_headers,
     )
     app.include_router(http_router)
     fastapi_integration.setup_dishka(container, app)
