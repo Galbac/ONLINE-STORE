@@ -59,6 +59,8 @@ ModelT = TypeVar("ModelT")
 
 NOW = datetime.now(settings.tz)
 PASSWORD = "StrongPassword123"
+SEED_IMAGE_URL = "https://images.unsplash.com/photo-1542838132-92c53300491e?auto=format&fit=crop&w=900&q=80"
+SEED_IMAGE_FILENAME = "seed/grocery-placeholder.jpg"
 
 
 async def get_one(session: AsyncSession, model: type[ModelT], **filters: Any) -> ModelT | None:
@@ -145,6 +147,60 @@ async def seed_settings(session: AsyncSession) -> None:
     await session.flush()
 
 
+async def seed_placeholder_image(session: AsyncSession, admin: User) -> Upload:
+    return await get_or_create(
+        session,
+        Upload,
+        stored_filename=SEED_IMAGE_FILENAME,
+        defaults={
+            "original_filename": "grocery-placeholder.jpg",
+            "mime_type": "image/jpeg",
+            "size": 180000,
+            "storage_type": "external",
+            "url": SEED_IMAGE_URL,
+            "entity_type": "catalog",
+            "uploaded_by": admin.id,
+            "is_public": True,
+        },
+    )
+
+
+async def apply_placeholder_image(session: AsyncSession, placeholder: Upload) -> None:
+    categories = (await session.scalars(select(Category))).all()
+    for category in categories:
+        category.image_file_id = placeholder.id
+        category.image_url = SEED_IMAGE_URL
+
+    products = (await session.scalars(select(Product))).all()
+    for product in products:
+        product.preview_image_url = SEED_IMAGE_URL
+        image = await get_one(session, ProductImage, product_id=product.id, is_main=True)
+        if image is None:
+            image = await get_or_create(
+                session,
+                ProductImage,
+                product_id=product.id,
+                url=SEED_IMAGE_URL,
+                defaults={
+                    "file_id": placeholder.id,
+                    "external_url": SEED_IMAGE_URL,
+                    "sort_order": 1,
+                    "is_main": True,
+                },
+            )
+        image.file_id = placeholder.id
+        image.url = SEED_IMAGE_URL
+        image.external_url = SEED_IMAGE_URL
+        image.is_main = True
+
+    uploads = (await session.scalars(select(Upload).where(Upload.entity_type == "catalog"))).all()
+    for upload in uploads:
+        upload.url = SEED_IMAGE_URL
+        upload.storage_type = "external"
+        upload.mime_type = "image/jpeg"
+    await session.flush()
+
+
 async def seed_catalog(session: AsyncSession, admin: User) -> tuple[dict[str, Category], dict[str, Product]]:
     uploads = [
         await get_or_create(
@@ -155,8 +211,8 @@ async def seed_catalog(session: AsyncSession, admin: User) -> tuple[dict[str, Ca
                 "original_filename": f"{slug}.jpg",
                 "mime_type": "image/jpeg",
                 "size": 120000,
-                "storage_type": "local",
-                "url": f"/uploads/seed/{slug}.jpg",
+                "storage_type": "external",
+                "url": SEED_IMAGE_URL,
                 "entity_type": "catalog",
                 "uploaded_by": admin.id,
             },
@@ -181,7 +237,7 @@ async def seed_catalog(session: AsyncSession, admin: User) -> tuple[dict[str, Ca
                 "name": name,
                 "description": description,
                 "image_file_id": uploads[index].id,
-                "image_url": uploads[index].url,
+                "image_url": SEED_IMAGE_URL,
                 "sort_order": index + 1,
                 "is_active": True,
                 "sync_status": "synced",
@@ -216,7 +272,7 @@ async def seed_catalog(session: AsyncSession, admin: User) -> tuple[dict[str, Ca
                 "source": "seed",
                 "description": f"{name}. Демо-товар для каталога.",
                 "search_keywords": name.lower(),
-                "preview_image_url": f"/uploads/seed/{slug}.jpg",
+                "preview_image_url": SEED_IMAGE_URL,
                 "unit": unit,
                 "product_type": product_type,
                 "price": Decimal(price),
@@ -237,9 +293,10 @@ async def seed_catalog(session: AsyncSession, admin: User) -> tuple[dict[str, Ca
             session,
             ProductImage,
             product_id=product.id,
-            url=f"/uploads/seed/{slug}.jpg",
+            url=SEED_IMAGE_URL,
             defaults={
-                "external_url": f"https://example.com/images/{slug}.jpg",
+                "file_id": uploads[0].id,
+                "external_url": SEED_IMAGE_URL,
                 "sort_order": 1,
                 "is_main": True,
             },
@@ -618,8 +675,8 @@ async def seed_bulk_catalog(session: AsyncSession, admin: User) -> dict[str, Pro
                 "original_filename": f"{slug}.jpg",
                 "mime_type": "image/jpeg",
                 "size": 140000 + category_index,
-                "storage_type": "local",
-                "url": f"/uploads/seed/{slug}.jpg",
+                "storage_type": "external",
+                "url": SEED_IMAGE_URL,
                 "entity_type": "catalog",
                 "uploaded_by": admin.id,
             },
@@ -632,7 +689,7 @@ async def seed_bulk_catalog(session: AsyncSession, admin: User) -> dict[str, Pro
                 "name": name,
                 "description": description,
                 "image_file_id": upload.id,
-                "image_url": upload.url,
+                "image_url": SEED_IMAGE_URL,
                 "sort_order": category_index,
                 "is_active": True,
                 "sync_status": "synced",
@@ -659,7 +716,7 @@ async def seed_bulk_catalog(session: AsyncSession, admin: User) -> dict[str, Pro
                     "source": "seed",
                     "description": f"{product_name}. Расширенный демо-каталог.",
                     "search_keywords": f"{product_name.lower()} {name.lower()}",
-                    "preview_image_url": f"/uploads/seed/{product_slug}.jpg",
+                    "preview_image_url": SEED_IMAGE_URL,
                     "unit": "кг" if product_type == "weight" else "шт",
                     "product_type": product_type,
                     "price": price,
@@ -680,9 +737,10 @@ async def seed_bulk_catalog(session: AsyncSession, admin: User) -> dict[str, Pro
                 session,
                 ProductImage,
                 product_id=product.id,
-                url=f"/uploads/seed/{product_slug}.jpg",
+                url=SEED_IMAGE_URL,
                 defaults={
-                    "external_url": f"https://example.com/images/{product_slug}.jpg",
+                    "file_id": upload.id,
+                    "external_url": SEED_IMAGE_URL,
                     "sort_order": 1,
                     "is_main": True,
                 },
@@ -1086,12 +1144,14 @@ async def seed() -> None:
         async with session.begin():
             users = await seed_users(session)
             await seed_settings(session)
+            placeholder = await seed_placeholder_image(session, users["admin"])
             categories, products = await seed_catalog(session, users["admin"])
             zone, pickup, slot = await seed_delivery(session, users["admin"])
             _, promo_code = await seed_marketing(session, users["admin"], categories, products)
             order = await seed_customer_flow(session, users, products, promo_code, zone, pickup, slot)
             await seed_payments_and_logs(session, users, order)
             await seed_bulk_data(session, users)
+            await apply_placeholder_image(session, placeholder)
     await db_helper.dispose()
 
 
