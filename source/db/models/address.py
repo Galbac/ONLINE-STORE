@@ -9,6 +9,8 @@ from source.db.models.mixins.id_int_pk import IdBigIntPkMixin
 
 
 class Address(IdBigIntPkMixin, CreateUpdateMixin, Base):
+    __tablename__ = "addresses"
+
     user_id: Mapped[int] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"),
         index=True,

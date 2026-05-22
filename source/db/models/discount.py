@@ -25,6 +25,7 @@ class Discount(IdBigIntPkMixin, CreateUpdateMixin, Base):
 
 
 class DiscountProduct(IdBigIntPkMixin, CreateUpdateMixin, Base):
+    __tablename__ = "discount_products"
     __table_args__ = (
         UniqueConstraint("discount_id", "product_id", name="uq_discount_products_discount_id_product_id"),
     )
@@ -34,6 +35,7 @@ class DiscountProduct(IdBigIntPkMixin, CreateUpdateMixin, Base):
 
 
 class DiscountCategory(IdBigIntPkMixin, CreateUpdateMixin, Base):
+    __tablename__ = "discount_categories"
     __table_args__ = (
         UniqueConstraint("discount_id", "category_id", name="uq_discount_categories_discount_id_category_id"),
     )

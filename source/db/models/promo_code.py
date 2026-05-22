@@ -38,6 +38,7 @@ class PromoCodeUsage(IdBigIntPkMixin, CreateUpdateMixin, Base):
 
 
 class PromoCodeProduct(IdBigIntPkMixin, CreateUpdateMixin, Base):
+    __tablename__ = "promo_code_products"
     __table_args__ = (
         UniqueConstraint("promo_code_id", "product_id", name="uq_promo_code_products_promo_code_id_product_id"),
     )
@@ -47,6 +48,7 @@ class PromoCodeProduct(IdBigIntPkMixin, CreateUpdateMixin, Base):
 
 
 class PromoCodeCategory(IdBigIntPkMixin, CreateUpdateMixin, Base):
+    __tablename__ = "promo_code_categories"
     __table_args__ = (
         UniqueConstraint("promo_code_id", "category_id", name="uq_promo_code_categories_promo_code_id_category_id"),
     )

@@ -4,6 +4,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.dev
+      args:
+        PYTHON_IMAGE: ${PYTHON_IMAGE:-public.ecr.aws/docker/library/python:3.12-slim}
     env_file:
       - .env
     environment:
@@ -25,7 +27,7 @@ services:
       - grocery_store_dev
 
   redis:
-    image: redis:7-alpine
+    image: ${REDIS_IMAGE:-public.ecr.aws/docker/library/redis:7-alpine}
     restart: unless-stopped
     ports:
       - "6379:6379"
@@ -40,7 +42,7 @@ services:
       - grocery_store_dev
 
   postgres:
-    image: postgres:16-alpine
+    image: ${POSTGRES_IMAGE:-public.ecr.aws/docker/library/postgres:16-alpine}
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-grocery_store}
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
@@ -58,7 +60,7 @@ services:
       - grocery_store_dev
 
   adminer:
-    image: adminer:latest
+    image: ${ADMINER_IMAGE:-public.ecr.aws/docker/library/adminer:latest}
     restart: unless-stopped
     ports:
       - "8080:8080"
