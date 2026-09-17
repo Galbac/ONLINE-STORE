@@ -11,7 +11,8 @@ from source.api.api_v1.views.health import router as health_router
 from source.api.api_v1.views.integration import router as integration_router
 from source.api.api_v1.views.profile import router as profile_router
 from source.api.api_v1.views.products import router as products_router
-from source.api.api_v1.views.orders import router as orders_router
+from source.api.api_v1.views.profile import router as profile_router
+from source.api.api_v1.views.public_settings import router as public_settings_router
 from source.api.api_v1.views.notifications import router as notifications_router
 from source.api.api_v1.views.payments import router as payments_router
 from source.api.api_v1.views.promo_codes import router as promo_codes_router
@@ -25,6 +26,7 @@ router = APIRouter(
 
 router.include_router(auth_router)
 router.include_router(health_router)
+router.include_router(public_settings_router)
 router.include_router(admin_auth_router)
 router.include_router(admin_dashboard_router)
 router.include_router(cart_router)

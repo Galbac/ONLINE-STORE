@@ -5,6 +5,7 @@ from fastapi import FastAPI, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 from source.api.routers.http import router as http_router
 from source.config.logging import setup_app_logging, setup_uvicorn_logging
@@ -15,9 +16,21 @@ from source.ioc import setup_di
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    settings.media.root.mkdir(parents=True, exist_ok=True)
     yield
     await db_helper.dispose()
     await app.state.dishka_container.close()
+
+
+class CachedStaticFiles(StaticFiles):
+    def is_not_modified(self, response_headers, request_headers) -> bool:
+        return super().is_not_modified(response_headers, request_headers)
+
+    async def get_response(self, path: str, scope):
+        response = await super().get_response(path, scope)
+        if response.status_code == 200:
+            response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        return response
 
 
 def create_app() -> FastAPI:
@@ -35,6 +48,8 @@ def create_app() -> FastAPI:
         allow_methods=settings.middleware.allow_methods,
         allow_headers=settings.middleware.allow_headers,
     )
+    settings.media.root.mkdir(parents=True, exist_ok=True)
+    app.mount(settings.media.url, CachedStaticFiles(directory=str(settings.media.root)), name="media")
     app.include_router(http_router)
     fastapi_integration.setup_dishka(container, app)
     return app

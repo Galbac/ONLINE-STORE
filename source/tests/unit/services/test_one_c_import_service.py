@@ -1412,7 +1412,7 @@ async def test_one_c_import_images_imports_image_url_with_download(monkeypatch) 
 
     assert response.created == 1
     assert product_image_repository.images[0].file_id == 1
-    assert upload_repository.items[0]["mime_type"] == "image/png"
+    assert upload_repository.items[0]["mime_type"] == "image/webp"
     assert storage_service.saved
 
 

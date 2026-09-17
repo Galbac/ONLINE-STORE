@@ -8,7 +8,7 @@ from source.errors.upload import UploadInUseError, UploadNotFoundError
 from source.schemas.pydantic.upload import AdminUploadImageResponse
 from source.services.admin_auth import STAFF_ROLES
 from source.services.storage import StorageService
-from source.utils.upload import generate_safe_filename, get_file_extension, validate_image_file
+from source.utils.upload import convert_image_to_webp, generate_safe_filename, validate_image_file
 
 
 class AdminUploadService:
@@ -52,16 +52,16 @@ class AdminUploadService:
             allowed_extensions=media_settings.allowed_image_extension_set,
             max_size_bytes=media_settings.max_image_size_mb * 1024 * 1024,
         )
-        extension = get_file_extension(file.filename if file is not None else None)
+        webp_content, mime_type, extension = convert_image_to_webp(content)
         stored_filename = generate_safe_filename(extension=extension, entity_type=entity_type)
-        url, storage_type = await storage_service.save_file(stored_filename=stored_filename, content=content)
+        url, storage_type = await storage_service.save_file(stored_filename=stored_filename, content=webp_content)
 
         upload = await upload_repository.create(
             session=session,
             original_filename=file.filename,
             stored_filename=stored_filename,
-            mime_type=file.content_type,
-            size=len(content),
+            mime_type=mime_type,
+            size=len(webp_content),
             storage_type=storage_type,
             url=url,
             entity_type=entity_type,

@@ -99,6 +99,7 @@ class CartCalculatorService:
                     quantity=cart_item.quantity,
                     unit=product.unit,
                     product_type=product.product_type,
+                    quantity_step=product.quantity_step,
                     price=product.price,
                     old_price=old_price,
                     discount_amount=item_discount,

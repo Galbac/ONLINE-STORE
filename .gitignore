@@ -15,6 +15,7 @@ dist/
 downloads/
 eggs/
 media/
+backups/
 .eggs/
 lib/
 lib64/

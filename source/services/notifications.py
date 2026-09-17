@@ -41,7 +41,7 @@ class EmailService:
         await asyncio.to_thread(self._send_email_notification, email_message)
 
     def _send_email_notification(self, message: EmailMessage) -> None:
-        with smtplib.SMTP(settings.email_notifications.host, settings.email_notifications.port) as smtp:
+        with smtplib.SMTP(settings.email_notifications.host, settings.email_notifications.port, timeout=10) as smtp:
             if settings.email_notifications.use_tls:
                 smtp.starttls()
             if settings.email_notifications.username:

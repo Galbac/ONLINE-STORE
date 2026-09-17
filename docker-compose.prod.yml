@@ -1,4 +1,32 @@
 services:
+  nginx:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DOMAIN_NAME: ${DOMAIN_NAME:-localhost}
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/templates:/etc/nginx/templates:ro
+      - certbot_conf:/etc/letsencrypt
+      - certbot_www:/var/www/certbot
+    depends_on:
+      - api
+    networks:
+      - grocery_store_prod
+
+  certbot:
+    image: certbot/certbot:v3.1.0
+    restart: unless-stopped
+    volumes:
+      - certbot_conf:/etc/letsencrypt
+      - certbot_www:/var/www/certbot
+    entrypoint: "/bin/sh -c 'trap exit TERM; while :; do certbot renew --webroot -w /var/www/certbot --quiet && docker kill -s HUP $$(docker ps -q -f name=nginx) 2>/dev/null || true; sleep 12h & wait $${!}; done'"
+    networks:
+      - grocery_store_prod
+
   api:
     image: grocerystore-api-prod
     build:
@@ -13,9 +41,14 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-grocery_store}
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
-    ports:
-      - "8000:8000"
+      MEDIA_ROOT: /app/media
+      MEDIA_URL: /media
+    expose:
+      - "8000"
+    volumes:
+      - media_prod_data:/app/media
     restart: unless-stopped
+    stop_grace_period: 30s
     depends_on:
       postgres:
         condition: service_healthy
@@ -31,6 +64,7 @@ services:
     volumes:
       - postgres_prod_data:/var/lib/postgresql/data
     restart: unless-stopped
+    stop_grace_period: 30s
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 10s
@@ -39,8 +73,30 @@ services:
     networks:
       - grocery_store_prod
 
+  db_backup:
+    image: ${POSTGRES_IMAGE:-public.ecr.aws/docker/library/postgres:16-alpine}
+    restart: unless-stopped
+    environment:
+      PGPASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-grocery_store}
+      BACKUP_INTERVAL_HOURS: ${BACKUP_INTERVAL_HOURS:-6}
+      BACKUP_KEEP_DAYS: ${BACKUP_KEEP_DAYS:-14}
+    volumes:
+      - ./scripts/backup_runner.sh:/backup_runner.sh:ro
+      - ./backups/postgres:/backups
+    entrypoint: ["/bin/sh", "/backup_runner.sh"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - grocery_store_prod
+
 volumes:
   postgres_prod_data:
+  media_prod_data:
+  certbot_conf:
+  certbot_www:
 
 networks:
   grocery_store_prod:

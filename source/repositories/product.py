@@ -948,6 +948,8 @@ class ProductRepository:
             discount_percent=calculate_discount_percent(price=product.price, old_price=product.old_price),
             unit=product.unit,
             product_type=product.product_type,
+            min_quantity=product.min_quantity,
+            quantity_step=product.quantity_step,
             is_available=product.is_available,
             stock_display=build_stock_display(
                 is_available=product.is_available,

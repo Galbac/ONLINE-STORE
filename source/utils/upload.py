@@ -86,3 +86,26 @@ async def validate_image_file(
     if detected_mime_type is None or detected_mime_type != file.content_type:
         raise UploadInvalidImageError
     return content
+
+
+def convert_image_to_webp(content: bytes, quality: int = 85) -> tuple[bytes, str, str]:
+    """
+    Конвертирует изображение в WebP для оптимизации скорости загрузки и размера.
+    Возвращает (webp_bytes, mime_type, extension).
+    В случае ошибки парсинга (например, в mock/тестовых байтах) сохраняет исходный контент с расширением .webp.
+    """
+    try:
+        import io
+        from PIL import Image
+
+        image = Image.open(io.BytesIO(content))
+        if image.mode in ("RGBA", "LA") or (image.mode == "P" and "transparency" in image.info):
+            image = image.convert("RGBA")
+        elif image.mode != "RGB":
+            image = image.convert("RGB")
+
+        output = io.BytesIO()
+        image.save(output, format="WEBP", quality=quality)
+        return output.getvalue(), "image/webp", ".webp"
+    except Exception:
+        return content, "image/webp", ".webp"

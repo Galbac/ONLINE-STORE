@@ -255,7 +255,7 @@ async def test_admin_upload_image_local_success_creates_record() -> None:
 
     assert response.id == 1001
     assert response.stored_filename.startswith("product/")
-    assert response.stored_filename.endswith(".png")
+    assert response.stored_filename.endswith(".webp")
     assert response.original_filename == "apple.png"
     assert repository.created_payload["storage_type"] == "local"
     assert repository.created_payload["uploaded_by"] == 1

@@ -139,7 +139,8 @@ def build_discount(
     created_date=None,
     **extra,
 ):
-    created_date = created_date or datetime(2026, 5, 12, 10, 0, 0) + timedelta(minutes=discount_id)
+    now = datetime.now(settings.tz)
+    created_date = created_date or now - timedelta(days=5) + timedelta(minutes=discount_id)
     return SimpleNamespace(
         id=discount_id,
         name=name,
@@ -150,8 +151,8 @@ def build_discount(
         is_deleted=False,
         deleted_at=extra.get("deleted_at"),
         deleted_by=extra.get("deleted_by"),
-        starts_at=extra.get("starts_at", datetime(2026, 5, 1, 0, 0, 0)),
-        ends_at=extra.get("ends_at", datetime(2026, 5, 31, 23, 59, 59)),
+        starts_at=extra.get("starts_at", now - timedelta(days=10)),
+        ends_at=extra.get("ends_at", now + timedelta(days=30)),
         created_date=created_date,
         updated_date=extra.get("updated_date", created_date),
         applicable_product_id=extra.get("applicable_product_id"),

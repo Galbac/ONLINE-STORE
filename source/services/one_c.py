@@ -45,7 +45,13 @@ from source.schemas.pydantic.one_c import (
 )
 from source.services.admin_auth import STAFF_ROLES
 from source.utils.query_hash import build_query_hash
-from source.utils.upload import detect_mime_type, generate_safe_filename, get_file_extension, validate_file_size
+from source.utils.upload import (
+    convert_image_to_webp,
+    detect_mime_type,
+    generate_safe_filename,
+    get_file_extension,
+    validate_file_size,
+)
 from source.utils.slug import generate_slug, normalize_slug
 
 
@@ -1298,14 +1304,15 @@ class ProductImageSyncService:
         if extension not in settings.media.allowed_image_extension_set:
             raise ValueError("Расширение изображения не поддерживается")
 
+        webp_content, mime_type, extension = convert_image_to_webp(content)
         stored_filename = generate_safe_filename(extension=extension, entity_type="product")
-        saved_url, storage_type = await storage_service.save_file(stored_filename=stored_filename, content=content)
+        saved_url, storage_type = await storage_service.save_file(stored_filename=stored_filename, content=webp_content)
         upload = await upload_repository.create(
             session=session,
             original_filename=filename,
             stored_filename=stored_filename,
             mime_type=mime_type,
-            size=len(content),
+            size=len(webp_content),
             storage_type=storage_type,
             url=saved_url,
             entity_type="product",

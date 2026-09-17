@@ -10,6 +10,9 @@ class StoreSettings(IdBigIntPkMixin, CreateUpdateMixin, Base):
     __tablename__ = "store_settings"
 
     shop_name: Mapped[str] = mapped_column(String(255), default="Супермаркет", server_default="Супермаркет", nullable=False)
+    legal_name: Mapped[str | None] = mapped_column(String(255), default="ИП Победа", server_default="ИП Победа")
+    inn: Mapped[str | None] = mapped_column(String(12), default="000000000000", server_default="000000000000")
+    ogrn: Mapped[str | None] = mapped_column(String(15), default="000000000000000", server_default="000000000000000")
     phone: Mapped[str | None] = mapped_column(String(32), default="+79990000000", server_default="+79990000000")
     email: Mapped[str | None] = mapped_column(String(255), default="info@example.com", server_default="info@example.com")
     address: Mapped[str | None] = mapped_column(String(500), default="Москва, ул. Тверская, 10", server_default="Москва, ул. Тверская, 10")

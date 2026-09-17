@@ -108,6 +108,8 @@ class ProductShortResponse(BaseModel):
     discount_percent: int | None = None
     unit: str
     product_type: str
+    min_quantity: Decimal = Decimal("1")
+    quantity_step: Decimal = Decimal("1")
     is_available: bool
     stock_display: str
     category: ProductCategoryShortResponse | None = None

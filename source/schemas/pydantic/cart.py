@@ -22,6 +22,7 @@ class CartItemResponse(BaseModel):
     quantity: Decimal
     unit: str
     product_type: str | None = None
+    quantity_step: Decimal = Decimal("1")
     price: Decimal
     old_price: Decimal | None = None
     discount_amount: Decimal = Decimal("0")

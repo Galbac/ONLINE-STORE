@@ -487,7 +487,7 @@ def build_product(
         is_active=is_active,
         is_deleted=is_deleted,
         popularity=popularity,
-        created_at=created_at or datetime(2026, 5, 12, 10, 0, 0, tzinfo=UTC),
+        created_at=created_at or datetime.now(UTC) - timedelta(days=2),
         description=description,
         search_keywords=search_keywords,
         meta_title=meta_title,
@@ -1522,16 +1522,23 @@ async def test_discounted_cache_invalidates_on_discount_change() -> None:
 
 @pytest.mark.asyncio
 async def test_get_new_products_success() -> None:
+    now = datetime.now(UTC)
     response = await execute_get_new_products(
         product_repository=FakeProductRepository(
             products=[
-                build_product(product_id=90, name="Груши сезонные", slug="grushi-sezonnye", category_id=11),
+                build_product(
+                    product_id=90,
+                    name="Груши сезонные",
+                    slug="grushi-sezonnye",
+                    category_id=11,
+                    created_at=now - timedelta(days=2),
+                ),
                 build_product(
                     product_id=91,
                     name="Старый товар",
                     slug="old-product",
                     category_id=11,
-                    created_at=datetime(2026, 1, 1, tzinfo=UTC),
+                    created_at=now - timedelta(days=60),
                 ),
             ],
         ),
@@ -1539,16 +1546,17 @@ async def test_get_new_products_success() -> None:
 
     assert response.total == 1
     assert response.items[0].id == 90
-    assert response.items[0].created_at == datetime(2026, 5, 12, 10, 0, 0, tzinfo=UTC)
+    assert response.items[0].created_at == now - timedelta(days=2)
 
 
 @pytest.mark.asyncio
 async def test_get_new_products_sort_created_at_desc() -> None:
+    now = datetime.now(UTC)
     response = await execute_get_new_products(
         product_repository=FakeProductRepository(
             products=[
-                build_product(product_id=1, name="Old", slug="old", category_id=11, created_at=datetime(2026, 5, 1, tzinfo=UTC)),
-                build_product(product_id=2, name="New", slug="new", category_id=11, created_at=datetime(2026, 5, 13, tzinfo=UTC)),
+                build_product(product_id=1, name="Old", slug="old", category_id=11, created_at=now - timedelta(days=10)),
+                build_product(product_id=2, name="New", slug="new", category_id=11, created_at=now - timedelta(days=1)),
             ],
         ),
         query=ProductNewQueryParams(days=30, in_stock=False),
@@ -1559,11 +1567,12 @@ async def test_get_new_products_sort_created_at_desc() -> None:
 
 @pytest.mark.asyncio
 async def test_get_new_products_limit_works() -> None:
+    now = datetime.now(UTC)
     response = await execute_get_new_products(
         product_repository=FakeProductRepository(
             products=[
-                build_product(product_id=1, name="A", slug="a", category_id=11, created_at=datetime(2026, 5, 13, tzinfo=UTC)),
-                build_product(product_id=2, name="B", slug="b", category_id=11, created_at=datetime(2026, 5, 12, tzinfo=UTC)),
+                build_product(product_id=1, name="A", slug="a", category_id=11, created_at=now - timedelta(days=1)),
+                build_product(product_id=2, name="B", slug="b", category_id=11, created_at=now - timedelta(days=2)),
             ],
         ),
         query=ProductNewQueryParams(limit=1, in_stock=False),
