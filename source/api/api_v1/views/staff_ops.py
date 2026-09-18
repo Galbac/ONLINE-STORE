@@ -15,7 +15,11 @@ from source.db.models.user import User
 from source.repositories.loyalty import LoyaltyRepository
 from source.repositories.order import OrderRepository
 from source.repositories.order_status_history import OrderStatusHistoryRepository
-from source.schemas.pydantic.order import AdminOrderListItemResponse, AdminOrderListResponse, OrderStatusResponse
+from source.schemas.pydantic.order import (
+    AdminOrderListItemResponse,
+    AdminOrderListResponse,
+    AdminOrderStatusResponse,
+)
 from source.services.loyalty import LoyaltyService
 from source.services.notifications import TelegramNotificationService
 
@@ -41,7 +45,7 @@ async def get_orders_for_assembly(
     return AdminOrderListResponse(items=items, total=len(items), page=1, limit=100, pages=1 if items else 0)
 
 
-@router.post("/orders/{order_id}/start-assembly", response_model=OrderStatusResponse, status_code=status.HTTP_200_OK)
+@router.post("/orders/{order_id}/start-assembly", response_model=AdminOrderStatusResponse, status_code=status.HTTP_200_OK)
 @inject
 async def start_order_assembly(
     order_id: int,
@@ -50,7 +54,7 @@ async def start_order_assembly(
     order_repository: FromDishka[OrderRepository] = None,
     order_status_history_repository: FromDishka[OrderStatusHistoryRepository] = None,
     commiter: FromDishka[Commiter] = None,
-) -> OrderStatusResponse:
+) -> AdminOrderStatusResponse:
     order = await order_repository.get_by_id(session=session, order_id=order_id)
     if order is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Заказ не найден")
@@ -68,10 +72,15 @@ async def start_order_assembly(
         changed_by=current_user.id,
     )
     await commiter.commit()
-    return OrderStatusResponse.model_validate(order)
+    return AdminOrderStatusResponse(
+        id=order.id,
+        order_number=order.order_number,
+        status=order.status,
+        updated_at=order.updated_date,
+    )
 
 
-@router.post("/orders/{order_id}/complete-assembly", response_model=OrderStatusResponse, status_code=status.HTTP_200_OK)
+@router.post("/orders/{order_id}/complete-assembly", response_model=AdminOrderStatusResponse, status_code=status.HTTP_200_OK)
 @inject
 async def complete_order_assembly(
     order_id: int,
@@ -80,7 +89,7 @@ async def complete_order_assembly(
     order_repository: FromDishka[OrderRepository] = None,
     order_status_history_repository: FromDishka[OrderStatusHistoryRepository] = None,
     commiter: FromDishka[Commiter] = None,
-) -> OrderStatusResponse:
+) -> AdminOrderStatusResponse:
     order = await order_repository.get_by_id(session=session, order_id=order_id)
     if order is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Заказ не найден")
@@ -98,7 +107,12 @@ async def complete_order_assembly(
         changed_by=current_user.id,
     )
     await commiter.commit()
-    return OrderStatusResponse.model_validate(order)
+    return AdminOrderStatusResponse(
+        id=order.id,
+        order_number=order.order_number,
+        status=order.status,
+        updated_at=order.updated_date,
+    )
 
 
 @router.get("/orders/courier/queue", response_model=AdminOrderListResponse, status_code=status.HTTP_200_OK)
@@ -123,7 +137,7 @@ async def get_courier_orders_queue(
     return AdminOrderListResponse(items=items, total=len(items), page=1, limit=100, pages=1 if items else 0)
 
 
-@router.post("/orders/{order_id}/take-delivery", response_model=OrderStatusResponse, status_code=status.HTTP_200_OK)
+@router.post("/orders/{order_id}/take-delivery", response_model=AdminOrderStatusResponse, status_code=status.HTTP_200_OK)
 @inject
 async def take_order_delivery(
     order_id: int,
@@ -133,7 +147,7 @@ async def take_order_delivery(
     order_status_history_repository: FromDishka[OrderStatusHistoryRepository] = None,
     telegram_service: FromDishka[TelegramNotificationService] = None,
     commiter: FromDishka[Commiter] = None,
-) -> OrderStatusResponse:
+) -> AdminOrderStatusResponse:
     order = await order_repository.get_by_id(session=session, order_id=order_id)
     if order is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Заказ не найден")
@@ -163,10 +177,15 @@ async def take_order_delivery(
             except Exception:
                 pass
 
-    return OrderStatusResponse.model_validate(order)
+    return AdminOrderStatusResponse(
+        id=order.id,
+        order_number=order.order_number,
+        status=order.status,
+        updated_at=order.updated_date,
+    )
 
 
-@router.post("/orders/{order_id}/mark-delivered", response_model=OrderStatusResponse, status_code=status.HTTP_200_OK)
+@router.post("/orders/{order_id}/mark-delivered", response_model=AdminOrderStatusResponse, status_code=status.HTTP_200_OK)
 @inject
 async def mark_order_delivered(
     order_id: int,
@@ -178,7 +197,7 @@ async def mark_order_delivered(
     loyalty_service: FromDishka[LoyaltyService] = None,
     telegram_service: FromDishka[TelegramNotificationService] = None,
     commiter: FromDishka[Commiter] = None,
-) -> OrderStatusResponse:
+) -> AdminOrderStatusResponse:
     order = await order_repository.get_by_id(session=session, order_id=order_id)
     if order is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Заказ не найден")
@@ -222,7 +241,12 @@ async def mark_order_delivered(
             except Exception:
                 pass
 
-    return OrderStatusResponse.model_validate(order)
+    return AdminOrderStatusResponse(
+        id=order.id,
+        order_number=order.order_number,
+        status=order.status,
+        updated_at=order.updated_date,
+    )
 
 
 @router.get("/orders/export")

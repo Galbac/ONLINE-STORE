@@ -563,7 +563,8 @@ async def get_product_recommendations(
     if product is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Товар не найден")
 
-    similar_params = ProductSimilarQueryParams(limit=limit)
+    limit_count = limit.default if hasattr(limit, "default") else limit
+    similar_params = ProductSimilarQueryParams(limit=int(limit_count))
     items = await product_repository.get_similar_active(
         session=session,
         product_id=product_id,
