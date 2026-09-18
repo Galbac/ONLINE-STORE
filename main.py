@@ -7,6 +7,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
+
 from source.api.routers.http import router as http_router
 from source.config.logging import setup_app_logging, setup_uvicorn_logging
 from source.config.settings import settings
@@ -41,6 +43,7 @@ def create_app() -> FastAPI:
         title=settings.names.title,
         lifespan=lifespan,
     )
+    app.add_middleware(ProxyHeadersMiddleware, trusted_hosts="*")
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.middleware.cors_origins,

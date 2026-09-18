@@ -27,6 +27,24 @@ services:
     networks:
       - grocery_store_prod
 
+  frontend:
+    image: grocerystore-front-prod
+    build:
+      context: ../GroceryStore-front
+      dockerfile: Dockerfile
+      target: runner
+    environment:
+      NODE_ENV: production
+      API_INTERNAL_URL: http://api:8000
+      NEXT_PUBLIC_API_URL: https://${DOMAIN_NAME:-localhost}
+    expose:
+      - "3000"
+    restart: unless-stopped
+    depends_on:
+      - api
+    networks:
+      - grocery_store_prod
+
   api:
     image: grocerystore-api-prod
     build:
@@ -41,6 +59,7 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-grocery_store}
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       MEDIA_ROOT: /app/media
       MEDIA_URL: /media
     expose:
@@ -52,6 +71,22 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - grocery_store_prod
+
+  redis:
+    image: redis:7.4-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_prod_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
     networks:
       - grocery_store_prod
 
@@ -94,6 +129,7 @@ services:
 
 volumes:
   postgres_prod_data:
+  redis_prod_data:
   media_prod_data:
   certbot_conf:
   certbot_www:
