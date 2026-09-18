@@ -19,6 +19,13 @@ class OrderCreateRequest(BaseModel):
     delivery_time_slot_id: int | None = Field(default=None, gt=0)
     comment: str | None = Field(default=None, max_length=500)
     use_points: int = Field(default=0, ge=0)
+    leave_at_door: bool = False
+    dont_ring_doorbell: bool = False
+    substitution_policy: str = Field(default="call", pattern="^(call|replace|remove)$")
+    apartment: str | None = Field(default=None, max_length=50)
+    entrance: str | None = Field(default=None, max_length=50)
+    floor: str | None = Field(default=None, max_length=50)
+    intercom: str | None = Field(default=None, max_length=50)
 
     @field_validator("customer_name", "comment", mode="before")
     @classmethod

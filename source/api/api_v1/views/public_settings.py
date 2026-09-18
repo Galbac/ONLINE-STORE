@@ -27,4 +27,7 @@ async def get_public_store_settings(
         online_payment_enabled=store_settings.online_payment_enabled,
         pay_on_delivery_enabled=store_settings.pay_on_delivery_enabled,
         maintenance_mode=store_settings.maintenance_mode,
+        promo_codes_enabled=store_settings.promo_codes_enabled,
+        referral_program_enabled=store_settings.referral_program_enabled,
+        loyalty_program_enabled=store_settings.loyalty_program_enabled,
     )

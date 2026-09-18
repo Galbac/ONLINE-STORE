@@ -731,6 +731,9 @@ class OrderService:
                 customer_phone=data.customer_phone,
                 customer_email=str(data.customer_email) if data.customer_email is not None else None,
                 comment=data.comment,
+                leave_at_door=getattr(data, "leave_at_door", False),
+                dont_ring_doorbell=getattr(data, "dont_ring_doorbell", False),
+                substitution_policy=getattr(data, "substitution_policy", "call"),
                 sync_status="pending",
                 items_count=len(cart_items),
             )

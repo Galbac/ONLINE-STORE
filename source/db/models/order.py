@@ -2,7 +2,7 @@ from decimal import Decimal
 
 from datetime import date, datetime
 
-from sqlalchemy import Date, DateTime, ForeignKey, Numeric, String, Text
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Numeric, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from source.db.models.base import Base
@@ -45,6 +45,9 @@ class Order(IdBigIntPkMixin, CreateUpdateMixin, Base):
     customer_email: Mapped[str | None] = mapped_column(String(255))
     comment: Mapped[str | None] = mapped_column(Text)
     internal_comment: Mapped[str | None] = mapped_column(Text)
+    leave_at_door: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false", nullable=False)
+    dont_ring_doorbell: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false", nullable=False)
+    substitution_policy: Mapped[str] = mapped_column(String(50), default="call", server_default="call", nullable=False)
     cancel_reason: Mapped[str | None] = mapped_column(Text)
     cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     cancelled_by: Mapped[str | None] = mapped_column(String(50))

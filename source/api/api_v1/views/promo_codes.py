@@ -21,6 +21,7 @@ from source.repositories.cart import CartRepository
 from source.repositories.cart_item import CartItemRepository
 from source.repositories.product import ProductRepository
 from source.repositories.promo_code import PromoCodeRepository, PromoCodeUsageRepository
+from source.repositories.settings import SettingsRepository
 from source.schemas.pydantic.promo_code import PromoCodeApplyRequest, PromoCodeApplyResponse, PromoCodeCheckRequest, PromoCodeCheckResponse
 from source.services.cart import CartCalculatorService, CartService
 from source.services.cart_cache import CartCacheService
@@ -40,7 +41,12 @@ async def check_promo_code(
     promo_code_service: FromDishka[PromoCodeService] = None,
     promo_code_repository: FromDishka[PromoCodeRepository] = None,
     promo_code_usage_repository: FromDishka[PromoCodeUsageRepository] = None,
+    settings_repository: FromDishka[SettingsRepository] = None,
 ) -> PromoCodeCheckResponse:
+    if settings_repository is not None:
+        store_settings, _ = await settings_repository.get_or_create_default(session=session)
+        if not store_settings.promo_codes_enabled:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Промокоды временно отключены администратором")
     try:
         current_user = None
         if authorization:
@@ -85,7 +91,12 @@ async def apply_promo_code(
     product_repository: FromDishka[ProductRepository] = None,
     promo_code_repository: FromDishka[PromoCodeRepository] = None,
     promo_code_usage_repository: FromDishka[PromoCodeUsageRepository] = None,
+    settings_repository: FromDishka[SettingsRepository] = None,
 ) -> PromoCodeApplyResponse:
+    if settings_repository is not None:
+        store_settings, _ = await settings_repository.get_or_create_default(session=session)
+        if not store_settings.promo_codes_enabled:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Промокоды временно отключены администратором")
     try:
         cart = await cart_service.apply_promo_code(
             session=session,

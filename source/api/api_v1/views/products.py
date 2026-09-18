@@ -10,6 +10,10 @@ from source.errors.product import ProductNotFoundError
 from source.repositories.category import CategoryRepository
 from source.repositories.product import ProductRepository
 from source.repositories.product_image import ProductImageRepository
+from source.repositories.stock_alert import StockAlertRepository
+from source.common.commiter import Commiter
+from source.schemas.pydantic.recommendation import ProductRecommendationResponse
+from source.schemas.pydantic.stock_alert import StockAlertSubscribeRequest, StockAlertSubscribeResponse
 from source.schemas.pydantic.product import (
     ProductDetailQueryParams,
     ProductDetailResponse,
@@ -302,6 +306,24 @@ async def get_search_suggestions(
 
 
 @router.get(
+    "/products/search/popular",
+    response_model=list[str],
+    status_code=status.HTTP_200_OK,
+)
+async def get_popular_searches() -> list[str]:
+    return [
+        "Фрукты и ягоды",
+        "Молоко фермерское",
+        "Сыр твердый",
+        "Свежий хлеб",
+        "Мясо и птица",
+        "Кофе зерновой",
+        "Авокадо Хасс",
+        "Без сахара",
+    ]
+
+
+@router.get(
     "/products/{product_id}/similar",
     response_model=ProductSimilarResponse,
     status_code=status.HTTP_200_OK,
@@ -492,3 +514,63 @@ async def get_products(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Категория не найдена",
         ) from error
+
+
+@router.post(
+    "/products/{product_id}/subscribe-stock",
+    response_model=StockAlertSubscribeResponse,
+    status_code=status.HTTP_200_OK,
+)
+@inject
+async def subscribe_to_stock_alert(
+    product_id: int,
+    body: StockAlertSubscribeRequest,
+    session: FromDishka[AsyncSession] = None,
+    product_repository: FromDishka[ProductRepository] = None,
+    stock_alert_repository: FromDishka[StockAlertRepository] = None,
+    commiter: FromDishka[Commiter] = None,
+) -> StockAlertSubscribeResponse:
+    product = await product_repository.get_by_id(session=session, product_id=product_id)
+    if product is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Товар не найден")
+
+    await stock_alert_repository.create_alert(
+        session=session,
+        product_id=product_id,
+        email=body.email,
+        phone=body.phone,
+    )
+    await commiter.commit()
+    return StockAlertSubscribeResponse(
+        message="Вы успешно подписались на уведомление о поступлении товара",
+        product_id=product_id,
+    )
+
+
+@router.get(
+    "/products/{product_id}/recommendations",
+    response_model=ProductRecommendationResponse,
+    status_code=status.HTTP_200_OK,
+)
+@inject
+async def get_product_recommendations(
+    product_id: int,
+    limit: int = Query(default=4, ge=1, le=12),
+    session: FromDishka[AsyncSession] = None,
+    product_repository: FromDishka[ProductRepository] = None,
+) -> ProductRecommendationResponse:
+    product = await product_repository.get_by_id(session=session, product_id=product_id)
+    if product is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Товар не найден")
+
+    similar_params = ProductSimilarQueryParams(limit=limit)
+    items = await product_repository.get_similar_active(
+        session=session,
+        product_id=product_id,
+        category_id=product.category_id,
+        query=similar_params,
+    )
+    return ProductRecommendationResponse(
+        product_id=product_id,
+        items=items,
+    )

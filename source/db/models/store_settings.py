@@ -20,3 +20,6 @@ class StoreSettings(IdBigIntPkMixin, CreateUpdateMixin, Base):
     online_payment_enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true", nullable=False)
     pay_on_delivery_enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true", nullable=False)
     maintenance_mode: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false", nullable=False)
+    promo_codes_enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true", nullable=False)
+    referral_program_enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true", nullable=False)
+    loyalty_program_enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true", nullable=False)

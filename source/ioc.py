@@ -47,6 +47,7 @@ from source.repositories.product_image import ProductImageRepository
 from source.repositories.product_price_history import ProductPriceHistoryRepository
 from source.repositories.product_review import ProductReviewRepository
 from source.repositories.promo_code import PromoCodeCategoryRepository, PromoCodeProductRepository, PromoCodeRepository, PromoCodeUsageRepository
+from source.repositories.stock_alert import StockAlertRepository
 from source.repositories.stock_movement import StockMovementRepository
 from source.repositories.settings import SettingsRepository
 from source.repositories.user import UserRepository
@@ -708,6 +709,10 @@ class AppProvider(Provider):
     )
     product_review_repository = provide(
         ProductReviewRepository,
+        scope=Scope.REQUEST,
+    )
+    stock_alert_repository = provide(
+        StockAlertRepository,
         scope=Scope.REQUEST,
     )
     banner_service = provide(

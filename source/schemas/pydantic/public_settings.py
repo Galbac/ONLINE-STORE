@@ -13,3 +13,6 @@ class PublicStoreSettingsResponse(BaseModel):
     online_payment_enabled: bool = True
     pay_on_delivery_enabled: bool = True
     maintenance_mode: bool = False
+    promo_codes_enabled: bool = True
+    referral_program_enabled: bool = True
+    loyalty_program_enabled: bool = True
