@@ -202,7 +202,10 @@ async def search_products(
     limit: int = Query(default=settings.products.list_default_limit, ge=1, le=settings.products.list_max_limit),
     category_id: int | None = Query(default=None, ge=1),
     in_stock: bool | None = None,
+    min_price: Decimal | None = Query(default=None, ge=0),
+    max_price: Decimal | None = Query(default=None, ge=0),
     has_discount: bool | None = None,
+    product_type: ProductType | None = None,
     sort: ProductSearchSort = "relevance",
     session: FromDishka[AsyncSession] = None,
     redis_service: FromDishka[RedisService] = None,
@@ -226,10 +229,18 @@ async def search_products(
                 limit=limit,
                 category_id=category_id,
                 in_stock=in_stock,
+                min_price=min_price,
+                max_price=max_price,
                 has_discount=has_discount,
+                product_type=product_type,
                 sort=sort,
             ),
         )
+    except ValueError as error:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(error),
+        ) from error
     except CategoryNotFoundError as error:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

@@ -346,6 +346,12 @@ class ProductRepository:
             statement = statement.where(
                 (Product.old_price.is_(None)) | (Product.old_price <= Product.price),
             )
+        if query.min_price is not None:
+            statement = statement.where(Product.price >= query.min_price)
+        if query.max_price is not None:
+            statement = statement.where(Product.price <= query.max_price)
+        if query.product_type is not None:
+            statement = statement.where(Product.product_type == query.product_type)
         return statement
 
     def _apply_search_sort(self, statement, *, query: ProductSearchQueryParams):

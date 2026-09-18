@@ -46,7 +46,10 @@ class ProductSearchQueryParams(BaseModel):
     limit: int = Field(default=24, ge=1, le=100)
     category_id: int | None = Field(default=None, ge=1)
     in_stock: bool | None = None
+    min_price: Decimal | None = Field(default=None, ge=0)
+    max_price: Decimal | None = Field(default=None, ge=0)
     has_discount: bool | None = None
+    product_type: ProductType | None = None
     sort: ProductSearchSort = "relevance"
 
     @model_validator(mode="after")
@@ -54,6 +57,8 @@ class ProductSearchQueryParams(BaseModel):
         self.q = self.q.strip()
         if len(self.q) < 2:
             raise ValueError("q must contain at least 2 characters")
+        if self.min_price is not None and self.max_price is not None and self.min_price > self.max_price:
+            raise ValueError("min_price must be less than or equal to max_price")
         return self
 
     @property
