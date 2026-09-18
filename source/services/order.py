@@ -563,6 +563,8 @@ class OrderService:
         delivery_cache_service=None,
         delivery_time_slot_service=None,
         delivery_time_slot_repository=None,
+        loyalty_service=None,
+        loyalty_repository=None,
     ) -> OrderCreateResponse:
         if not user.is_active or user.is_deleted:
             raise InactiveUserError
@@ -694,6 +696,19 @@ class OrderService:
             delivery_price=delivery_price,
         )
 
+        if getattr(data, "use_points", 0) > 0 and loyalty_service is not None and loyalty_repository is not None:
+            max_points = max(0, int(final_price) - 1)
+            points_to_spend = min(data.use_points, max_points)
+            if points_to_spend > 0:
+                deducted = await loyalty_service.write_off_points(
+                    session=session,
+                    loyalty_repository=loyalty_repository,
+                    commiter=commiter,
+                    user_id=user.id,
+                    points_to_spend=points_to_spend,
+                )
+                final_price = max(Decimal("1.00"), final_price - Decimal(deducted))
+
         try:
             order = await order_repository.create(
                 session=session,
@@ -791,6 +806,14 @@ class OrderService:
             telegram_service=telegram_service,
             order=order,
         )
+        if getattr(user, "telegram_chat_id", None) and telegram_service is not None:
+            try:
+                await telegram_service.send_message(
+                    chat_id=user.telegram_chat_id,
+                    message=f"🛒 Ваш заказ #{order.order_number} на сумму {order.final_price} ₽ успешно оформлен!",
+                )
+            except Exception:
+                pass
         return OrderCreateResponse(
             id=order.id,
             order_number=order.order_number,

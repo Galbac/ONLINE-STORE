@@ -32,8 +32,10 @@ from source.repositories.address import AddressRepository
 from source.repositories.cart import CartRepository
 from source.repositories.cart_item import CartItemRepository
 from source.repositories.delivery_time_slot import DeliveryTimeSlotRepository
+from source.repositories.loyalty import LoyaltyRepository
 from source.repositories.order import OrderRepository
 from source.repositories.order_item import OrderItemRepository
+from source.repositories.order_status_history import OrderStatusHistoryRepository
 from source.repositories.payment import PaymentRepository
 from source.repositories.pickup_point import PickupPointRepository
 from source.repositories.product import ProductRepository
@@ -50,10 +52,13 @@ from source.schemas.pydantic.order import (
     RepeatOrderRequest,
     RepeatOrderResponse,
 )
+from source.schemas.pydantic.order_tracking import OrderTrackingResponse
+from source.services.order_tracking import OrderTrackingService
 from source.services.cart import CartCalculatorService, CartService
 from source.services.cart_cache import CartCacheService
 from source.services.delivery import DeliveryService, DeliveryTimeSlotService
 from source.services.delivery_cache import DeliveryCacheService
+from source.services.loyalty import LoyaltyService
 from source.services.notifications import EmailService, NotificationService, TelegramNotificationService
 from source.services.one_c import OneCIntegrationService
 from source.services.order import OrderService
@@ -135,6 +140,30 @@ async def get_order_status(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Заказ не найден") from error
     except OrderAccessDeniedError as error:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Заказ принадлежит другому пользователю") from error
+
+
+@router.get("/orders/{order_id}/tracking", response_model=OrderTrackingResponse, status_code=status.HTTP_200_OK)
+@inject
+async def get_order_tracking(
+    order_id: int,
+    current_user: User = Depends(get_current_user),
+    session: FromDishka[AsyncSession] = None,
+    order_repository: FromDishka[OrderRepository] = None,
+    order_status_history_repository: FromDishka[OrderStatusHistoryRepository] = None,
+    order_tracking_service: FromDishka[OrderTrackingService] = None,
+) -> OrderTrackingResponse:
+    if order_id <= 0:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Неверный order_id")
+    tracking = await order_tracking_service.get_tracking(
+        session=session,
+        order_repository=order_repository,
+        order_status_history_repository=order_status_history_repository,
+        user=current_user,
+        order_id=order_id,
+    )
+    if tracking is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Заказ не найден")
+    return tracking
 
 
 @router.post("/orders/{order_id}/repeat", response_model=RepeatOrderResponse, status_code=status.HTTP_200_OK)
@@ -331,6 +360,8 @@ async def create_order(
     notification_service: FromDishka[NotificationService] = None,
     email_service: FromDishka[EmailService] = None,
     telegram_service: FromDishka[TelegramNotificationService] = None,
+    loyalty_repository: FromDishka[LoyaltyRepository] = None,
+    loyalty_service: FromDishka[LoyaltyService] = None,
 ) -> OrderCreateResponse:
     try:
         return await order_service.create_order(
@@ -365,6 +396,8 @@ async def create_order(
             notification_service=notification_service,
             email_service=email_service,
             telegram_service=telegram_service,
+            loyalty_service=loyalty_service,
+            loyalty_repository=loyalty_repository,
         )
     except InactiveUserError as error:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Пользователь заблокирован или удалён") from error

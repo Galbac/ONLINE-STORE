@@ -1,6 +1,7 @@
 from source.db.models.base import Base
 from source.db.models.admin_audit_log import AdminAuditLog
 from source.db.models.address import Address
+from source.db.models.banner import Banner
 from source.db.models.cart import Cart
 from source.db.models.cart_item import CartItem
 from source.db.models.category import Category
@@ -9,8 +10,10 @@ from source.db.models.delivery_time_slot import DeliveryTimeSlot
 from source.db.models.delivery_zone import DeliveryZone
 from source.db.models.discount import Discount
 from source.db.models.favorite import Favorite
+from source.db.models.feedback import Feedback
 from source.db.models.integration_log import IntegrationLog
 from source.db.models.integration_job import IntegrationJob
+from source.db.models.loyalty import LoyaltyAccount, LoyaltyTransaction
 from source.db.models.order import Order
 from source.db.models.order_item import OrderItem
 from source.db.models.order_status_history import OrderStatusHistory
@@ -22,6 +25,7 @@ from source.db.models.product import Product
 from source.db.models.product_availability_log import ProductAvailabilityLog
 from source.db.models.product_image import ProductImage
 from source.db.models.product_price_history import ProductPriceHistory
+from source.db.models.product_review import ProductReview
 from source.db.models.promo_code import PromoCode, PromoCodeUsage
 from source.db.models.refresh_token import RefreshToken
 from source.db.models.refund import Refund
@@ -33,6 +37,7 @@ from source.db.models.upload import Upload
 __all__ = (
     "Address",
     "AdminAuditLog",
+    "Banner",
     "Base",
     "Cart",
     "CartItem",
@@ -42,8 +47,11 @@ __all__ = (
     "DeliveryZone",
     "Discount",
     "Favorite",
+    "Feedback",
     "IntegrationLog",
     "IntegrationJob",
+    "LoyaltyAccount",
+    "LoyaltyTransaction",
     "Order",
     "OrderItem",
     "OrderStatusHistory",
@@ -57,6 +65,7 @@ __all__ = (
     "ProductAvailabilityLog",
     "ProductImage",
     "ProductPriceHistory",
+    "ProductReview",
     "PromoCode",
     "PromoCodeUsage",
     "RefreshToken",

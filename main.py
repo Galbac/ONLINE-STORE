@@ -18,7 +18,10 @@ from source.ioc import setup_di
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    settings.media.root.mkdir(parents=True, exist_ok=True)
+    try:
+        settings.media.root.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
     yield
     await db_helper.dispose()
     await app.state.dishka_container.close()
@@ -51,8 +54,15 @@ def create_app() -> FastAPI:
         allow_methods=settings.middleware.allow_methods,
         allow_headers=settings.middleware.allow_headers,
     )
-    settings.media.root.mkdir(parents=True, exist_ok=True)
-    app.mount(settings.media.url, CachedStaticFiles(directory=str(settings.media.root)), name="media")
+    try:
+        settings.media.root.mkdir(parents=True, exist_ok=True)
+        app.mount(settings.media.url, CachedStaticFiles(directory=str(settings.media.root)), name="media")
+    except OSError:
+        import tempfile
+        from pathlib import Path
+        fallback_dir = Path(tempfile.gettempdir()) / "grocery_media"
+        fallback_dir.mkdir(parents=True, exist_ok=True)
+        app.mount(settings.media.url, CachedStaticFiles(directory=str(fallback_dir)), name="media")
     app.include_router(http_router)
     fastapi_integration.setup_dishka(container, app)
     return app

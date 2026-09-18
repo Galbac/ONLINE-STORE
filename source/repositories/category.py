@@ -471,6 +471,27 @@ class CategoryRepository:
             current_category = categories_by_id.get(current_category.parent_id)
         return list(reversed(breadcrumbs))
 
+    async def search_by_name(
+        self,
+        *,
+        session: AsyncSession,
+        query: str,
+        limit: int = 4,
+    ) -> list[Category]:
+        pattern = f"%{query}%"
+        stmt = (
+            select(Category)
+            .where(
+                Category.is_active.is_(True),
+                Category.is_deleted.is_(False),
+                Category.name.ilike(pattern),
+            )
+            .order_by(Category.sort_order.asc(), Category.name.asc())
+            .limit(limit)
+        )
+        result = await session.execute(stmt)
+        return list(result.scalars().all())
+
     def _build_category_response(self, *, category: Category, products_count: int) -> CategoryShortResponse:
         return CategoryShortResponse(
             id=category.id,

@@ -18,6 +18,7 @@ class OrderCreateRequest(BaseModel):
     delivery_date: date | None = None
     delivery_time_slot_id: int | None = Field(default=None, gt=0)
     comment: str | None = Field(default=None, max_length=500)
+    use_points: int = Field(default=0, ge=0)
 
     @field_validator("customer_name", "comment", mode="before")
     @classmethod

@@ -30,6 +30,11 @@ from source.schemas.pydantic.product import (
     ProductSort,
     ProductType,
 )
+from source.schemas.pydantic.search_suggestions import (
+    SearchSuggestionsResponse,
+    SuggestionCategoryItem,
+    SuggestionProductItem,
+)
 from source.services.product import ProductService
 from source.services.product_cache import ProductCacheService
 from source.services.redis import RedisService
@@ -247,6 +252,53 @@ def _normalize_required_search_query(query: str | None) -> str:
             detail="Поисковый запрос слишком короткий",
         )
     return normalized_query
+
+
+@router.get(
+    "/products/search/suggestions",
+    response_model=SearchSuggestionsResponse,
+    status_code=status.HTTP_200_OK,
+)
+@inject
+async def get_search_suggestions(
+    q: str = Query(default="", max_length=100),
+    session: FromDishka[AsyncSession] = None,
+    product_repository: FromDishka[ProductRepository] = None,
+    category_repository: FromDishka[CategoryRepository] = None,
+) -> SearchSuggestionsResponse:
+    query_str = q.strip()
+    if len(query_str) < 2:
+        return SearchSuggestionsResponse(query=query_str, categories=[], products=[])
+
+    matching_categories = await category_repository.search_by_name(
+        session=session,
+        query=query_str,
+        limit=4,
+    )
+
+    search_params = ProductSearchQueryParams(q=query_str, limit=6, page=1)
+    matching_products = await product_repository.search_active(
+        session=session,
+        query=search_params,
+    )
+
+    return SearchSuggestionsResponse(
+        query=query_str,
+        categories=[
+            SuggestionCategoryItem(id=c.id, name=c.name, slug=c.slug)
+            for c in matching_categories
+        ],
+        products=[
+            SuggestionProductItem(
+                id=p.id,
+                name=p.name,
+                slug=p.slug,
+                price=p.price,
+                preview_image_url=p.preview_image_url,
+            )
+            for p in matching_products
+        ],
+    )
 
 
 @router.get(

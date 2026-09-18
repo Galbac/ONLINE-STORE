@@ -50,3 +50,4 @@ class User(IdBigIntPkMixin, CreateUpdateMixin, Base):
     unblocked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     unblocked_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), index=True)
     unblock_reason: Mapped[str | None] = mapped_column(Text)
+    telegram_chat_id: Mapped[str | None] = mapped_column(String(64), unique=True, index=True, nullable=True)

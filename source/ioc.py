@@ -18,6 +18,7 @@ from source.interactors.auth_register import AuthRegisterInteractor
 from source.interactors.auth_reset_password import AuthResetPasswordInteractor
 from source.repositories.address import AddressRepository
 from source.repositories.admin_audit_log import AdminAuditLogRepository
+from source.repositories.banner import BannerRepository
 from source.repositories.cart import CartRepository
 from source.repositories.cart_item import CartItemRepository
 from source.repositories.category import CategoryRepository
@@ -26,8 +27,10 @@ from source.repositories.delivery_time_slot import DeliveryTimeSlotRepository
 from source.repositories.delivery_zone import DeliveryZoneRepository
 from source.repositories.discount import DiscountCategoryRepository, DiscountProductRepository, DiscountRepository
 from source.repositories.favorite import FavoriteRepository
+from source.repositories.feedback import FeedbackRepository
 from source.repositories.integration_job import IntegrationJobRepository
 from source.repositories.integration_log import IntegrationLogRepository
+from source.repositories.loyalty import LoyaltyRepository
 from source.repositories.order import OrderRepository
 from source.repositories.order_item import OrderItemRepository
 from source.repositories.order_status_history import OrderStatusHistoryRepository
@@ -42,6 +45,7 @@ from source.repositories.product import ProductRepository
 from source.repositories.product_availability_log import ProductAvailabilityLogRepository
 from source.repositories.product_image import ProductImageRepository
 from source.repositories.product_price_history import ProductPriceHistoryRepository
+from source.repositories.product_review import ProductReviewRepository
 from source.repositories.promo_code import PromoCodeCategoryRepository, PromoCodeProductRepository, PromoCodeRepository, PromoCodeUsageRepository
 from source.repositories.stock_movement import StockMovementRepository
 from source.repositories.settings import SettingsRepository
@@ -74,6 +78,7 @@ from source.services.admin_user import AdminUserService
 from source.services.admin_settings import AdminSettingsService
 from source.services.admin_upload import AdminUploadService
 from source.services.auth import AuthService
+from source.services.banner import BannerService
 from source.services.cart import CartCalculatorService, CartService
 from source.services.cart_cache import CartCacheService
 from source.services.category import CategoryService
@@ -88,18 +93,22 @@ from source.services.discount import DiscountService
 from source.services.discount_cache import DiscountCacheService
 from source.services.favorite import FavoriteService
 from source.services.favorite_cache import FavoriteCacheService
+from source.services.feedback import FeedbackService
 from source.services.health import HealthService
 from source.services.health_cache import HealthCacheService
+from source.services.loyalty import LoyaltyService
 from source.services.one_c import AdminOneCIntegrationService, CategorySyncService, ImageDownloadService, IntegrationJobService, IntegrationLogService, OneCClient, OneCImportService, OneCIntegrationService, OneCOrderPayloadBuilder, OneCOrderService, ProductImageSyncService, ProductPriceSyncService, ProductStockSyncService, ProductSyncService, SlugService
 from source.services.order import OrderService
 from source.services.order_cache import OrderCacheService
 from source.services.order_status import OrderStatusService
+from source.services.order_tracking import OrderTrackingService
 from source.services.payment_cache import PaymentCacheService
 from source.services.payment import PaymentProviderService, PaymentService
 from source.services.payment_webhook import PaymentWebhookService
 from source.services.password import PasswordService
 from source.services.product import ProductService
 from source.services.product_cache import ProductCacheService
+from source.services.review import ReviewService
 from source.services.profile import ProfileService
 from source.services.profile_cache import ProfileCacheService
 from source.services.redis import RedisLockService, RedisService
@@ -107,6 +116,7 @@ from source.services.refresh_token import RefreshTokenService
 from source.services.role import RoleService
 from source.services.stock import StockMovementService, StockService
 from source.services.promo_code import PromoCodeService
+from source.services.telegram_connect import TelegramConnectService
 from source.services.user import UserService
 from source.services.user_cache import UserCacheService
 from source.services.storage import StorageService
@@ -686,6 +696,46 @@ class AppProvider(Provider):
     )
     refresh_token_service = provide(
         RefreshTokenService,
+        scope=Scope.REQUEST,
+    )
+    banner_repository = provide(
+        BannerRepository,
+        scope=Scope.REQUEST,
+    )
+    feedback_repository = provide(
+        FeedbackRepository,
+        scope=Scope.REQUEST,
+    )
+    product_review_repository = provide(
+        ProductReviewRepository,
+        scope=Scope.REQUEST,
+    )
+    banner_service = provide(
+        BannerService,
+        scope=Scope.REQUEST,
+    )
+    feedback_service = provide(
+        FeedbackService,
+        scope=Scope.REQUEST,
+    )
+    review_service = provide(
+        ReviewService,
+        scope=Scope.REQUEST,
+    )
+    order_tracking_service = provide(
+        OrderTrackingService,
+        scope=Scope.REQUEST,
+    )
+    loyalty_repository = provide(
+        LoyaltyRepository,
+        scope=Scope.REQUEST,
+    )
+    loyalty_service = provide(
+        LoyaltyService,
+        scope=Scope.REQUEST,
+    )
+    telegram_connect_service = provide(
+        TelegramConnectService,
         scope=Scope.REQUEST,
     )
 
