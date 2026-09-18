@@ -310,7 +310,19 @@ async def get_search_suggestions(
     response_model=list[str],
     status_code=status.HTTP_200_OK,
 )
-async def get_popular_searches() -> list[str]:
+@inject
+async def get_popular_searches(
+    session: FromDishka[AsyncSession] = None,
+    category_repository: FromDishka[CategoryRepository] = None,
+) -> list[str]:
+    if category_repository is not None and session is not None:
+        try:
+            tree = await category_repository.get_active_tree(session=session)
+            if tree:
+                return [c.name for c in tree[:8]]
+        except Exception:
+            pass
+
     return [
         "Фрукты и ягоды",
         "Молоко фермерское",

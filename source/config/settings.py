@@ -32,6 +32,7 @@ class AppSettings(BaseSettings):
     health_storage_timeout_seconds: int = Field(default=5, alias="HEALTH_STORAGE_TIMEOUT_SECONDS")
     health_storage_check_write: bool = Field(default=False, alias="HEALTH_STORAGE_CHECK_WRITE")
     health_1c_cache_ttl_seconds: int = Field(default=30, alias="HEALTH_1C_CACHE_TTL_SECONDS")
+    sentry_dsn: str = Field(default="", alias="SENTRY_DSN")
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

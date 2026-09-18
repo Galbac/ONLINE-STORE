@@ -39,6 +39,17 @@ class CachedStaticFiles(StaticFiles):
 
 
 def create_app() -> FastAPI:
+    if getattr(settings.app, "sentry_dsn", None):
+        try:
+            import sentry_sdk
+            sentry_sdk.init(
+                dsn=settings.app.sentry_dsn,
+                environment=settings.app.environment,
+                traces_sample_rate=0.1,
+            )
+        except Exception:
+            pass
+
     container = setup_di()
     setup_app_logging()
     setup_uvicorn_logging()
@@ -65,6 +76,22 @@ def create_app() -> FastAPI:
         app.mount(settings.media.url, CachedStaticFiles(directory=str(fallback_dir)), name="media")
     app.include_router(http_router)
     fastapi_integration.setup_dishka(container, app)
+
+    @app.middleware("http")
+    async def track_metrics(request, call_next):
+        import time
+        from source.utils.metrics import metrics_collector
+        start = time.perf_counter()
+        response = await call_next(request)
+        duration = time.perf_counter() - start
+        metrics_collector.record_request(
+            method=request.method,
+            endpoint=request.url.path,
+            status_code=response.status_code,
+            duration=duration,
+        )
+        return response
+
     return app
 
 
@@ -85,3 +112,13 @@ async def validation_exception_handler(
 @app.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/metrics")
+async def get_prometheus_metrics():
+    from fastapi import Response
+    from source.utils.metrics import metrics_collector
+    return Response(
+        content=metrics_collector.export_prometheus(),
+        media_type="text/plain; version=0.0.4",
+    )

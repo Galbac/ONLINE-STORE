@@ -69,9 +69,11 @@ async def get_my_referral(
     # Deterministic friendly referral code based on user id
     code_number = (current_user.id * 7919) % 90000 + 10000
     ref_code = f"REF-{code_number}"
+    from source.config.settings import settings
+    base_url = settings.password_reset.frontend_url.replace("/reset-password", "").rstrip("/") if settings.password_reset.frontend_url else ""
     return ReferralResponse(
         code=ref_code,
-        link=f"https://grocerystore.ru/register?ref={ref_code}",
+        link=f"{base_url}/register?ref={ref_code}" if base_url else f"/register?ref={ref_code}",
         reward_amount=500,
         invited_count=0,
         earned_points=0,

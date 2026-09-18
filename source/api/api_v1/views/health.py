@@ -144,6 +144,26 @@ async def get_one_c_health(
         )
 
 
+@router.get("/health/redis")
+@inject
+async def get_redis_health(
+    redis_service: FromDishka[RedisService] = None,
+):
+    import time
+    if redis_service is None:
+        return JSONResponse(status_code=503, content={"status": "error", "message": "Redis service not available"})
+    try:
+        start = time.perf_counter()
+        await redis_service.set("healthcheck_ping", "ok", ttl_seconds=5)
+        val = await redis_service.get("healthcheck_ping")
+        latency = round((time.perf_counter() - start) * 1000, 2)
+        if val == "ok":
+            return {"status": "ok", "service": "redis", "latency_ms": latency}
+        return JSONResponse(status_code=503, content={"status": "error", "message": "Redis invalid response"})
+    except Exception as e:
+        return JSONResponse(status_code=503, content={"status": "error", "message": str(e)})
+
+
 def verify_internal_health_token(
     *,
     config: Settings,
