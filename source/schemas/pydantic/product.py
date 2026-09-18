@@ -22,6 +22,7 @@ class ProductListQueryParams(BaseModel):
     max_price: Decimal | None = Field(default=None, ge=0)
     has_discount: bool | None = None
     product_type: ProductType | None = None
+    tag: str | None = None
     sort: ProductSort | None = None
 
     @model_validator(mode="after")
@@ -50,6 +51,7 @@ class ProductSearchQueryParams(BaseModel):
     max_price: Decimal | None = Field(default=None, ge=0)
     has_discount: bool | None = None
     product_type: ProductType | None = None
+    tag: str | None = None
     sort: ProductSearchSort = "relevance"
 
     @model_validator(mode="after")

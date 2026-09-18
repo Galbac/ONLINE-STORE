@@ -292,6 +292,13 @@ class ProductRepository:
             )
         if query.product_type is not None:
             statement = statement.where(Product.product_type == query.product_type)
+        if query.tag is not None:
+            tag_val = query.tag.strip()
+            statement = statement.where(
+                Product.name.ilike(f"%{tag_val}%")
+                | Product.description.ilike(f"%{tag_val}%")
+                | Product.search_keywords.ilike(f"%{tag_val}%")
+            )
         return statement
 
     def _apply_sort(self, statement, *, sort: str | None):
@@ -352,6 +359,13 @@ class ProductRepository:
             statement = statement.where(Product.price <= query.max_price)
         if query.product_type is not None:
             statement = statement.where(Product.product_type == query.product_type)
+        if query.tag is not None:
+            tag_val = query.tag.strip()
+            statement = statement.where(
+                Product.name.ilike(f"%{tag_val}%")
+                | Product.description.ilike(f"%{tag_val}%")
+                | Product.search_keywords.ilike(f"%{tag_val}%")
+            )
         return statement
 
     def _apply_search_sort(self, statement, *, query: ProductSearchQueryParams):

@@ -206,6 +206,7 @@ async def search_products(
     max_price: Decimal | None = Query(default=None, ge=0),
     has_discount: bool | None = None,
     product_type: ProductType | None = None,
+    tag: str | None = None,
     sort: ProductSearchSort = "relevance",
     session: FromDishka[AsyncSession] = None,
     redis_service: FromDishka[RedisService] = None,
@@ -233,6 +234,7 @@ async def search_products(
                 max_price=max_price,
                 has_discount=has_discount,
                 product_type=product_type,
+                tag=tag,
                 sort=sort,
             ),
         )
@@ -504,6 +506,7 @@ async def get_products(
     max_price: Decimal | None = Query(default=None, ge=0),
     has_discount: bool | None = None,
     product_type: ProductType | None = None,
+    tag: str | None = None,
     sort: ProductSort | None = None,
     session: FromDishka[AsyncSession] = None,
     redis_service: FromDishka[RedisService] = None,
@@ -529,6 +532,7 @@ async def get_products(
                 max_price=max_price,
                 has_discount=has_discount,
                 product_type=product_type,
+                tag=tag,
                 sort=sort,
             ),
         )
