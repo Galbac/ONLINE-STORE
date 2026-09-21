@@ -768,9 +768,12 @@ class RedisProvider(Provider):
     async def provide_redis(
         self,
         config: Settings,
-    ) -> aioredis.Redis:
-        url = config.redis.url
-        return aioredis.from_url(url)
+    ) -> AsyncIterable[aioredis.Redis]:
+        client = aioredis.from_url(config.redis.url)
+        try:
+            yield client
+        finally:
+            await client.aclose()
 
 
 def setup_di() -> AsyncContainer:

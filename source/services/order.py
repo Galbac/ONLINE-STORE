@@ -1,5 +1,8 @@
+import logging
 from decimal import Decimal
 from datetime import datetime
+
+logger = logging.getLogger(__name__)
 
 from source.config.settings import settings
 from source.errors.auth import (
@@ -805,19 +808,23 @@ class OrderService:
         await product_cache_service.invalidate_by_stock_changes(redis_service=redis_service, products=products)
         if delivery_cache_service is not None:
             await delivery_cache_service.invalidate_time_slots(redis_service=redis_service)
-        await notification_service.notify_order_created(
-            email_service=email_service,
-            telegram_service=telegram_service,
-            order=order,
-        )
+        try:
+            await notification_service.notify_order_created(
+                email_service=email_service,
+                telegram_service=telegram_service,
+                order=order,
+            )
+        except Exception as exc:
+            logger.warning("Failed to dispatch order notification: %s", exc)
+
         if getattr(user, "telegram_chat_id", None) and telegram_service is not None:
             try:
                 await telegram_service.send_message(
                     chat_id=user.telegram_chat_id,
                     message=f"🛒 Ваш заказ #{order.order_number} на сумму {order.final_price} ₽ успешно оформлен!",
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("Failed to send telegram notification: %s", exc)
         return OrderCreateResponse(
             id=order.id,
             order_number=order.order_number,
