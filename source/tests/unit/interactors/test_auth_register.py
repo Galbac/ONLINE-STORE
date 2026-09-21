@@ -44,12 +44,16 @@ def build_request(
     phone: str = "+79990000000",
     email: str | None = "ivan@example.com",
     password: str = "StrongPassword123",
+    agreed_to_privacy: bool = True,
+    marketing_consent: bool = False,
 ) -> UserRegisterRequest:
     return UserRegisterRequest(
         name="Иван Иванов",
         phone=phone,
         email=email,
         password=password,
+        agreed_to_privacy=agreed_to_privacy,
+        marketing_consent=marketing_consent,
     )
 
 
@@ -100,6 +104,37 @@ async def test_register_user_with_existing_email() -> None:
             auth_service=AuthService(),
             data=build_request(),
         )
+
+
+@pytest.mark.asyncio
+async def test_register_user_requires_privacy_agreement() -> None:
+    with pytest.raises(ValueError, match="Необходимо дать согласие на обработку персональных данных"):
+        UserRegisterRequest(
+            name="Иван Иванов",
+            phone="+79990000000",
+            email="ivan@example.com",
+            password="StrongPassword123",
+            agreed_to_privacy=False,
+        )
+
+
+@pytest.mark.asyncio
+async def test_register_user_with_marketing_consent() -> None:
+    session = FakeSession(execute_results=[None, None])
+    interactor = AuthRegisterInteractor()
+
+    response = await interactor.execute(
+        session=session,
+        auth_service=AuthService(),
+        data=build_request(marketing_consent=True),
+    )
+
+    assert response.id == 1
+    user = session.added[0]
+    assert user.agreed_to_privacy is True
+    assert user.agreed_to_privacy_at is not None
+    assert user.marketing_consent is True
+    assert user.marketing_consent_at is not None
 
 
 def test_register_user_with_weak_password() -> None:

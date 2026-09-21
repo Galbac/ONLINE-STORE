@@ -81,6 +81,7 @@ class AuthService:
         if data.email is not None:
             await self._ensure_email_is_unique(session=session, email=str(data.email))
 
+        now = datetime.now(UTC)
         user = User(
             name=data.name,
             phone=data.phone,
@@ -88,6 +89,10 @@ class AuthService:
             password_hash=self.hash_password(data.password),
             role=UserRole.CUSTOMER,
             is_active=True,
+            agreed_to_privacy=data.agreed_to_privacy,
+            agreed_to_privacy_at=now if data.agreed_to_privacy else None,
+            marketing_consent=data.marketing_consent,
+            marketing_consent_at=now if data.marketing_consent else None,
         )
         session.add(user)
         await session.flush()

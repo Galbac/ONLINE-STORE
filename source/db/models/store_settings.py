@@ -23,3 +23,6 @@ class StoreSettings(IdBigIntPkMixin, CreateUpdateMixin, Base):
     promo_codes_enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true", nullable=False)
     referral_program_enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true", nullable=False)
     loyalty_program_enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true", nullable=False)
+    privacy_policy_url: Mapped[str | None] = mapped_column(String(500), default="/privacy", server_default="/privacy")
+    user_agreement_url: Mapped[str | None] = mapped_column(String(500), default="/offer", server_default="/offer")
+    personal_data_consent_url: Mapped[str | None] = mapped_column(String(500), default="/personal-data-consent", server_default="/personal-data-consent")

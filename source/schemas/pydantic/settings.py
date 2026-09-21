@@ -20,6 +20,9 @@ class AdminSettingsResponse(BaseModel):
     pay_on_delivery_enabled: bool
     min_order_amount: Decimal
     maintenance_mode: bool
+    privacy_policy_url: str | None = None
+    user_agreement_url: str | None = None
+    personal_data_consent_url: str | None = None
     updated_at: datetime | None = None
 
 
@@ -37,6 +40,9 @@ class AdminSettingsUpdateRequest(BaseModel):
     pay_on_delivery_enabled: bool | None = None
     min_order_amount: Decimal | None = None
     maintenance_mode: bool | None = None
+    privacy_policy_url: str | None = Field(default=None, max_length=500)
+    user_agreement_url: str | None = Field(default=None, max_length=500)
+    personal_data_consent_url: str | None = Field(default=None, max_length=500)
 
     @model_validator(mode="after")
     def normalize_and_validate(self) -> "AdminSettingsUpdateRequest":
@@ -51,7 +57,18 @@ class AdminSettingsUpdateRequest(BaseModel):
         ):
             if field in self.model_fields_set and getattr(self, field) is None:
                 raise ValueError(f"{field} cannot be null")
-        for field in ("shop_name", "phone", "email", "address", "working_hours", "default_city", "currency"):
+        for field in (
+            "shop_name",
+            "phone",
+            "email",
+            "address",
+            "working_hours",
+            "default_city",
+            "currency",
+            "privacy_policy_url",
+            "user_agreement_url",
+            "personal_data_consent_url",
+        ):
             value = getattr(self, field)
             if value is not None:
                 value = value.strip()

@@ -12,6 +12,7 @@ class UserMeUpdateRequest(BaseModel):
     name: str | None = Field(default=None, min_length=2, max_length=100)
     phone: str | None = Field(default=None, min_length=5, max_length=32)
     email: EmailStr | None = None
+    marketing_consent: bool | None = None
 
     @field_validator("name", "phone", mode="before")
     @classmethod
@@ -48,6 +49,10 @@ class UserMeResponse(BaseModel):
     role: UserRole
     is_active: bool
     is_verified: bool = False
+    agreed_to_privacy: bool = True
+    agreed_to_privacy_at: datetime | None = None
+    marketing_consent: bool = False
+    marketing_consent_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -89,6 +94,8 @@ class AdminUserListItemResponse(BaseModel):
     email: EmailStr | None
     is_active: bool
     is_blocked: bool
+    agreed_to_privacy: bool = True
+    marketing_consent: bool = False
     orders_count: int
     total_spent: Decimal
     created_at: datetime

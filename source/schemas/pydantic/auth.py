@@ -12,6 +12,21 @@ class UserRegisterRequest(BaseModel):
     phone: str = Field(min_length=5, max_length=32)
     email: EmailStr | None = None
     password: str = Field(min_length=8)
+    agreed_to_privacy: bool = Field(
+        default=True,
+        description="Согласие с политикой конфиденциальности и офертой (152-ФЗ)",
+    )
+    marketing_consent: bool = Field(
+        default=False,
+        description="Добровольное согласие на получение рекламных рассылок и акций (38-ФЗ)",
+    )
+
+    @field_validator("agreed_to_privacy")
+    @classmethod
+    def validate_agreed_to_privacy(cls, value: bool) -> bool:
+        if not value:
+            raise ValueError("Необходимо дать согласие на обработку персональных данных (152-ФЗ)")
+        return value
 
 
 class UserLoginRequest(BaseModel):

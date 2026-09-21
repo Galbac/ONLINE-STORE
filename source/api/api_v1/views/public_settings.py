@@ -30,4 +30,7 @@ async def get_public_store_settings(
         promo_codes_enabled=store_settings.promo_codes_enabled,
         referral_program_enabled=store_settings.referral_program_enabled,
         loyalty_program_enabled=store_settings.loyalty_program_enabled,
+        privacy_policy_url=store_settings.privacy_policy_url,
+        user_agreement_url=store_settings.user_agreement_url,
+        personal_data_consent_url=store_settings.personal_data_consent_url,
     )

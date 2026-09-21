@@ -51,3 +51,17 @@ class User(IdBigIntPkMixin, CreateUpdateMixin, Base):
     unblocked_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), index=True)
     unblock_reason: Mapped[str | None] = mapped_column(Text)
     telegram_chat_id: Mapped[str | None] = mapped_column(String(64), unique=True, index=True, nullable=True)
+    agreed_to_privacy: Mapped[bool] = mapped_column(
+        Boolean,
+        default=True,
+        server_default="true",
+        nullable=False,
+    )
+    agreed_to_privacy_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    marketing_consent: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+        server_default="false",
+        nullable=False,
+    )
+    marketing_consent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

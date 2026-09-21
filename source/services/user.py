@@ -104,6 +104,12 @@ class UserService:
         if name is not None:
             user.name = name
 
+        if "marketing_consent" in update_data:
+            marketing_consent = update_data["marketing_consent"]
+            if marketing_consent is not None:
+                user.marketing_consent = marketing_consent
+                user.marketing_consent_at = datetime.now(settings.tz) if marketing_consent else None
+
         user.updated_date = datetime.now(settings.tz)
         user = await user_repository.update(session=session, user=user)
 
@@ -276,6 +282,8 @@ class UserService:
             )
 
     def _build_user_me_response(self, user: User) -> UserMeResponse:
+        agreed_to_privacy = getattr(user, "agreed_to_privacy", None)
+        marketing_consent = getattr(user, "marketing_consent", None)
         return UserMeResponse(
             id=user.id,
             name=user.name,
@@ -284,6 +292,10 @@ class UserService:
             role=user.role,
             is_active=user.is_active,
             is_verified=False,
+            agreed_to_privacy=True if agreed_to_privacy is None else agreed_to_privacy,
+            agreed_to_privacy_at=getattr(user, "agreed_to_privacy_at", None),
+            marketing_consent=False if marketing_consent is None else marketing_consent,
+            marketing_consent_at=getattr(user, "marketing_consent_at", None),
             created_at=user.created_date,
             updated_at=user.updated_date,
         )

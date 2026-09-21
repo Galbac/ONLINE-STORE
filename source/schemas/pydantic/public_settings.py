@@ -16,3 +16,6 @@ class PublicStoreSettingsResponse(BaseModel):
     promo_codes_enabled: bool = True
     referral_program_enabled: bool = True
     loyalty_program_enabled: bool = True
+    privacy_policy_url: str | None = None
+    user_agreement_url: str | None = None
+    personal_data_consent_url: str | None = None

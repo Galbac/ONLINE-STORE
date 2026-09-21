@@ -425,6 +425,8 @@ class AdminUserService:
         )
 
     def _build_user_response(self, *, customer, stats) -> AdminUserListItemResponse:
+        agreed_to_privacy = getattr(customer, "agreed_to_privacy", None)
+        marketing_consent = getattr(customer, "marketing_consent", None)
         return AdminUserListItemResponse(
             id=customer.id,
             name=customer.name,
@@ -432,6 +434,8 @@ class AdminUserService:
             email=customer.email,
             is_active=customer.is_active,
             is_blocked=customer.is_blocked,
+            agreed_to_privacy=True if agreed_to_privacy is None else agreed_to_privacy,
+            marketing_consent=False if marketing_consent is None else marketing_consent,
             orders_count=stats.orders_count if stats is not None else 0,
             total_spent=stats.total_spent if stats is not None else Decimal("0.00"),
             created_at=customer.created_date,

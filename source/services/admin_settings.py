@@ -95,6 +95,9 @@ class AdminSettingsService:
             "online_payment_enabled",
             "pay_on_delivery_enabled",
             "maintenance_mode",
+            "privacy_policy_url",
+            "user_agreement_url",
+            "personal_data_consent_url",
         }
         delivery_fields = {
             "default_city",
@@ -186,5 +189,8 @@ class AdminSettingsService:
             pay_on_delivery_enabled=store_settings.pay_on_delivery_enabled,
             min_order_amount=delivery_settings.min_order_amount,
             maintenance_mode=store_settings.maintenance_mode,
+            privacy_policy_url=getattr(store_settings, "privacy_policy_url", "/privacy"),
+            user_agreement_url=getattr(store_settings, "user_agreement_url", "/offer"),
+            personal_data_consent_url=getattr(store_settings, "personal_data_consent_url", "/personal-data-consent"),
             updated_at=max(updated_at_values) if updated_at_values else None,
         )

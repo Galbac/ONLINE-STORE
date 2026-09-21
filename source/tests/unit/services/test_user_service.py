@@ -362,6 +362,31 @@ async def test_update_user_me_multiple_fields_success() -> None:
 
 
 @pytest.mark.asyncio
+async def test_update_user_me_marketing_consent_toggle() -> None:
+    user = build_user()
+    session = FakeSession(execute_results=[user])
+
+    response = await execute_update_current_user_profile(
+        session=session,
+        data=UserMeUpdateRequest(marketing_consent=True),
+    )
+
+    assert response.marketing_consent is True
+    assert user.marketing_consent is True
+    assert user.marketing_consent_at is not None
+
+    # Отключение согласия
+    session_disable = FakeSession(execute_results=[user])
+    response_disable = await execute_update_current_user_profile(
+        session=session_disable,
+        data=UserMeUpdateRequest(marketing_consent=False),
+    )
+    assert response_disable.marketing_consent is False
+    assert user.marketing_consent is False
+    assert user.marketing_consent_at is None
+
+
+@pytest.mark.asyncio
 async def test_update_user_me_without_fields() -> None:
     with pytest.raises(EmptyUserProfileUpdateError):
         await execute_update_current_user_profile(
