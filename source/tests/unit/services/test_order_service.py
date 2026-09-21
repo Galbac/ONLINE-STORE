@@ -102,7 +102,7 @@ class FakeProductRepository:
     def __init__(self, products) -> None:
         self.products = products
 
-    async def get_by_ids(self, *, session, product_ids: list[int]):
+    async def get_by_ids(self, *, session, product_ids: list[int], for_update: bool = False):
         return [product for product in self.products if product.id in product_ids]
 
     async def release_stock(self, *, session, products_by_id: dict, order_items: list):

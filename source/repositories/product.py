@@ -771,10 +771,14 @@ class ProductRepository:
         *,
         session: AsyncSession,
         product_ids: list[int],
+        for_update: bool = False,
     ) -> list[Product]:
         if not product_ids:
             return []
-        result = await session.execute(select(Product).where(Product.id.in_(product_ids)))
+        stmt = select(Product).where(Product.id.in_(product_ids))
+        if for_update:
+            stmt = stmt.with_for_update()
+        result = await session.execute(stmt)
         return list(result.scalars().all())
 
     async def release_stock(self, *, session: AsyncSession, products_by_id: dict[int, Product], order_items: list) -> list[Product]:

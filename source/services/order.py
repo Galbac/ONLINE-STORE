@@ -580,6 +580,7 @@ class OrderService:
         products = await product_repository.get_by_ids(
             session=session,
             product_ids=[item.product_id for item in cart_items],
+            for_update=True,
         )
         products_by_id = {product.id: product for product in products}
         unavailable_items = stock_service.validate_order_items(cart_items=cart_items, products_by_id=products_by_id)
