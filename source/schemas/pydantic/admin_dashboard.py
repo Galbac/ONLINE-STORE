@@ -178,10 +178,25 @@ class PromoCodeAnalyticsItem(BaseModel):
     total_discount: Decimal
 
 
+class StockAlertProductItem(BaseModel):
+    product_id: int
+    product_name: str
+    waiting_users_count: int
+
+
+class CourierRatingItem(BaseModel):
+    id: int
+    name: str
+    delivered_orders_count: int
+    tips_amount: Decimal = Decimal("0.00")
+    rating: float = 4.9
+
+
 class LoyaltyAnalyticsSummary(BaseModel):
     total_points_accrued: int
     total_points_spent: int
     active_accounts_count: int
+    points_payment_share_percent: float = Field(default=0.0)
 
 
 class ZoneSalesItem(BaseModel):
@@ -223,6 +238,7 @@ class InventorySummary(BaseModel):
     active_stock_alerts: int
     estimated_lost_revenue: Decimal = Field(default=Decimal("0.00"))
     turnover_days: int = 14
+    top_stock_alerts: list[StockAlertProductItem] = Field(default_factory=list)
 
 
 class RetentionCohortItem(BaseModel):
@@ -241,6 +257,8 @@ class OperationsAnalytics(BaseModel):
     cancel_rate_percent: float = 0.0
     csat_score: float = 4.8
     total_reviews_count: int = 0
+    total_tips_amount: Decimal = Field(default=Decimal("0.00"))
+    top_couriers: list[CourierRatingItem] = Field(default_factory=list)
 
 
 class FinancialSummary(BaseModel):
@@ -256,6 +274,7 @@ class FinancialSummary(BaseModel):
     total_discount: Decimal
     total_promo_discount: Decimal
     promo_depth_percent: float = Field(default=0.0)
+    acquiring_saved_amount: Decimal = Field(default=Decimal("0.00"))
     currency: str = "RUB"
 
 
