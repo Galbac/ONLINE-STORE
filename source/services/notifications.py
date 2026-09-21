@@ -437,12 +437,30 @@ class NotificationService:
         if web_push_service is not None and push_subscription_repository is not None and getattr(order, "user_id", None):
             order_id = getattr(order, "id", None)
             target_url = f"/profile/orders/{order_id}" if order_id else "/profile/orders"
+
+            status_str = str(getattr(order, "status", "")).lower()
+            if "deliver" in status_str and "ing" in status_str:
+                push_title = f"Курьер уже в пути к вам! 🚴"
+                push_body = f"Курьер везет заказ {order.order_number}. Примерное время прибытия: 20-30 мин."
+            elif "deliv" in status_str and "ed" in status_str:
+                push_title = f"Заказ {order.order_number} доставлен! 🍏"
+                push_body = "Приятного аппетита! Будем рады вашей оценке заказа в приложении."
+            elif "pickup" in status_str or "ready" in status_str:
+                push_title = f"Заказ {order.order_number} готов к выдаче! 📦"
+                push_body = "Ваш заказ собран и ожидает вас в пункте самовывоза."
+            elif "assembly" in status_str:
+                push_title = f"Сборка заказа {order.order_number} 🛍"
+                push_body = "Собираем самые свежие продукты для вашего заказа."
+            else:
+                push_title = title
+                push_body = message
+
             await web_push_service.send_to_user(
                 session=session,
                 push_subscription_repository=push_subscription_repository,
                 user_id=order.user_id,
-                title=title,
-                body=message,
+                title=push_title,
+                body=push_body,
                 url=target_url,
             )
 
@@ -490,10 +508,25 @@ class NotificationService:
         email_service: EmailService,
         telegram_service: TelegramNotificationService,
         order,
+        session=None,
+        web_push_service=None,
+        push_subscription_repository=None,
     ) -> None:
         if order.customer_email:
             await email_service.send_payment_success_email(email=order.customer_email, order_number=order.order_number)
         await telegram_service.notify_admin_payment_success(order_number=order.order_number, user_id=order.user_id)
+        if web_push_service is not None and push_subscription_repository is not None and session is not None and getattr(order, "user_id", None):
+            order_id = getattr(order, "id", None)
+            target_url = f"/profile/orders/{order_id}" if order_id else "/profile/orders"
+            amount_str = f" на сумму {order.total_amount} ₽" if getattr(order, "total_amount", None) else ""
+            await web_push_service.send_to_user(
+                session=session,
+                push_subscription_repository=push_subscription_repository,
+                user_id=order.user_id,
+                title="Оплата получена ✅",
+                body=f"Оплата{amount_str} по заказу {order.order_number} успешно завершена. Чек сформирован.",
+                url=target_url,
+            )
 
     async def notify_refund_created(
         self,
@@ -501,7 +534,107 @@ class NotificationService:
         email_service: EmailService,
         telegram_service: TelegramNotificationService,
         order,
+        session=None,
+        web_push_service=None,
+        push_subscription_repository=None,
     ) -> None:
         if order.customer_email:
             await email_service.send_refund_created_email(email=order.customer_email, order_number=order.order_number)
         await telegram_service.notify_admin_refund_created(order_number=order.order_number, user_id=order.user_id)
+        if web_push_service is not None and push_subscription_repository is not None and session is not None and getattr(order, "user_id", None):
+            order_id = getattr(order, "id", None)
+            target_url = f"/profile/orders/{order_id}" if order_id else "/profile/orders"
+            await web_push_service.send_to_user(
+                session=session,
+                push_subscription_repository=push_subscription_repository,
+                user_id=order.user_id,
+                title="Оформлен возврат средств",
+                body=f"По заказу {order.order_number} оформлен возврат. Средства поступят в соответствии со сроками вашего банка.",
+                url=target_url,
+            )
+
+    async def notify_stock_replenished(
+        self,
+        *,
+        session,
+        product,
+        stock_alerts,
+        web_push_service=None,
+        push_subscription_repository=None,
+    ) -> int:
+        notified = 0
+        for alert in stock_alerts:
+            if getattr(alert, "is_notified", False):
+                continue
+            if web_push_service is not None and push_subscription_repository is not None and getattr(alert, "user_id", None):
+                target_url = f"/product/{product.slug}" if getattr(product, "slug", None) else "/catalog"
+                await web_push_service.send_to_user(
+                    session=session,
+                    push_subscription_repository=push_subscription_repository,
+                    user_id=alert.user_id,
+                    title="Товар снова в наличии! 🥑",
+                    body=f"«{product.name}» снова доступен для заказа.",
+                    url=target_url,
+                )
+            alert.is_notified = True
+            notified += 1
+        return notified
+
+    async def notify_loyalty_points_credited(
+        self,
+        *,
+        session,
+        user_id: int,
+        points: int,
+        reason: str = "за покупку",
+        web_push_service=None,
+        push_subscription_repository=None,
+    ) -> None:
+        if web_push_service is not None and push_subscription_repository is not None and user_id:
+            await web_push_service.send_to_user(
+                session=session,
+                push_subscription_repository=push_subscription_repository,
+                user_id=user_id,
+                title="Начислены бонусы лояльности! 🎁",
+                body=f"Вам начислено +{points} бонусов {reason}. Используйте их при следующем заказе!",
+                url="/profile/loyalty",
+            )
+
+    async def notify_payment_failed(
+        self,
+        *,
+        session,
+        order,
+        web_push_service=None,
+        push_subscription_repository=None,
+    ) -> None:
+        if web_push_service is not None and push_subscription_repository is not None and getattr(order, "user_id", None):
+            order_id = getattr(order, "id", None)
+            target_url = f"/profile/orders/{order_id}" if order_id else "/profile/orders"
+            await web_push_service.send_to_user(
+                session=session,
+                push_subscription_repository=push_subscription_repository,
+                user_id=order.user_id,
+                title="Не удалось провести оплату ⚠️",
+                body=f"Оплата по заказу {order.order_number} не прошла. Пожалуйста, выберите другой способ оплаты в приложении.",
+                url=target_url,
+            )
+
+    async def notify_abandoned_cart(
+        self,
+        *,
+        session,
+        user_id: int,
+        items_count: int = 1,
+        web_push_service=None,
+        push_subscription_repository=None,
+    ) -> None:
+        if web_push_service is not None and push_subscription_repository is not None and user_id:
+            await web_push_service.send_to_user(
+                session=session,
+                push_subscription_repository=push_subscription_repository,
+                user_id=user_id,
+                title="Вы кое-что забыли в корзине 🛒",
+                body=f"Ваши свежие товары ({items_count} поз.) ждут вас. Завершите заказ, пока продукты есть в наличии!",
+                url="/cart",
+            )
