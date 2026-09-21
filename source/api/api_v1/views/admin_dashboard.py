@@ -101,6 +101,7 @@ from source.repositories.upload import UploadRepository
 from source.repositories.user import UserRepository
 from source.config.settings import Settings
 from source.schemas.pydantic.admin_dashboard import (
+    AdminAnalyticsResponse,
     AdminDashboardResponse,
     AdminLowStockQueryParams,
     AdminLowStockResponse,
@@ -3818,4 +3819,34 @@ async def get_admin_dashboard_sales(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Недостаточно прав") from error
     except InactiveUserError as error:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Пользователь заблокирован") from error
-    AdminProductImagesSortResponse,
+
+
+@router.get("/dashboard/analytics", response_model=AdminAnalyticsResponse, status_code=status.HTTP_200_OK)
+@inject
+async def get_admin_dashboard_analytics(
+    token_payload: dict = Depends(verify_access_token),
+    current_user: User = Depends(get_current_user),
+    period: str = Query(default="week", pattern="^(today|yesterday|week|month|year|all|custom)$"),
+    date_from: date | None = None,
+    date_to: date | None = None,
+    session: FromDishka[AsyncSession] = None,
+    redis_service: FromDishka[RedisService] = None,
+    admin_dashboard_service: FromDishka[AdminDashboardService] = None,
+    permission_service: FromDishka[PermissionService] = None,
+) -> AdminAnalyticsResponse:
+    if token_payload.get("token_type") != "access":
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь не авторизован")
+    try:
+        return await admin_dashboard_service.get_full_analytics(
+            session=session,
+            redis_service=redis_service,
+            user=current_user,
+            permission_service=permission_service,
+            period=period,
+            date_from=date_from,
+            date_to=date_to,
+        )
+    except AdminAuthAccessDeniedError as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Недостаточно прав") from error
+    except InactiveUserError as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Пользователь заблокирован") from error

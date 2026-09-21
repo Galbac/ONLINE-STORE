@@ -479,3 +479,18 @@ async def test_admin_dashboard_sales_cache_works() -> None:
 async def test_admin_dashboard_sales_no_permission_error() -> None:
     with pytest.raises(AdminAuthAccessDeniedError):
         await get_sales(user=build_user(role=UserRole.CONTENT_MANAGER))
+
+
+@pytest.mark.asyncio
+async def test_admin_dashboard_get_full_analytics_permission_denied() -> None:
+    service = AdminDashboardService()
+    user = SimpleNamespace(id=1, role=UserRole.CUSTOMER, is_active=True, is_deleted=False)
+    perm_service = PermissionService()
+    with pytest.raises(AdminAuthAccessDeniedError):
+        await service.get_full_analytics(
+            session=None,
+            redis_service=FakeRedisService(),
+            user=user,
+            permission_service=perm_service,
+            period="week",
+        )
