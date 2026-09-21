@@ -11,6 +11,18 @@ from source.schemas.pydantic.review import (
 )
 
 
+def mask_user_name(name: str | None) -> str:
+    if not name:
+        return "Покупатель"
+    parts = name.strip().split()
+    if len(parts) >= 2:
+        return f"{parts[0]} {parts[1][0]}."
+    first = parts[0]
+    if len(first) > 2:
+        return f"{first[:2]}***"
+    return first
+
+
 class ReviewService:
     async def get_product_reviews(
         self,
@@ -23,7 +35,7 @@ class ReviewService:
         items = []
         total_rating = 0
         for r in reviews:
-            user_name = r.user.name if r.user else "Покупатель"
+            user_name = mask_user_name(r.user.name) if r.user else "Покупатель"
             items.append(
                 ReviewResponse(
                     id=r.id,
@@ -55,7 +67,7 @@ class ReviewService:
         items = []
         total_rating = 0
         for r in reviews:
-            user_name = r.user.name if r.user else "Покупатель"
+            user_name = mask_user_name(r.user.name) if r.user else "Покупатель"
             items.append(
                 ReviewResponse(
                     id=r.id,
@@ -127,7 +139,7 @@ class ReviewService:
             return None
         updated = await review_repository.update(session=session, review=review, is_approved=is_approved)
         await commiter.commit()
-        user_name = updated.user.name if updated.user else "Покупатель"
+        user_name = mask_user_name(updated.user.name) if updated.user else "Покупатель"
         return ReviewResponse(
             id=updated.id,
             product_id=updated.product_id,
