@@ -52,7 +52,12 @@ class AdminUploadService:
             allowed_extensions=media_settings.allowed_image_extension_set,
             max_size_bytes=media_settings.max_image_size_mb * 1024 * 1024,
         )
-        webp_content, mime_type, extension = convert_image_to_webp(content)
+        webp_content, mime_type, extension = convert_image_to_webp(
+            content,
+            original_content_type=file.content_type,
+            quality=getattr(media_settings, "webp_quality", 82),
+            max_dimension=getattr(media_settings, "max_image_dimension", 1920),
+        )
         stored_filename = generate_safe_filename(extension=extension, entity_type=entity_type)
         url, storage_type = await storage_service.save_file(stored_filename=stored_filename, content=webp_content)
 
