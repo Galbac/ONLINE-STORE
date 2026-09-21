@@ -9,7 +9,7 @@ from source.utils.order import normalize_phone
 
 class OrderCreateRequest(BaseModel):
     delivery_type: str = Field(pattern="^(delivery|pickup)$")
-    payment_method: str = Field(pattern="^(online|on_delivery)$")
+    payment_method: str = Field(pattern="^(online|on_delivery|sbp)$")
     address_id: int | None = Field(default=None, gt=0)
     pickup_point_id: int | None = Field(default=None, gt=0)
     customer_name: str = Field(min_length=1, max_length=100)
@@ -136,7 +136,7 @@ class AdminOrderListQueryParams(BaseModel):
     q: str | None = Field(default=None, min_length=1, max_length=100)
     status: str | None = Field(default=None, max_length=50)
     payment_status: str | None = Field(default=None, max_length=50)
-    payment_method: Literal["online", "on_delivery"] | None = None
+    payment_method: Literal["online", "on_delivery", "sbp"] | None = None
     delivery_type: Literal["delivery", "pickup"] | None = None
     sync_status: str | None = Field(default=None, max_length=50)
     date_from: date | None = None

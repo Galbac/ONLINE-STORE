@@ -67,7 +67,7 @@ class OrderService:
             raise InactiveUserError
         if order.user_id != user.id:
             raise OrderAccessDeniedError
-        if order.payment_method != "online":
+        if order.payment_method not in {"online", "sbp"}:
             raise OrderPaymentMethodNotOnlineError
         if order.payment_status == "paid":
             raise OrderAlreadyPaidError
@@ -720,7 +720,7 @@ class OrderService:
                 address_id=address_id,
                 pickup_point_id=pickup_point_id,
                 order_number="TEMP",
-                status=settings.orders.online_payment_status if data.payment_method == "online" else settings.orders.default_status,
+                status=settings.orders.online_payment_status if data.payment_method in {"online", "sbp"} else settings.orders.default_status,
                 payment_method=data.payment_method,
                 payment_status="unpaid",
                 delivery_type=data.delivery_type,
@@ -787,7 +787,7 @@ class OrderService:
             await cart_repository.clear_promo_code(session=session, cart=cart)
             await one_c_integration_service.mark_order_pending_sync(order=order)
             payment_url = None
-            if data.payment_method == "online":
+            if data.payment_method in {"online", "sbp"}:
                 payment_url = await payment_service.create_payment(
                     payment_repository=payment_repository,
                     session=session,
