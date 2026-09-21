@@ -30,6 +30,27 @@ async def get_current_user(
     )
 
 
+@inject
+async def get_current_user_optional(
+    authorization: str | None = Header(default=None),
+    session: FromDishka[AsyncSession] = None,
+    redis_service: FromDishka[RedisService] = None,
+) -> User | None:
+    if not authorization:
+        return None
+    try:
+        payload = await resolve_access_token(
+            authorization=authorization,
+            redis_service=redis_service,
+        )
+        return await resolve_current_user_by_payload(
+            token_payload=payload,
+            session=session,
+        )
+    except HTTPException:
+        return None
+
+
 async def require_admin_or_manager(current_user: User = Depends(get_current_user)) -> User:
     if current_user.role not in {UserRole.ADMIN, UserRole.MANAGER}:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Недостаточно прав")

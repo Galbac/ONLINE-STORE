@@ -18,6 +18,7 @@ from source.db.models.order import Order
 from source.db.models.order_item import OrderItem
 from source.db.models.order_status_history import OrderStatusHistory
 from source.db.models.notification import Notification, NotificationLog, NotificationSettings
+from source.db.models.push_subscription import PushSubscription
 from source.db.models.payment import Payment
 from source.db.models.payment_webhook_log import PaymentWebhookLog
 from source.db.models.pickup_point import PickupPoint
@@ -59,6 +60,7 @@ __all__ = (
     "Notification",
     "NotificationLog",
     "NotificationSettings",
+    "PushSubscription",
     "Payment",
     "PaymentWebhookLog",
     "PickupPoint",

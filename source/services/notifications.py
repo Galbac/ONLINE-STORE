@@ -359,10 +359,24 @@ class NotificationService:
         email_service: EmailService,
         telegram_service: TelegramNotificationService,
         order,
+        session=None,
+        web_push_service=None,
+        push_subscription_repository=None,
     ) -> None:
         if order.customer_email:
             await email_service.send_order_created_email(email=order.customer_email, order_number=order.order_number)
         await telegram_service.notify_admin_order_created(order_number=order.order_number, user_id=order.user_id)
+        if web_push_service is not None and push_subscription_repository is not None and session is not None and getattr(order, "user_id", None):
+            order_id = getattr(order, "id", None)
+            target_url = f"/profile/orders/{order_id}" if order_id else "/profile/orders"
+            await web_push_service.send_to_user(
+                session=session,
+                push_subscription_repository=push_subscription_repository,
+                user_id=order.user_id,
+                title=f"Заказ {order.order_number} оформлен! 🎉",
+                body="Мы начали сборку продуктов. Скоро курьер отправится к вам.",
+                url=target_url,
+            )
 
     async def notify_order_cancelled(
         self,
@@ -370,10 +384,24 @@ class NotificationService:
         email_service: EmailService,
         telegram_service: TelegramNotificationService,
         order,
+        session=None,
+        web_push_service=None,
+        push_subscription_repository=None,
     ) -> None:
         if order.customer_email:
             await email_service.send_order_cancelled_email(email=order.customer_email, order_number=order.order_number)
         await telegram_service.notify_admin_order_cancelled(order_number=order.order_number, user_id=order.user_id)
+        if web_push_service is not None and push_subscription_repository is not None and session is not None and getattr(order, "user_id", None):
+            order_id = getattr(order, "id", None)
+            target_url = f"/profile/orders/{order_id}" if order_id else "/profile/orders"
+            await web_push_service.send_to_user(
+                session=session,
+                push_subscription_repository=push_subscription_repository,
+                user_id=order.user_id,
+                title=f"Заказ {order.order_number} отменен",
+                body="Заказ отменен. Если средства были списаны, они вернутся в ближайшее время.",
+                url=target_url,
+            )
 
     async def notify_order_status_changed(
         self,
@@ -383,6 +411,8 @@ class NotificationService:
         notification_repository,
         email_service: EmailService,
         telegram_service: TelegramNotificationService,
+        web_push_service=None,
+        push_subscription_repository=None,
     ) -> None:
         title = f"Статус заказа {order.order_number} изменён"
         message = f"Новый статус заказа {order.order_number}: {order.status}"
@@ -404,6 +434,17 @@ class NotificationService:
             user_id=order.user_id,
             status=order.status,
         )
+        if web_push_service is not None and push_subscription_repository is not None and getattr(order, "user_id", None):
+            order_id = getattr(order, "id", None)
+            target_url = f"/profile/orders/{order_id}" if order_id else "/profile/orders"
+            await web_push_service.send_to_user(
+                session=session,
+                push_subscription_repository=push_subscription_repository,
+                user_id=order.user_id,
+                title=title,
+                body=message,
+                url=target_url,
+            )
 
     async def notify_order_confirmed(
         self,
@@ -413,13 +454,17 @@ class NotificationService:
         notification_repository,
         email_service: EmailService,
         telegram_service: TelegramNotificationService,
+        web_push_service=None,
+        push_subscription_repository=None,
     ) -> None:
+        title = f"Заказ {order.order_number} подтверждён"
+        message = f"Ваш заказ {order.order_number} подтверждён."
         await notification_repository.create(
             session=session,
             user_id=order.user_id,
             type="order_status",
-            title=f"Заказ {order.order_number} подтверждён",
-            message=f"Ваш заказ {order.order_number} подтверждён.",
+            title=title,
+            message=message,
         )
         if order.customer_email:
             await email_service.send_order_confirmed_email(
@@ -427,6 +472,17 @@ class NotificationService:
                 order_number=order.order_number,
             )
         await telegram_service.notify_order_confirmed(order_number=order.order_number, user_id=order.user_id)
+        if web_push_service is not None and push_subscription_repository is not None and getattr(order, "user_id", None):
+            order_id = getattr(order, "id", None)
+            target_url = f"/profile/orders/{order_id}" if order_id else "/profile/orders"
+            await web_push_service.send_to_user(
+                session=session,
+                push_subscription_repository=push_subscription_repository,
+                user_id=order.user_id,
+                title=title,
+                body=message,
+                url=target_url,
+            )
 
     async def notify_payment_success(
         self,

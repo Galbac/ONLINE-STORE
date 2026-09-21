@@ -508,6 +508,24 @@ class MediaSettings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 
+class WebPushSettings(BaseSettings):
+    enabled: bool = Field(default=True, alias="WEB_PUSH_ENABLED")
+    vapid_public_key: str = Field(
+        default="BBwoTYeIudpeQuTLs1zYafblCN6uEnpT0J_l5dlld-pxCx4STX8wrhBecl7jTapCS6PWNcrl-y62P4dN5aMRHhs",
+        alias="VAPID_PUBLIC_KEY",
+    )
+    vapid_private_key: str = Field(
+        default="flOdlQVHInAGnm0cHNYYacuL2HmSiPRTjirHfSQgN_c",
+        alias="VAPID_PRIVATE_KEY",
+    )
+    vapid_claims_email: str = Field(
+        default="mailto:support@grocerystore.local",
+        alias="VAPID_CLAIMS_EMAIL",
+    )
+
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=(".env.example", ".env"),
@@ -526,6 +544,7 @@ class Settings(BaseSettings):
     smtp: SmtpSettings = SmtpSettings()
     email_notifications: EmailNotificationSettings = EmailNotificationSettings()
     telegram: TelegramSettings = TelegramSettings()
+    web_push: WebPushSettings = WebPushSettings()
     web: WebSettings = WebSettings()
     redis: RedisSettings = RedisSettings()
     password_reset: PasswordResetSettings = PasswordResetSettings()

@@ -35,6 +35,7 @@ from source.repositories.order import OrderRepository
 from source.repositories.order_item import OrderItemRepository
 from source.repositories.order_status_history import OrderStatusHistoryRepository
 from source.repositories.notification import NotificationLogRepository, NotificationRepository, NotificationSettingsRepository
+from source.repositories.push_subscription import PushSubscriptionRepository
 from source.repositories.payment import PaymentRepository
 from source.repositories.payment_webhook_log import PaymentWebhookLogRepository
 from source.repositories.refund import RefundRepository
@@ -85,6 +86,7 @@ from source.services.cart_cache import CartCacheService
 from source.services.category import CategoryService
 from source.services.category_cache import CategoryCacheService
 from source.services.notifications import EmailService, TelegramNotificationService
+from source.services.web_push import WebPushService
 from source.services.delivery_cache import DeliveryCacheService
 from source.services.notifications import NotificationService
 from source.services.notification_cache import NotificationCacheService
@@ -281,6 +283,10 @@ class AppProvider(Provider):
     )
     notification_settings_repository = provide(
         NotificationSettingsRepository,
+        scope=Scope.REQUEST,
+    )
+    push_subscription_repository = provide(
+        PushSubscriptionRepository,
         scope=Scope.REQUEST,
     )
     refund_repository = provide(
@@ -545,6 +551,10 @@ class AppProvider(Provider):
     )
     telegram_service = provide(
         TelegramNotificationService,
+        scope=Scope.REQUEST,
+    )
+    web_push_service = provide(
+        WebPushService,
         scope=Scope.REQUEST,
     )
     notification_service = provide(

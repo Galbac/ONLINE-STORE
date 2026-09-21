@@ -23,7 +23,8 @@ dependencies = [
     "uuid6 (>=2025.0.1,<2026.0.0)",
     "redis (>=7.4.0,<8.0.0)",
     "pillow (>=12.3.0,<13.0.0)",
-    "sentry-sdk[fastapi] (>=2.69.2,<3.0.0)"
+    "sentry-sdk[fastapi] (>=2.69.2,<3.0.0)",
+    "pywebpush (>=2.5.0,<3.0.0)"
 ]
 
 [dependency-groups]

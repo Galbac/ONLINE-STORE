@@ -17,6 +17,7 @@ from source.api.api_v1.views.profile import router as profile_router
 from source.api.api_v1.views.public_settings import router as public_settings_router
 from source.api.api_v1.views.loyalty import router as loyalty_router
 from source.api.api_v1.views.notifications import router as notifications_router
+from source.api.api_v1.views.push_notifications import router as push_notifications_router
 from source.api.api_v1.views.payments import router as payments_router
 from source.api.api_v1.views.promo_codes import router as promo_codes_router
 from source.api.api_v1.views.reviews import router as reviews_router
@@ -42,6 +43,7 @@ router.include_router(discounts_router)
 router.include_router(products_router)
 router.include_router(orders_router)
 router.include_router(notifications_router)
+router.include_router(push_notifications_router)
 router.include_router(payments_router)
 router.include_router(promo_codes_router)
 router.include_router(reviews_router)
