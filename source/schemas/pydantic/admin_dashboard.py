@@ -148,6 +148,27 @@ class TopProductItem(BaseModel):
     current_stock: Decimal
     unit: str
     abc_group: str = "A"
+    xyz_group: str = "X"
+
+
+class MarketBasketPairItem(BaseModel):
+    product_a: str
+    product_b: str
+    frequency: int
+
+
+class RfmSegmentationSummary(BaseModel):
+    vip_count: int = 0
+    regular_count: int = 0
+    at_risk_count: int = 0
+    newbies_count: int = 0
+
+
+class SubstitutionSplitItem(BaseModel):
+    policy: str
+    label: str
+    count: int
+    share_percent: float
 
 
 class PromoCodeAnalyticsItem(BaseModel):
@@ -204,8 +225,19 @@ class InventorySummary(BaseModel):
     turnover_days: int = 14
 
 
+class RetentionCohortItem(BaseModel):
+    cohort_name: str
+    users_count: int
+    m0: float = 100.0
+    m1: float = 0.0
+    m2: float = 0.0
+    m3: float = 0.0
+
+
 class OperationsAnalytics(BaseModel):
-    avg_delivery_minutes: int = 30
+    picking_minutes: int = 12
+    transit_minutes: int = 18
+    total_lifecycle_minutes: int = 30
     cancel_rate_percent: float = 0.0
     csat_score: float = 4.8
     total_reviews_count: int = 0
@@ -223,6 +255,7 @@ class FinancialSummary(BaseModel):
     aov_pickup: Decimal = Field(default=Decimal("0.00"))
     total_discount: Decimal
     total_promo_discount: Decimal
+    promo_depth_percent: float = Field(default=0.0)
     currency: str = "RUB"
 
 
@@ -245,6 +278,10 @@ class AdminAnalyticsResponse(BaseModel):
         )
     )
     operations: OperationsAnalytics = Field(default_factory=OperationsAnalytics)
+    market_basket: list[MarketBasketPairItem] = Field(default_factory=list)
+    rfm_segments: RfmSegmentationSummary = Field(default_factory=RfmSegmentationSummary)
+    retention_cohorts: list[RetentionCohortItem] = Field(default_factory=list)
+    substitution_split: list[SubstitutionSplitItem] = Field(default_factory=list)
     hourly_distribution: list[HourlySalesItem]
     customers: CustomerAnalytics
     inventory: InventorySummary
