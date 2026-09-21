@@ -12,7 +12,7 @@ from source.schemas.pydantic.review import (
 
 
 def mask_user_name(name: str | None) -> str:
-    if not name:
+    if not name or not name.strip():
         return "Покупатель"
     parts = name.strip().split()
     if len(parts) >= 2:
