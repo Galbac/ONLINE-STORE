@@ -22,6 +22,11 @@ from source.errors.auth import (
     RefreshTokenNotFoundError,
     RefreshTokenRateLimitExceededError,
     RefreshTokenUserNotFoundError,
+    RegisterEmailRequiredError,
+    RegisterOtpExpiredError,
+    RegisterOtpInvalidError,
+    RegisterOtpMaxAttemptsError,
+    RegisterOtpRateLimitError,
     UserEmailAlreadyExistsError,
     UserPhoneAlreadyExistsError,
 )
@@ -33,6 +38,7 @@ from source.interactors.auth_me import AuthMeInteractor
 from source.interactors.auth_refresh import AuthRefreshInteractor
 from source.interactors.auth_register import AuthRegisterInteractor
 from source.interactors.auth_reset_password import AuthResetPasswordInteractor
+from source.interactors.auth_send_register_otp import AuthSendRegisterOtpInteractor
 from source.schemas.pydantic.auth import (
     AuthResponse,
     ChangePasswordRequest,
@@ -43,6 +49,8 @@ from source.schemas.pydantic.auth import (
     RegisterAuthResponse,
     RefreshTokenRequest,
     ResetPasswordRequest,
+    SendRegisterOtpRequest,
+    SendRegisterOtpResponse,
     TokenPairResponse,
     UserLoginRequest,
     UserRegisterRequest,
@@ -101,6 +109,59 @@ async def get_me(
 
 
 @router.post(
+    "/register/send-otp",
+    response_model=SendRegisterOtpResponse,
+    status_code=status.HTTP_200_OK,
+    responses={
+        status.HTTP_400_BAD_REQUEST: {
+            "description": "Неверные входные данные.",
+        },
+        status.HTTP_409_CONFLICT: {
+            "description": "Пользователь с таким email или телефоном уже существует.",
+        },
+        status.HTTP_429_TOO_MANY_REQUESTS: {
+            "description": "Превышен лимит запросов кода.",
+        },
+    },
+)
+@inject
+async def send_register_otp(
+    request: Request,
+    body: SendRegisterOtpRequest,
+    session: FromDishka[AsyncSession],
+    auth_service: FromDishka[AuthService],
+    redis_service: FromDishka[RedisService],
+    email_service: FromDishka[EmailService],
+    auth_send_register_otp_interactor: FromDishka[AuthSendRegisterOtpInteractor],
+) -> SendRegisterOtpResponse:
+    client_ip = request.client.host if request.client else "127.0.0.1"
+    try:
+        return await auth_send_register_otp_interactor.execute(
+            session=session,
+            auth_service=auth_service,
+            redis_service=redis_service,
+            email_service=email_service,
+            data=body,
+            ip_address=client_ip,
+        )
+    except UserEmailAlreadyExistsError as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Пользователь с таким email уже существует",
+        ) from error
+    except UserPhoneAlreadyExistsError as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Пользователь с таким телефоном уже существует",
+        ) from error
+    except (PasswordResetRateLimitExceededError, RegisterOtpRateLimitError) as error:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Слишком много запросов кода. Пожалуйста, подождите 60 секунд",
+        ) from error
+
+
+@router.post(
     "/register",
     response_model=RegisterAuthResponse,
     status_code=status.HTTP_201_CREATED,
@@ -119,16 +180,30 @@ async def register_user(
     session: FromDishka[AsyncSession],
     commiter: FromDishka[Commiter],
     auth_service: FromDishka[AuthService],
+    redis_service: FromDishka[RedisService],
     auth_register_interactor: FromDishka[AuthRegisterInteractor],
 ) -> RegisterAuthResponse:
     try:
         response = await auth_register_interactor.execute(
             session=session,
             auth_service=auth_service,
+            redis_service=redis_service,
             data=body,
         )
         await commiter.commit()
         return response
+    except RegisterEmailRequiredError as error:
+        await commiter.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(error),
+        ) from error
+    except (RegisterOtpInvalidError, RegisterOtpExpiredError, RegisterOtpMaxAttemptsError) as error:
+        await commiter.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(error),
+        ) from error
     except UserPhoneAlreadyExistsError as error:
         await commiter.rollback()
         raise HTTPException(

@@ -2,7 +2,7 @@ from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 import hmac
 import json
-from secrets import token_urlsafe
+from secrets import randbelow, token_urlsafe
 from urllib.parse import urlencode
 from uuid import uuid4
 
@@ -33,6 +33,11 @@ from source.errors.auth import (
     RefreshTokenNotFoundError,
     RefreshTokenRateLimitExceededError,
     RefreshTokenUserNotFoundError,
+    RegisterEmailRequiredError,
+    RegisterOtpExpiredError,
+    RegisterOtpInvalidError,
+    RegisterOtpMaxAttemptsError,
+    RegisterOtpRateLimitError,
     UserEmailAlreadyExistsError,
     UserPhoneAlreadyExistsError,
 )
@@ -45,6 +50,8 @@ from source.schemas.pydantic.auth import (
     RegisterAuthResponse,
     ResetPasswordRequest,
     RefreshTokenRequest,
+    SendRegisterOtpRequest,
+    SendRegisterOtpResponse,
     TokenPairResponse,
     UserLoginRequest,
     UserRegisterRequest,
@@ -71,21 +78,115 @@ class AuthService:
     def verify_password(self, password: str, password_hash: str) -> bool:
         return self._password_context.verify(password, password_hash)
 
+    async def send_register_otp(
+        self,
+        *,
+        session: AsyncSession,
+        redis_service: RedisService,
+        email_service: EmailService,
+        data: SendRegisterOtpRequest,
+        ip_address: str,
+    ) -> SendRegisterOtpResponse:
+        email = str(data.email).strip().lower()
+        await self._ensure_email_is_unique(session=session, email=email)
+        if data.phone:
+            await self._ensure_phone_is_unique(session=session, phone=data.phone)
+
+        # Rate limiting by email and ip
+        email_key = f"register_otp:rate:email:{email}"
+        ip_key = f"register_otp:rate:ip:{ip_address}"
+        await self._check_password_reset_rate_limit(
+            redis_service=redis_service,
+            key=email_key,
+            limit=settings.register_otp.rate_limit_by_email,
+        )
+        await self._check_password_reset_rate_limit(
+            redis_service=redis_service,
+            key=ip_key,
+            limit=settings.register_otp.rate_limit_by_ip,
+        )
+
+        # Generate 4-digit code (1000 - 9999)
+        code = str(1000 + randbelow(9000))
+        code_key = f"register_otp:code:{email}"
+        attempts_key = f"register_otp:attempts:{email}"
+        ttl = settings.register_otp.otp_ttl_seconds
+
+        await redis_service.set(code_key, code, ttl_seconds=ttl)
+        await redis_service.set(attempts_key, "0", ttl_seconds=ttl)
+
+        await email_service.send_register_otp_email(email=email, code=code)
+
+        return SendRegisterOtpResponse(
+            message="Код подтверждения отправлен на вашу электронную почту",
+            email=email,
+            expires_in=ttl,
+            cooldown_seconds=60,
+        )
+
+    async def verify_register_otp(
+        self,
+        *,
+        redis_service: RedisService,
+        email: str,
+        otp_code: str,
+    ) -> None:
+        email = email.strip().lower()
+        code_key = f"register_otp:code:{email}"
+        attempts_key = f"register_otp:attempts:{email}"
+
+        stored_code = await redis_service.get(code_key)
+        if stored_code is None:
+            raise RegisterOtpExpiredError("Срок действия кода подтверждения истёк или код не был запрошен")
+
+        stored_code_str = self._decode_redis_value(stored_code)
+
+        attempts_val = await redis_service.get(attempts_key)
+        attempts = int(self._decode_redis_value(attempts_val)) if attempts_val else 0
+
+        if attempts >= 5:
+            await redis_service.delete(code_key)
+            await redis_service.delete(attempts_key)
+            raise RegisterOtpMaxAttemptsError("Превышено максимальное число попыток ввода кода. Запросите новый код")
+
+        if stored_code_str != otp_code.strip():
+            await redis_service.incr(attempts_key)
+            raise RegisterOtpInvalidError("Неверный проверочный код. Проверьте почту и повторите ввод")
+
+        # Code is valid, delete from redis to prevent replay
+        await redis_service.delete(code_key)
+        await redis_service.delete(attempts_key)
+
     async def register_user(
         self,
         *,
         session: AsyncSession,
         data: UserRegisterRequest,
+        redis_service: RedisService | None = None,
     ) -> RegisterAuthResponse:
         await self._ensure_phone_is_unique(session=session, phone=data.phone)
-        if data.email is not None:
-            await self._ensure_email_is_unique(session=session, email=str(data.email))
+
+        if not data.email:
+            raise RegisterEmailRequiredError("Электронная почта обязательна для регистрации")
+
+        email = str(data.email).strip().lower()
+        await self._ensure_email_is_unique(session=session, email=email)
+
+        if not data.otp_code:
+            raise RegisterOtpInvalidError("Требуется 4-значный проверочный код из email")
+
+        if redis_service is not None:
+            await self.verify_register_otp(
+                redis_service=redis_service,
+                email=email,
+                otp_code=data.otp_code,
+            )
 
         now = datetime.now(UTC)
         user = User(
             name=data.name,
             phone=data.phone,
-            email=str(data.email) if data.email is not None else None,
+            email=email,
             password_hash=self.hash_password(data.password),
             role=UserRole.CUSTOMER,
             is_active=True,

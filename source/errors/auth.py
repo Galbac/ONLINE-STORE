@@ -417,3 +417,24 @@ class RefundAmountExceedsAvailableError(Exception):
 
 class PaymentProviderRefundError(Exception):
     pass
+
+
+class RegisterOtpRateLimitError(Exception):
+    pass
+
+
+class RegisterOtpInvalidError(Exception):
+    pass
+
+
+class RegisterOtpExpiredError(Exception):
+    pass
+
+
+class RegisterOtpMaxAttemptsError(Exception):
+    pass
+
+
+class RegisterEmailRequiredError(Exception):
+    pass
+

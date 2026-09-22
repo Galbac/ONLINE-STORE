@@ -13,6 +13,7 @@ from source.api.api_v1.views.auth import (
     refresh_tokens,
     register_user,
     reset_password,
+    send_register_otp,
 )
 from source.db.models.choises.enum import UserRole
 from source.db.models.user import User
@@ -28,6 +29,8 @@ from source.schemas.pydantic.auth import (
     RefreshTokenRequest,
     RegisterAuthResponse,
     ResetPasswordRequest,
+    SendRegisterOtpRequest,
+    SendRegisterOtpResponse,
     UserLoginRequest,
     UserRegisterRequest,
     UserShortResponse,
@@ -121,6 +124,8 @@ async def test_register_user_success():
     body = UserRegisterRequest(
         name="Иван",
         phone="+79991234567",
+        email="ivan@example.com",
+        otp_code="1234",
         password="SecurePassword123!",
         agreed_to_privacy=True,
         marketing_consent=True,
@@ -131,12 +136,42 @@ async def test_register_user_success():
         session=AsyncMock(),
         commiter=commiter,
         auth_service=AsyncMock(),
+        redis_service=AsyncMock(),
         auth_register_interactor=interactor,
     )
 
     assert response.id == 1
     assert response.access_token == "access_token_123"
     assert commiter.commit.called
+
+
+# ---------------------------------------------------------
+# POST /auth/register/send-otp
+# ---------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_send_register_otp_success(fake_request):
+    interactor = AsyncMock()
+    interactor.execute.return_value = SendRegisterOtpResponse(
+        message="Код подтверждения отправлен на указанную почту",
+        email="ivan@example.com",
+        expires_in=600,
+        cooldown_seconds=60,
+    )
+    body = SendRegisterOtpRequest(email="ivan@example.com")
+
+    response = await unwrap(send_register_otp)(
+        request=fake_request,
+        body=body,
+        session=AsyncMock(),
+        auth_service=AsyncMock(),
+        redis_service=AsyncMock(),
+        email_service=AsyncMock(),
+        auth_send_register_otp_interactor=interactor,
+    )
+
+    assert response.email == "ivan@example.com"
+    assert response.expires_in == 600
 
 
 # ---------------------------------------------------------

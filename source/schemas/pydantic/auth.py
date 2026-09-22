@@ -7,11 +7,29 @@ from pydantic import TypeAdapter
 from source.db.models.choises.enum import UserRole
 
 
+class SendRegisterOtpRequest(BaseModel):
+    email: EmailStr
+    phone: str | None = None
+
+
+class SendRegisterOtpResponse(BaseModel):
+    message: str = "Код подтверждения отправлен на указанную почту"
+    email: EmailStr
+    expires_in: int = 600
+    cooldown_seconds: int = 60
+
+
 class UserRegisterRequest(BaseModel):
     name: str = Field(min_length=2, max_length=100)
     phone: str = Field(min_length=5, max_length=32)
-    email: EmailStr | None = None
+    email: EmailStr = Field(description="Электронная почта (обязательно для подтверждения через OTP)")
     password: str = Field(min_length=8)
+    otp_code: str = Field(
+        min_length=4,
+        max_length=4,
+        pattern=r"^\d{4}$",
+        description="4-значный OTP код подтверждения email",
+    )
     agreed_to_privacy: bool = Field(
         default=True,
         description="Согласие с политикой конфиденциальности и офертой (152-ФЗ)",

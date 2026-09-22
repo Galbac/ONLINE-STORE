@@ -23,6 +23,8 @@ from source.api.api_v1.views.promo_codes import router as promo_codes_router
 from source.api.api_v1.views.reviews import router as reviews_router
 from source.api.api_v1.views.staff_ops import router as staff_ops_router
 from source.api.api_v1.views.users import router as users_router
+from source.api.api_v1.views.legal_documents import router as legal_documents_router
+from source.api.api_v1.views.admin_legal_documents import router as admin_legal_documents_router
 from source.api.api_v1.views.uploads import router as uploads_router
 from source.config.settings import settings
 
@@ -55,3 +57,5 @@ router.include_router(profile_router)
 router.include_router(favorites_router)
 router.include_router(uploads_router)
 router.include_router(integration_router)
+router.include_router(legal_documents_router)
+router.include_router(admin_legal_documents_router)

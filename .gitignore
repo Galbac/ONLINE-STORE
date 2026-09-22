@@ -129,12 +129,41 @@ celerybeat.pid
 
 # Environments
 .env
+.env.*
+!.env.example
 .venv
 env/
 venv/
 ENV/
 env.bak/
 venv.bak/
+
+# Ruff
+.ruff_cache/
+
+# OS / Editors / AI
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+ehthumbs.db
+.vscode/
+.gemini/
+*.swp
+*.swo
+
+# Docker / DB Volumes
+postgres_data/
+redis_data/
+
+# SSL & Certbot
+certbot/conf/*
+!certbot/conf/.gitkeep
+*.pem
+*.key
+*.crt
 
 # Spyder project settings
 .spyderproject

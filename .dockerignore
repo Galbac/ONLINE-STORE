@@ -1,12 +1,62 @@
-.git
-.idea
-.venv
-__pycache__
+# Version control
+.git/
+.gitignore
+
+# Virtual environment & dependencies
+.venv/
+env/
+venv/
+ENV/
+build/
+dist/
+*.egg-info/
+__pycache__/
 *.py[cod]
-.pytest_cache
-.mypy_cache
-.ruff_cache
+*$py.class
+
+# Testing, typing & linters cache
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# IDEs & OS artifacts
+.idea/
+.vscode/
+.gemini/
+.DS_Store
+.DS_Store?
+._*
+Thumbs.db
+
+# Secrets & Environment
 .env
-postgres_data
-dist
-build
+.env.*
+!.env.example
+secrets/
+*.pem
+*.key
+*.crt
+
+# Persistent data, media & backups (should NOT be baked into image layers)
+media/
+backups/
+postgres_data/
+redis_data/
+certbot/
+
+# Service-specific configs (used in separate containers)
+nginx/
+prometheus/
+
+# Docker build configs
+Dockerfile*
+docker-compose*.yml
+.dockerignore
+
+# Documentation & AI prompts
+*.md
+docs/

@@ -201,6 +201,15 @@ class PasswordResetSettings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 
+class RegisterOtpSettings(BaseSettings):
+    otp_ttl_seconds: int = Field(default=300, alias="REGISTER_OTP_TTL_SECONDS")
+    rate_limit_by_email: int = Field(default=5, alias="REGISTER_OTP_RATE_LIMIT_BY_EMAIL")
+    rate_limit_by_ip: int = Field(default=15, alias="REGISTER_OTP_RATE_LIMIT_BY_IP")
+    rate_limit_window_seconds: int = Field(default=600, alias="REGISTER_OTP_RATE_LIMIT_WINDOW_SECONDS")
+
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+
 class ChangePasswordSettings(BaseSettings):
     rate_limit_by_user: int = Field(default=5, alias="CHANGE_PASSWORD_RATE_LIMIT_BY_USER")
     rate_limit_by_ip: int = Field(default=10, alias="CHANGE_PASSWORD_RATE_LIMIT_BY_IP")
@@ -548,6 +557,7 @@ class Settings(BaseSettings):
     web: WebSettings = WebSettings()
     redis: RedisSettings = RedisSettings()
     password_reset: PasswordResetSettings = PasswordResetSettings()
+    register_otp: RegisterOtpSettings = RegisterOtpSettings()
     change_password: ChangePasswordSettings = ChangePasswordSettings()
     auth_me: AuthMeSettings = AuthMeSettings()
     admin_auth: AdminAuthSettings = AdminAuthSettings()

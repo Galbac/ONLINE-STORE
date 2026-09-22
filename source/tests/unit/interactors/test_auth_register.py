@@ -44,6 +44,7 @@ def build_request(
     phone: str = "+79990000000",
     email: str | None = "ivan@example.com",
     password: str = "StrongPassword123",
+    otp_code: str | None = "1234",
     agreed_to_privacy: bool = True,
     marketing_consent: bool = False,
 ) -> UserRegisterRequest:
@@ -52,6 +53,7 @@ def build_request(
         phone=phone,
         email=email,
         password=password,
+        otp_code=otp_code,
         agreed_to_privacy=agreed_to_privacy,
         marketing_consent=marketing_consent,
     )
@@ -156,3 +158,46 @@ async def test_register_response_does_not_include_password_hash() -> None:
     response_data = response.model_dump()
     assert "password" not in response_data
     assert "password_hash" not in response_data
+
+
+@pytest.mark.asyncio
+async def test_register_user_without_email_fails() -> None:
+    with pytest.raises(ValidationError):
+        build_request(email=None)
+
+
+@pytest.mark.asyncio
+async def test_register_user_with_invalid_otp_fails() -> None:
+    from unittest.mock import AsyncMock
+    session = FakeSession()
+    interactor = AuthRegisterInteractor()
+    redis_service = AsyncMock()
+    redis_service.get.side_effect = lambda key: b"9999" if "code" in key else b"0"
+
+    with pytest.raises(Exception, match="Неверный проверочный код"):
+        await interactor.execute(
+            session=session,
+            auth_service=AuthService(),
+            redis_service=redis_service,
+            data=build_request(otp_code="1111"),
+        )
+
+
+@pytest.mark.asyncio
+async def test_register_user_with_valid_otp_succeeds() -> None:
+    from unittest.mock import AsyncMock
+    session = FakeSession()
+    interactor = AuthRegisterInteractor()
+    redis_service = AsyncMock()
+    redis_service.get.side_effect = lambda key: b"1234" if "code" in key else b"0"
+
+    response = await interactor.execute(
+        session=session,
+        auth_service=AuthService(),
+        redis_service=redis_service,
+        data=build_request(otp_code="1234"),
+    )
+
+    assert response.id == 1
+    assert response.email == "ivan@example.com"
+

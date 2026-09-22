@@ -16,6 +16,7 @@ from source.interactors.auth_me import AuthMeInteractor
 from source.interactors.auth_refresh import AuthRefreshInteractor
 from source.interactors.auth_register import AuthRegisterInteractor
 from source.interactors.auth_reset_password import AuthResetPasswordInteractor
+from source.interactors.auth_send_register_otp import AuthSendRegisterOtpInteractor
 from source.repositories.address import AddressRepository
 from source.repositories.admin_audit_log import AdminAuditLogRepository
 from source.repositories.banner import BannerRepository
@@ -51,6 +52,7 @@ from source.repositories.promo_code import PromoCodeCategoryRepository, PromoCod
 from source.repositories.stock_alert import StockAlertRepository
 from source.repositories.stock_movement import StockMovementRepository
 from source.repositories.settings import SettingsRepository
+from source.repositories.legal_document import LegalDocumentRepository
 from source.repositories.user import UserRepository
 from source.repositories.upload import UploadRepository
 from source.services.auth_cache import AuthCacheService
@@ -79,6 +81,7 @@ from source.services.admin_staff_cache import AdminStaffCacheService
 from source.services.admin_user import AdminUserService
 from source.services.admin_settings import AdminSettingsService
 from source.services.admin_upload import AdminUploadService
+from source.services.legal_document import LegalDocumentService
 from source.services.auth import AuthService
 from source.services.banner import BannerService
 from source.services.cart import CartCalculatorService, CartService
@@ -143,6 +146,10 @@ class AppProvider(Provider):
     )
     auth_register_interactor = provide(
         AuthRegisterInteractor,
+        scope=Scope.REQUEST,
+    )
+    auth_send_register_otp_interactor = provide(
+        AuthSendRegisterOtpInteractor,
         scope=Scope.REQUEST,
     )
     auth_login_interactor = provide(
@@ -351,6 +358,10 @@ class AppProvider(Provider):
     )
     settings_repository = provide(
         SettingsRepository,
+        scope=Scope.REQUEST,
+    )
+    legal_document_repository = provide(
+        LegalDocumentRepository,
         scope=Scope.REQUEST,
     )
     delivery_time_slot_repository = provide(
@@ -603,6 +614,10 @@ class AppProvider(Provider):
     )
     admin_settings_service = provide(
         AdminSettingsService,
+        scope=Scope.REQUEST,
+    )
+    legal_document_service = provide(
+        LegalDocumentService,
         scope=Scope.REQUEST,
     )
     settings_cache_service = provide(

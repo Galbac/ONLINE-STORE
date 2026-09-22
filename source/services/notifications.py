@@ -69,11 +69,123 @@ class EmailService:
 
         await asyncio.to_thread(self._send_message, message)
 
+    async def send_register_otp_email(
+        self,
+        *,
+        email: str,
+        code: str,
+    ) -> None:
+        from_email = settings.smtp.from_email or settings.email_notifications.from_email or "no-reply@grocerystore.local"
+        host = settings.smtp.host or settings.email_notifications.host
+
+        message = EmailMessage()
+        message["Subject"] = f"{code} — ваш код подтверждения в Grocery Store"
+        message["From"] = from_email
+        message["To"] = email
+
+        plain_text = (
+            f"Здравствуйте!\n\n"
+            f"Ваш проверочный код для регистрации в Grocery Store: {code}\n\n"
+            f"Код действителен в течение 10 минут. Никому не сообщайте его.\n\n"
+            f"С уважением,\nКоманда Grocery Store"
+        )
+        message.set_content(plain_text)
+
+        html_content = f"""<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Код подтверждения регистрации</title>
+</head>
+<body style="margin: 0; padding: 0; background-color: #f1f5f9; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; -webkit-font-smoothing: antialiased;">
+  <table width="100%" border="0" cellspacing="0" cellpadding="0" style="background-color: #f1f5f9; padding: 36px 16px;">
+    <tr>
+      <td align="center">
+        <table width="100%" border="0" cellspacing="0" cellpadding="0" style="max-width: 500px; background-color: #ffffff; border-radius: 20px; overflow: hidden; box-shadow: 0 10px 25px -5px rgba(15, 23, 42, 0.08); border: 1px solid #e2e8f0;">
+          <tr>
+            <td style="background: linear-gradient(135deg, #059669 0%, #0d9488 100%); padding: 32px 30px; text-align: center;">
+              <div style="display: inline-block; background-color: rgba(255, 255, 255, 0.2); border-radius: 14px; padding: 10px 14px; margin-bottom: 10px; font-size: 28px; line-height: 1;">
+                🛒
+              </div>
+              <h1 style="margin: 0; color: #ffffff; font-size: 22px; font-weight: 800; letter-spacing: -0.3px;">Grocery Store</h1>
+              <p style="margin: 4px 0 0; color: #d1fae5; font-size: 13px; font-weight: 500;">Свежие продукты к вашему столу</p>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding: 32px 32px 28px;">
+              <h2 style="margin: 0 0 10px; color: #0f172a; font-size: 19px; font-weight: 700; text-align: center;">Подтверждение регистрации</h2>
+              <p style="margin: 0 0 22px; color: #475569; font-size: 14px; line-height: 1.6; text-align: center;">
+                Вы указали этот адрес для создания аккаунта. Введите 4-значный код для подтверждения:
+              </p>
+              <table width="100%" border="0" cellspacing="0" cellpadding="0" style="margin: 24px 0;">
+                <tr>
+                  <td align="center">
+                    <div style="background-color: #f0fdf4; border: 2px dashed #059669; border-radius: 16px; padding: 18px 30px; display: inline-block; text-align: center;">
+                      <span style="font-family: 'Courier New', Courier, monospace, monospace; font-size: 40px; font-weight: 800; letter-spacing: 12px; color: #065f46; display: inline-block; padding-left: 12px;">
+                        {code}
+                      </span>
+                    </div>
+                  </td>
+                </tr>
+              </table>
+              <table width="100%" border="0" cellspacing="0" cellpadding="0" style="background-color: #f8fafc; border-radius: 12px; padding: 14px 18px; margin-bottom: 22px; border: 1px solid #f1f5f9;">
+                <tr>
+                  <td>
+                    <p style="margin: 0 0 4px; font-size: 12.5px; color: #334155;">
+                      ⏱ <strong>Срок действия:</strong> код активен <strong>10 минут</strong>.
+                    </p>
+                    <p style="margin: 0; font-size: 12.5px; color: #334155;">
+                      🔒 <strong>Безопасность:</strong> никогда и никому не передавайте этот код.
+                    </p>
+                  </td>
+                </tr>
+              </table>
+              <p style="margin: 0; color: #94a3b8; font-size: 11.5px; line-height: 1.5; text-align: center;">
+                Если вы не регистрировались на нашем сайте, просто проигнорируйте это письмо.
+              </p>
+            </td>
+          </tr>
+          <tr>
+            <td style="background-color: #f8fafc; border-top: 1px solid #e2e8f0; padding: 18px 30px; text-align: center;">
+              <p style="margin: 0 0 3px; font-size: 12px; font-weight: 600; color: #64748b;">
+                Команда Grocery Store
+              </p>
+              <p style="margin: 0; font-size: 11px; color: #94a3b8;">
+                © 2026 Grocery Store. Все права защищены.
+              </p>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>"""
+        message.add_alternative(html_content, subtype="html")
+
+        if not host:
+            logger.info("✉️ [DEV OTP] Регистрация для %s: код %s", email, code)
+            return
+
+        try:
+            await asyncio.to_thread(self._send_message, message)
+            logger.info("✉️ [SMTP] Код подтверждения отправлен на %s", email)
+        except Exception as err:
+            logger.warning("✉️ [SMTP Error] Не удалось отправить письмо через SMTP (%s). DEV OTP для %s: %s", err, email, code)
+
     def _send_message(self, message: EmailMessage) -> None:
-        with smtplib.SMTP(settings.smtp.host, settings.smtp.port) as smtp:
-            smtp.starttls()
-            if settings.smtp.user:
-                smtp.login(settings.smtp.user, settings.smtp.password)
+        host = settings.smtp.host or settings.email_notifications.host
+        port = settings.smtp.port or settings.email_notifications.port
+        user = settings.smtp.user or settings.email_notifications.username
+        password = settings.smtp.password or settings.email_notifications.password
+        use_tls = settings.email_notifications.use_tls
+
+        with smtplib.SMTP(host, port, timeout=10) as smtp:
+            if use_tls:
+                smtp.starttls()
+            if user:
+                smtp.login(user, password)
             smtp.send_message(message)
 
     async def send_order_created_email(self, *, email: str, order_number: str) -> None:

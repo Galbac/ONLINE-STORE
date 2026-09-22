@@ -13,6 +13,7 @@ from source.db.models.favorite import Favorite
 from source.db.models.feedback import Feedback
 from source.db.models.integration_log import IntegrationLog
 from source.db.models.integration_job import IntegrationJob
+from source.db.models.legal_document import LegalDocument
 from source.db.models.loyalty import LoyaltyAccount, LoyaltyTransaction
 from source.db.models.order import Order
 from source.db.models.order_item import OrderItem
@@ -52,6 +53,7 @@ __all__ = (
     "Feedback",
     "IntegrationLog",
     "IntegrationJob",
+    "LegalDocument",
     "LoyaltyAccount",
     "LoyaltyTransaction",
     "Order",
