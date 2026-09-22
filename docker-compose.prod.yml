@@ -34,10 +34,14 @@ services:
       context: ../GroceryStore-front
       dockerfile: Dockerfile
       target: runner
+      args:
+        DOMAIN_NAME: ${DOMAIN_NAME:-localhost}
+        NEXT_PUBLIC_API_URL: https://${DOMAIN_NAME:-localhost}
     environment:
       NODE_ENV: production
       API_INTERNAL_URL: http://api:8000
       NEXT_PUBLIC_API_URL: https://${DOMAIN_NAME:-localhost}
+      DOMAIN_NAME: ${DOMAIN_NAME:-localhost}
     expose:
       - "3000"
     restart: unless-stopped
