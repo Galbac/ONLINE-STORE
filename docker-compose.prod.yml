@@ -12,6 +12,7 @@ services:
       - ./nginx/templates:/etc/nginx/templates:ro
       - certbot_conf:/etc/letsencrypt
       - certbot_www:/var/www/certbot
+      - media_prod_data:/app/media:ro
     depends_on:
       - api
     networks:

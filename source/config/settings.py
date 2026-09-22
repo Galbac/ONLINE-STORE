@@ -5,7 +5,7 @@ from typing import Optional
 from urllib.parse import quote_plus
 from zoneinfo import ZoneInfo
 
-from pydantic import BaseModel, Field, PostgresDsn
+from pydantic import AliasChoices, BaseModel, Field, PostgresDsn
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -487,24 +487,48 @@ class NotificationsSettings(BaseSettings):
 
 
 class MediaSettings(BaseSettings):
-    storage: str = Field(default="local", alias="MEDIA_STORAGE")
-    root: Path = Field(default=Path("/app/media"), alias="MEDIA_ROOT")
-    url: str = Field(default="/media", alias="MEDIA_URL")
-    max_image_size_mb: int = Field(default=5, alias="MEDIA_MAX_IMAGE_SIZE_MB")
+    storage: str = Field(default="local", validation_alias=AliasChoices("MEDIA_STORAGE", "storage"))
+    root: Path = Field(default=Path("/app/media"), validation_alias=AliasChoices("MEDIA_ROOT", "root"))
+    url: str = Field(default="/media", validation_alias=AliasChoices("MEDIA_URL", "url"))
+    max_image_size_mb: int = Field(default=5, validation_alias=AliasChoices("MEDIA_MAX_IMAGE_SIZE_MB", "max_image_size_mb"))
     allowed_image_types: str = Field(
         default="image/jpeg,image/png,image/webp",
-        alias="MEDIA_ALLOWED_IMAGE_TYPES",
+        validation_alias=AliasChoices("MEDIA_ALLOWED_IMAGE_TYPES", "allowed_image_types"),
     )
     allowed_image_extensions: str = Field(
         default=".jpg,.jpeg,.png,.webp",
-        alias="MEDIA_ALLOWED_IMAGE_EXTENSIONS",
+        validation_alias=AliasChoices("MEDIA_ALLOWED_IMAGE_EXTENSIONS", "allowed_image_extensions"),
     )
-    base_url: str = Field(default="", alias="MEDIA_BASE_URL")
-    storage_access_key: str = Field(default="", alias="STORAGE_ACCESS_KEY")
-    storage_secret_key: str = Field(default="", alias="STORAGE_SECRET_KEY")
-    storage_bucket: str = Field(default="", alias="STORAGE_BUCKET")
-    storage_region: str = Field(default="", alias="STORAGE_REGION")
-    detail_cache_ttl_seconds: int = Field(default=300, alias="UPLOAD_DETAIL_CACHE_TTL_SECONDS")
+    base_url: str = Field(default="", validation_alias=AliasChoices("MEDIA_BASE_URL", "base_url"))
+    storage_access_key: str = Field(default="", validation_alias=AliasChoices("S3_ACCESS_KEY_ID", "STORAGE_ACCESS_KEY", "storage_access_key", "s3_access_key"))
+    storage_secret_key: str = Field(default="", validation_alias=AliasChoices("S3_SECRET_ACCESS_KEY", "STORAGE_SECRET_KEY", "storage_secret_key", "s3_secret_key"))
+    storage_bucket: str = Field(default="", validation_alias=AliasChoices("S3_BUCKET_NAME", "STORAGE_BUCKET", "storage_bucket", "s3_bucket"))
+    storage_region: str = Field(default="ru-central1", validation_alias=AliasChoices("S3_REGION_NAME", "STORAGE_REGION", "storage_region", "s3_region"))
+    s3_endpoint_url: str = Field(default="", validation_alias=AliasChoices("S3_ENDPOINT_URL", "s3_endpoint_url"))
+    s3_public_url: str = Field(default="", validation_alias=AliasChoices("S3_PUBLIC_URL", "s3_public_url"))
+    s3_use_ssl: bool = Field(default=True, validation_alias=AliasChoices("S3_USE_SSL", "s3_use_ssl"))
+    s3_verify_ssl: bool = Field(default=True, validation_alias=AliasChoices("S3_VERIFY_SSL", "s3_verify_ssl"))
+    detail_cache_ttl_seconds: int = Field(default=300, validation_alias=AliasChoices("UPLOAD_DETAIL_CACHE_TTL_SECONDS", "detail_cache_ttl_seconds"))
+
+    @property
+    def effective_bucket(self) -> str:
+        return self.storage_bucket
+
+    @property
+    def effective_access_key(self) -> str:
+        return self.storage_access_key
+
+    @property
+    def effective_secret_key(self) -> str:
+        return self.storage_secret_key
+
+    @property
+    def effective_region(self) -> str:
+        return self.storage_region or "ru-central1"
+
+    @property
+    def is_s3_enabled(self) -> bool:
+        return self.storage.lower() in ("s3", "minio", "external")
 
     @property
     def allowed_image_type_set(self) -> set[str]:
@@ -514,7 +538,7 @@ class MediaSettings(BaseSettings):
     def allowed_image_extension_set(self) -> set[str]:
         return {item.strip().lower() for item in self.allowed_image_extensions.split(",") if item.strip()}
 
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore", populate_by_name=True)
 
 
 class WebPushSettings(BaseSettings):

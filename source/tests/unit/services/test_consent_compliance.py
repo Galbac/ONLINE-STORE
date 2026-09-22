@@ -24,6 +24,8 @@ def test_register_request_privacy_true_is_valid() -> None:
     req = UserRegisterRequest(
         name="Алексей",
         phone="+79991112233",
+        email="alexey@example.com",
+        otp_code="1234",
         password="SecurePassword123!",
         agreed_to_privacy=True,
         marketing_consent=False,
@@ -36,6 +38,8 @@ def test_register_request_privacy_default_is_true() -> None:
     req = UserRegisterRequest(
         name="Алексей",
         phone="+79991112233",
+        email="alexey@example.com",
+        otp_code="1234",
         password="SecurePassword123!",
     )
     assert req.agreed_to_privacy is True
@@ -47,6 +51,8 @@ def test_register_request_privacy_false_raises_validation_error() -> None:
         UserRegisterRequest(
             name="Алексей",
             phone="+79991112233",
+            email="alexey@example.com",
+            otp_code="1234",
             password="SecurePassword123!",
             agreed_to_privacy=False,
         )
@@ -57,6 +63,8 @@ def test_register_request_marketing_consent_can_be_true() -> None:
     req = UserRegisterRequest(
         name="Мария",
         phone="+79992223344",
+        email="maria@example.com",
+        otp_code="5678",
         password="SecurePassword123!",
         agreed_to_privacy=True,
         marketing_consent=True,
@@ -68,6 +76,8 @@ def test_register_request_marketing_consent_falsy_values() -> None:
     req = UserRegisterRequest(
         name="Иван",
         phone="+79993334455",
+        email="ivan@example.com",
+        otp_code="9999",
         password="SecurePassword123!",
         agreed_to_privacy=True,
         marketing_consent=False,

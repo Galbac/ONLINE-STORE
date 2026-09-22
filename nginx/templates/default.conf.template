@@ -72,17 +72,22 @@ server {
         proxy_connect_timeout 60s;
     }
 
-    # 2. Медиа-файлы и изображения товаров
+    # 2. Медиа-файлы и изображения товаров (прямая отдача Nginx с диска с fallback на FastAPI)
     location /media/ {
+        root /app;
+        try_files $uri @fallback_media;
+        expires 30d;
+        add_header X-Content-Type-Options "nosniff" always;
+        add_header Cache-Control "public, max-age=31536000, immutable";
+    }
+
+    location @fallback_media {
         proxy_pass http://api:8000;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_cache_valid 200 30d;
-        add_header X-Content-Type-Options "nosniff" always;
-        add_header Cache-Control "public, max-age=31536000, immutable";
     }
 
     # 3. Документация OpenAPI/Swagger и Redoc
