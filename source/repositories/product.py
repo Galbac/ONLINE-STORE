@@ -1,3 +1,4 @@
+import re
 from datetime import datetime
 
 from sqlalchemy import case, desc, func, or_, select
@@ -299,6 +300,15 @@ class ProductRepository:
                 | Product.description.ilike(f"%{tag_val}%")
                 | Product.search_keywords.ilike(f"%{tag_val}%")
             )
+        if query.article is not None:
+            article_val = query.article.strip()
+            clean_val = re.sub(r"^(арт|art)\.?\s*[:\-]?\s*", "", article_val, flags=re.IGNORECASE).strip()
+            article_filters = [Product.article.ilike(f"%{article_val}%")]
+            if clean_val and clean_val != article_val:
+                article_filters.append(Product.article.ilike(f"%{clean_val}%"))
+            if clean_val.isdigit():
+                article_filters.append(Product.id == int(clean_val))
+            statement = statement.where(or_(*article_filters))
         return statement
 
     def _apply_sort(self, statement, *, sort: str | None):
@@ -318,23 +328,39 @@ class ProductRepository:
 
     def _search_statement(self, *, query: ProductSearchQueryParams, category_ids: set[int] | None):
         search_pattern = f"%{query.q}%"
+        clean_q = re.sub(r"^(арт|art)\.?\s*[:\-]?\s*", "", query.q, flags=re.IGNORECASE).strip()
+        search_conditions = [
+            Product.name.ilike(search_pattern),
+            Product.description.ilike(search_pattern),
+            Product.article.ilike(search_pattern),
+            Product.barcode.ilike(search_pattern),
+            Product.search_keywords.ilike(search_pattern),
+        ]
+        if clean_q and clean_q != query.q:
+            search_conditions.append(Product.article.ilike(f"%{clean_q}%"))
+        if clean_q.isdigit():
+            search_conditions.append(Product.id == int(clean_q))
+
         statement = (
             select(Product, Category)
             .outerjoin(Category, Product.category_id == Category.id)
             .where(
                 Product.is_active.is_(True),
                 Product.is_deleted.is_(False),
-                or_(
-                    Product.name.ilike(search_pattern),
-                    Product.description.ilike(search_pattern),
-                    Product.article.ilike(search_pattern),
-                    Product.barcode.ilike(search_pattern),
-                    Product.search_keywords.ilike(search_pattern),
-                ),
+                or_(*search_conditions),
             )
         )
         if category_ids is not None:
             statement = statement.where(Product.category_id.in_(category_ids))
+        if query.article is not None:
+            article_val = query.article.strip()
+            clean_art = re.sub(r"^(арт|art)\.?\s*[:\-]?\s*", "", article_val, flags=re.IGNORECASE).strip()
+            art_filters = [Product.article.ilike(f"%{article_val}%")]
+            if clean_art and clean_art != article_val:
+                art_filters.append(Product.article.ilike(f"%{clean_art}%"))
+            if clean_art.isdigit():
+                art_filters.append(Product.id == int(clean_art))
+            statement = statement.where(or_(*art_filters))
         if query.in_stock is True:
             statement = statement.where(
                 Product.is_available.is_(True),
@@ -379,13 +405,22 @@ class ProductRepository:
             case "popular":
                 return statement.order_by(Product.popularity.desc(), Product.name.asc())
             case "relevance" | _:
+                clean_q = re.sub(r"^(арт|art)\.?\s*[:\-]?\s*", "", query.q, flags=re.IGNORECASE).strip()
+                relevance_cases = [
+                    (Product.article == query.q, 0),
+                ]
+                if clean_q and clean_q != query.q:
+                    relevance_cases.append((Product.article == clean_q, 0))
+                if clean_q.isdigit():
+                    relevance_cases.append((Product.id == int(clean_q), 0))
+                relevance_cases.extend([
+                    (Product.article.ilike(f"{query.q}%"), 1),
+                    (Product.name.ilike(f"%{query.q}%"), 2),
+                    (Product.search_keywords.ilike(f"%{query.q}%"), 3),
+                    (Product.description.ilike(f"%{query.q}%"), 4),
+                ])
                 return statement.order_by(
-                    case(
-                        (Product.name.ilike(f"%{query.q}%"), 0),
-                        (Product.search_keywords.ilike(f"%{query.q}%"), 1),
-                        (Product.description.ilike(f"%{query.q}%"), 2),
-                        else_=3,
-                    ),
+                    case(*relevance_cases, else_=5),
                     Product.popularity.desc(),
                     Product.name.asc(),
                 )
@@ -970,6 +1005,7 @@ class ProductRepository:
             id=product.id,
             name=product.name,
             slug=product.slug,
+            article=product.article,
             preview_image_url=product.preview_image_url,
             price=product.price,
             old_price=product.old_price,
@@ -1035,6 +1071,7 @@ class ProductRepository:
             id=product.id,
             name=product.name,
             slug=product.slug,
+            article=product.article,
             description=product.description,
             category=product_category,
             price=product.price,

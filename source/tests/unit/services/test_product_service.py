@@ -1,3 +1,4 @@
+import re
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from math import ceil
@@ -287,6 +288,19 @@ class FakeProductRepository:
             products = [product for product in products if product.price >= query.min_price]
         if query.max_price is not None:
             products = [product for product in products if product.price <= query.max_price]
+        if query.article is not None:
+            article_val = query.article.strip().lower()
+            clean_val = re.sub(r"^(арт|art)\.?\s*[:\-]?\s*", "", article_val, flags=re.IGNORECASE).strip()
+            products = [
+                product
+                for product in products
+                if getattr(product, "article", None) is not None
+                and (
+                    article_val in product.article.lower()
+                    or (clean_val and clean_val in product.article.lower())
+                    or (clean_val.isdigit() and product.id == int(clean_val))
+                )
+            ]
         return products
 
     def _sort_products(self, *, products: list[object], sort: str | None) -> list[object]:
@@ -310,24 +324,42 @@ class FakeProductRepository:
         query: ProductSearchQueryParams,
         category_ids: set[int] | None,
     ) -> list[object]:
-        search_query = query.q.lower()
+        search_query = query.q.lower().strip()
+        clean_q = re.sub(r"^(арт|art)\.?\s*[:\-]?\s*", "", search_query, flags=re.IGNORECASE).strip()
         products = [
             product
             for product in self.products
             if product.is_active
             and not product.is_deleted
-            and any(
-                search_query in str(value).lower()
-                for value in (
-                    product.name,
-                    product.description,
-                    product.article,
-                    product.barcode,
-                    product.search_keywords,
+            and (
+                any(
+                    search_query in str(value).lower()
+                    for value in (
+                        product.name,
+                        product.description,
+                        product.article,
+                        product.barcode,
+                        product.search_keywords,
+                    )
+                    if value is not None
                 )
-                if value is not None
+                or (clean_q and getattr(product, "article", None) is not None and clean_q in product.article.lower())
+                or (clean_q.isdigit() and product.id == int(clean_q))
             )
         ]
+        if query.article is not None:
+            article_val = query.article.strip().lower()
+            clean_val = re.sub(r"^(арт|art)\.?\s*[:\-]?\s*", "", article_val, flags=re.IGNORECASE).strip()
+            products = [
+                product
+                for product in products
+                if getattr(product, "article", None) is not None
+                and (
+                    article_val in product.article.lower()
+                    or (clean_val and clean_val in product.article.lower())
+                    or (clean_val.isdigit() and product.id == int(clean_val))
+                )
+            ]
         if category_ids is not None:
             products = [product for product in products if product.category_id in category_ids]
         if query.in_stock is True:
@@ -500,6 +532,7 @@ def build_product_response(product) -> ProductShortResponse:
         id=product.id,
         name=product.name,
         slug=product.slug,
+        article=getattr(product, "article", None),
         preview_image_url=product.preview_image_url,
         price=product.price,
         old_price=product.old_price,
@@ -527,6 +560,7 @@ def build_product_detail_response(product) -> ProductDetailResponse:
         id=product.id,
         name=product.name,
         slug=product.slug,
+        article=getattr(product, "article", None),
         description=product.description,
         category=product.category,
         price=product.price,
@@ -2166,3 +2200,72 @@ async def test_get_products_with_category_and_in_stock_response_is_cached_in_red
     cache_key = f"products:list:{build_query_hash(query.model_dump())}"
     assert cache_key in redis_service.values
     assert redis_service.ttls[cache_key] == settings.products.list_cache_ttl_seconds
+
+
+@pytest.mark.asyncio
+async def test_get_product_detail_contains_article() -> None:
+    response = await execute_get_product_by_slug(
+        product_repository=FakeProductRepository(
+            products=[build_product(product_id=1, name="Говядина", category_id=1, slug="item-1", article="BULK-1002")],
+        ),
+        slug="item-1",
+    )
+
+    assert response.article == "BULK-1002"
+
+
+@pytest.mark.asyncio
+async def test_get_products_filter_by_article() -> None:
+    repository = FakeProductRepository(
+        products=[
+            build_product(product_id=1, name="Говядина", slug="beef", category_id=1, article="ART-001"),
+            build_product(product_id=2, name="Свинина", slug="pork", category_id=1, article="ART-002"),
+            build_product(product_id=3, name="Курица", slug="chicken", category_id=1, article="BULK-55"),
+        ],
+    )
+
+    response = await execute_get_products(
+        product_repository=repository,
+        query=ProductListQueryParams(article="ART-001"),
+    )
+
+    assert len(response.items) == 1
+    assert response.items[0].id == 1
+    assert response.items[0].article == "ART-001"
+
+
+@pytest.mark.asyncio
+async def test_get_products_filter_by_article_with_prefix() -> None:
+    repository = FakeProductRepository(
+        products=[
+            build_product(product_id=1, name="Говядина", slug="beef", category_id=1, article="ART-001"),
+            build_product(product_id=2, name="Свинина", slug="pork", category_id=1, article="BULK-55"),
+        ],
+    )
+
+    response = await execute_get_products(
+        product_repository=repository,
+        query=ProductListQueryParams(article="Арт. ART-001"),
+    )
+
+    assert len(response.items) == 1
+    assert response.items[0].id == 1
+
+
+@pytest.mark.asyncio
+async def test_search_products_by_article_and_article_prefix() -> None:
+    repository = FakeProductRepository(
+        products=[
+            build_product(product_id=1, name="Говядина", slug="beef", category_id=1, article="ART-001"),
+            build_product(product_id=2, name="Свинина", slug="pork", category_id=1, article="ART-002"),
+        ],
+    )
+
+    response = await execute_search_products(
+        product_repository=repository,
+        query=ProductSearchQueryParams(q="Арт. ART-002"),
+    )
+
+    assert len(response.items) == 1
+    assert response.items[0].id == 2
+    assert response.items[0].article == "ART-002"

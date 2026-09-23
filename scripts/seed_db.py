@@ -53,6 +53,7 @@ from source.db.models.choises.enum import UserRole
 from source.db.models.discount import Discount, DiscountCategory, DiscountProduct
 from source.db.models.promo_code import PromoCodeCategory, PromoCodeProduct
 from source.services.password import PasswordService
+from source.utils.schedule import get_default_schedule
 
 ModelT = TypeVar("ModelT")
 
@@ -139,7 +140,15 @@ async def seed_users(session: AsyncSession) -> dict[str, User]:
 
 async def seed_settings(session: AsyncSession) -> None:
     if await get_one(session, StoreSettings) is None:
-        session.add(StoreSettings(shop_name="Grocery Store", phone="+79990000000", email="info@grocery.local"))
+        session.add(
+            StoreSettings(
+                shop_name="Grocery Store",
+                phone="+79990000000",
+                email="info@grocery.local",
+                schedule=get_default_schedule(),
+                working_hours="Ежедневно 08:00–22:00",
+            )
+        )
     if await get_one(session, DeliverySettings) is None:
         session.add(DeliverySettings(min_order_amount=Decimal("700.00"), base_price=Decimal("199.00")))
     if await get_one(session, NotificationSettings) is None:

@@ -1,5 +1,7 @@
 from pydantic import BaseModel
 
+from source.schemas.pydantic.settings import DayScheduleItem
+
 
 class PublicStoreSettingsResponse(BaseModel):
     shop_name: str
@@ -10,6 +12,9 @@ class PublicStoreSettingsResponse(BaseModel):
     email: str | None = None
     address: str | None = None
     working_hours: str | None = None
+    schedule: list[DayScheduleItem] | None = None
+    is_open_now: bool = True
+    current_status_text: str | None = None
     online_payment_enabled: bool = True
     pay_on_delivery_enabled: bool = True
     maintenance_mode: bool = False

@@ -1,10 +1,13 @@
+import json
+
 from source.config.settings import settings
 from source.errors.auth import AdminAuthAccessDeniedError, InactiveUserError
 from source.errors.settings import EmptyAdminSettingsUpdateError
-from source.schemas.pydantic.settings import AdminSettingsResponse, AdminSettingsUpdateRequest
+from source.schemas.pydantic.settings import AdminSettingsResponse, AdminSettingsUpdateRequest, DayScheduleItem
 from source.services.admin_auth import STAFF_ROLES
 from source.services.delivery_cache import DeliveryCacheService
 from source.services.redis import RedisService
+from source.utils.schedule import calculate_schedule_status, format_schedule_summary, normalize_schedule
 
 
 class AdminSettingsService:
@@ -92,6 +95,7 @@ class AdminSettingsService:
             "email",
             "address",
             "working_hours",
+            "schedule",
             "online_payment_enabled",
             "pay_on_delivery_enabled",
             "maintenance_mode",
@@ -106,14 +110,25 @@ class AdminSettingsService:
             "pickup_enabled",
             "min_order_amount",
         }
+
+        if "schedule" in update_fields and update_fields["schedule"] is not None:
+            raw_sched = [
+                item.model_dump() if hasattr(item, "model_dump") else item
+                for item in update_fields["schedule"]
+            ]
+            normalized = normalize_schedule(raw_sched)
+            update_fields["schedule"] = normalized
+            if "working_hours" not in update_fields or not update_fields["working_hours"]:
+                update_fields["working_hours"] = format_schedule_summary(normalized)
+
         store_update = {field: value for field, value in update_fields.items() if field in store_fields}
         delivery_update = {field: value for field, value in update_fields.items() if field in delivery_fields}
 
         before = {
-            field: getattr(store_settings, field)
+            field: getattr(store_settings, field, None)
             for field in store_update
         } | {
-            field: getattr(delivery_settings, field)
+            field: getattr(delivery_settings, field, None)
             for field in delivery_update
         }
 
@@ -133,11 +148,12 @@ class AdminSettingsService:
         changes = {}
         for field in update_fields:
             source = store_settings if field in store_fields else delivery_settings
-            current_value = getattr(source, field)
-            if before[field] != current_value:
+            current_value = getattr(source, field, None)
+            prev_value = before.get(field)
+            if prev_value != current_value:
                 changes[field] = {
-                    "old": str(before[field]) if before[field] is not None else None,
-                    "new": str(current_value) if current_value is not None else None,
+                    "old": json.dumps(prev_value, ensure_ascii=False) if isinstance(prev_value, (dict, list)) else (str(prev_value) if prev_value is not None else None),
+                    "new": json.dumps(current_value, ensure_ascii=False) if isinstance(current_value, (dict, list)) else (str(current_value) if current_value is not None else None),
                 }
 
         await audit_log_service.log_action(
@@ -175,12 +191,34 @@ class AdminSettingsService:
             )
             if value is not None
         ]
+        raw_schedule = getattr(store_settings, "schedule", None)
+        normalized_sched = normalize_schedule(raw_schedule)
+        maintenance = getattr(store_settings, "maintenance_mode", False)
+        is_open_now, current_status_text = calculate_schedule_status(
+            normalized_sched,
+            maintenance_mode=maintenance,
+        )
+        schedule_items = [
+            DayScheduleItem(
+                day=item["day"],
+                day_name=item["day_name"],
+                is_day_off=item["is_day_off"],
+                open_time=item.get("open_time"),
+                close_time=item.get("close_time"),
+            )
+            for item in normalized_sched
+        ]
+        working_hours = getattr(store_settings, "working_hours", None) or format_schedule_summary(normalized_sched)
+
         return AdminSettingsResponse(
             shop_name=store_settings.shop_name,
             phone=store_settings.phone,
             email=store_settings.email,
             address=store_settings.address,
-            working_hours=store_settings.working_hours,
+            working_hours=working_hours,
+            schedule=schedule_items,
+            is_open_now=is_open_now,
+            current_status_text=current_status_text,
             default_city=delivery_settings.default_city,
             currency=delivery_settings.currency,
             delivery_enabled=delivery_settings.delivery_enabled,

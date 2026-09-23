@@ -14,6 +14,7 @@ class SuggestionProductItem(BaseModel):
     id: int
     name: str
     slug: str
+    article: str | None = None
     price: Decimal
     preview_image_url: str | None = None
 

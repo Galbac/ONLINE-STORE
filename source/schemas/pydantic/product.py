@@ -23,6 +23,7 @@ class ProductListQueryParams(BaseModel):
     has_discount: bool | None = None
     product_type: ProductType | None = None
     tag: str | None = None
+    article: str | None = Field(default=None, max_length=100)
     sort: ProductSort | None = None
 
     @model_validator(mode="after")
@@ -52,6 +53,7 @@ class ProductSearchQueryParams(BaseModel):
     has_discount: bool | None = None
     product_type: ProductType | None = None
     tag: str | None = None
+    article: str | None = Field(default=None, max_length=100)
     sort: ProductSearchSort = "relevance"
 
     @model_validator(mode="after")
@@ -109,6 +111,7 @@ class ProductShortResponse(BaseModel):
     id: int
     name: str
     slug: str
+    article: str | None = None
     preview_image_url: str | None = None
     price: Decimal
     old_price: Decimal | None = None
@@ -144,6 +147,7 @@ class ProductDetailResponse(BaseModel):
     id: int
     name: str
     slug: str
+    article: str | None = None
     description: str | None = None
     category: ProductCategoryShortResponse | None = None
     price: Decimal

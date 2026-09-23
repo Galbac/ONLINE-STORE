@@ -9,7 +9,7 @@ from source.config.settings import settings
 from source.db.models.choises.enum import UserRole
 from source.errors.auth import AdminAuthAccessDeniedError
 from source.errors.settings import EmptyAdminSettingsUpdateError
-from source.schemas.pydantic.settings import AdminSettingsResponse, AdminSettingsUpdateRequest
+from source.schemas.pydantic.settings import AdminSettingsResponse, AdminSettingsUpdateRequest, DayScheduleUpdateItem
 from source.services.admin_auth import AuditLogService, PermissionService
 from source.services.admin_settings import AdminSettingsService
 from source.services.delivery_cache import DeliveryCacheService
@@ -378,3 +378,39 @@ async def test_admin_settings_update_audit_log_created() -> None:
         "old": "Супермаркет",
         "new": "Новый магазин",
     }
+
+
+@pytest.mark.asyncio
+async def test_admin_settings_update_schedule_success() -> None:
+    schedule_update = [
+        DayScheduleUpdateItem(day=1, is_day_off=False, open_time="09:00", close_time="21:00"),
+        DayScheduleUpdateItem(day=2, is_day_off=False, open_time="09:00", close_time="21:00"),
+        DayScheduleUpdateItem(day=3, is_day_off=False, open_time="09:00", close_time="21:00"),
+        DayScheduleUpdateItem(day=4, is_day_off=False, open_time="09:00", close_time="21:00"),
+        DayScheduleUpdateItem(day=5, is_day_off=False, open_time="09:00", close_time="21:00"),
+        DayScheduleUpdateItem(day=6, is_day_off=False, open_time="10:00", close_time="20:00"),
+        DayScheduleUpdateItem(day=7, is_day_off=True),
+    ]
+    result = await update_settings(data=AdminSettingsUpdateRequest(schedule=schedule_update))
+
+    assert result.response.schedule is not None
+    assert len(result.response.schedule) == 7
+    assert result.response.schedule[0].day == 1
+    assert result.response.schedule[0].open_time == "09:00"
+    assert result.response.schedule[0].close_time == "21:00"
+    assert result.response.schedule[6].day == 7
+    assert result.response.schedule[6].is_day_off is True
+    assert "Вс выходной" in result.response.working_hours
+    assert "schedule" in result.audit_log_repository.logs[0]["details"]["changes"]
+
+
+@pytest.mark.asyncio
+async def test_admin_settings_get_schedule_default() -> None:
+    result = await get_settings()
+
+    assert result.response.schedule is not None
+    assert len(result.response.schedule) == 7
+    assert result.response.schedule[0].day == 1
+    assert result.response.schedule[0].open_time == "08:00"
+    assert isinstance(result.response.is_open_now, bool)
+    assert result.response.current_status_text is not None

@@ -3,7 +3,47 @@ from decimal import Decimal
 
 from pydantic import BaseModel, Field, model_validator
 
+from source.utils.schedule import DAY_NAMES
 from source.utils.user_profile import validate_email, validate_phone
+
+
+class DayScheduleItem(BaseModel):
+    day: int = Field(ge=1, le=7)
+    day_name: str
+    is_day_off: bool = False
+    open_time: str | None = None
+    close_time: str | None = None
+
+
+class DayScheduleUpdateItem(BaseModel):
+    day: int = Field(ge=1, le=7)
+    day_name: str | None = None
+    is_day_off: bool = False
+    open_time: str | None = None
+    close_time: str | None = None
+
+    @model_validator(mode="after")
+    def validate_times(self) -> "DayScheduleUpdateItem":
+        if not self.day_name and self.day in DAY_NAMES:
+            self.day_name = DAY_NAMES[self.day]
+        if self.is_day_off:
+            self.open_time = None
+            self.close_time = None
+        else:
+            if not self.open_time:
+                self.open_time = "08:00"
+            if not self.close_time:
+                self.close_time = "22:00"
+            self.open_time = self.open_time.strip()
+            self.close_time = self.close_time.strip()
+            for t_val, t_name in ((self.open_time, "open_time"), (self.close_time, "close_time")):
+                parts = t_val.split(":")
+                if len(parts) != 2 or not parts[0].isdigit() or not parts[1].isdigit():
+                    raise ValueError(f"{t_name} must be in HH:MM format")
+                h, m = int(parts[0]), int(parts[1])
+                if not (0 <= h <= 24 and 0 <= m <= 59):
+                    raise ValueError(f"{t_name} has invalid hour or minute")
+        return self
 
 
 class AdminSettingsResponse(BaseModel):
@@ -12,6 +52,9 @@ class AdminSettingsResponse(BaseModel):
     email: str | None = None
     address: str | None = None
     working_hours: str | None = None
+    schedule: list[DayScheduleItem] | None = None
+    is_open_now: bool = True
+    current_status_text: str | None = None
     default_city: str | None = None
     currency: str
     delivery_enabled: bool
@@ -32,6 +75,7 @@ class AdminSettingsUpdateRequest(BaseModel):
     email: str | None = Field(default=None, max_length=255)
     address: str | None = Field(default=None, max_length=500)
     working_hours: str | None = Field(default=None, max_length=255)
+    schedule: list[DayScheduleUpdateItem] | None = None
     default_city: str | None = Field(default=None, max_length=100)
     currency: str | None = Field(default=None, min_length=3, max_length=3)
     delivery_enabled: bool | None = None
