@@ -112,6 +112,9 @@ class CategoryRepository:
                 and_(
                     Product.category_id == Category.id,
                     Product.is_active.is_(True),
+                    Product.is_deleted.is_(False),
+                    Product.is_available.is_(True),
+                    Product.stock_quantity > 0,
                 ),
             )
             .where(
@@ -345,6 +348,9 @@ class CategoryRepository:
                 and_(
                     Product.category_id == Category.id,
                     Product.is_active.is_(True),
+                    Product.is_deleted.is_(False),
+                    Product.is_available.is_(True),
+                    Product.stock_quantity > 0,
                 ),
             )
             .where(
@@ -426,6 +432,9 @@ class CategoryRepository:
                 and_(
                     Product.category_id == Category.id,
                     Product.is_active.is_(True),
+                    Product.is_deleted.is_(False),
+                    Product.is_available.is_(True),
+                    Product.stock_quantity > 0,
                 ),
             )
             .where(

@@ -905,6 +905,8 @@ class ProductRepository:
                 Product.category_id == category_id,
                 Product.is_active.is_(True),
                 Product.is_deleted.is_(False),
+                Product.is_available.is_(True),
+                Product.stock_quantity > 0,
             ),
         )
         return int(result.scalar_one())
@@ -946,6 +948,8 @@ class ProductRepository:
                 Product.category_id.is_not(None),
                 Product.is_active.is_(True),
                 Product.is_deleted.is_(False),
+                Product.is_available.is_(True),
+                Product.stock_quantity > 0,
             )
             .group_by(Product.category_id),
         )
