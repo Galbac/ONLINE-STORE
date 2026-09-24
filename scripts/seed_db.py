@@ -142,17 +142,21 @@ async def seed_settings(session: AsyncSession) -> None:
     if await get_one(session, StoreSettings) is None:
         session.add(
             StoreSettings(
-                shop_name="Grocery Store",
-                phone="+79990000000",
-                email="info@grocery.local",
+                shop_name="Победа",
+                legal_name="ИП Магомедов А. М.",
+                inn="054702841980",
+                ogrn="324054700018920",
+                phone="+7 (928) 519-14-85",
+                email="info@eda-pobeda.ru",
+                address="ул. Победы, 87А, Кизляр",
                 schedule=get_default_schedule(),
-                working_hours="Ежедневно 08:00–22:00",
+                working_hours="Круглосуточно",
             )
         )
     if await get_one(session, DeliverySettings) is None:
         session.add(DeliverySettings(min_order_amount=Decimal("700.00"), base_price=Decimal("199.00")))
     if await get_one(session, NotificationSettings) is None:
-        session.add(NotificationSettings(email_from="noreply@grocery.local", telegram_admin_chat_id="100000001"))
+        session.add(NotificationSettings(email_from="noreply@eda-pobeda.ru", telegram_admin_chat_id="100000001"))
     await session.flush()
 
 
