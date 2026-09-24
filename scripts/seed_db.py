@@ -177,36 +177,28 @@ async def seed_placeholder_image(session: AsyncSession, admin: User) -> Upload:
 async def apply_placeholder_image(session: AsyncSession, placeholder: Upload) -> None:
     categories = (await session.scalars(select(Category))).all()
     for category in categories:
-        category.image_file_id = placeholder.id
-        category.image_url = SEED_IMAGE_URL
+        if not category.image_url:
+            category.image_file_id = placeholder.id
+            category.image_url = SEED_IMAGE_URL
 
     products = (await session.scalars(select(Product))).all()
     for product in products:
-        product.preview_image_url = SEED_IMAGE_URL
+        if not product.preview_image_url:
+            product.preview_image_url = SEED_IMAGE_URL
         image = await get_one(session, ProductImage, product_id=product.id, is_main=True)
         if image is None:
             image = await get_or_create(
                 session,
                 ProductImage,
                 product_id=product.id,
-                url=SEED_IMAGE_URL,
+                url=product.preview_image_url or SEED_IMAGE_URL,
                 defaults={
                     "file_id": placeholder.id,
-                    "external_url": SEED_IMAGE_URL,
+                    "external_url": product.preview_image_url or SEED_IMAGE_URL,
                     "sort_order": 1,
                     "is_main": True,
                 },
             )
-        image.file_id = placeholder.id
-        image.url = SEED_IMAGE_URL
-        image.external_url = SEED_IMAGE_URL
-        image.is_main = True
-
-    uploads = (await session.scalars(select(Upload).where(Upload.entity_type == "catalog"))).all()
-    for upload in uploads:
-        upload.url = SEED_IMAGE_URL
-        upload.storage_type = "external"
-        upload.mime_type = "image/jpeg"
     await session.flush()
 
 
@@ -255,14 +247,34 @@ async def seed_catalog(session: AsyncSession, admin: User) -> tuple[dict[str, Ca
         )
 
     products_data = (
-        ("apple-gala", "Яблоки Гала", categories["frukty-i-yagody"], "кг", "weight", "149.90", "189.90", "48.000"),
-        ("banana", "Бананы", categories["frukty-i-yagody"], "кг", "weight", "129.90", None, "36.000"),
-        ("tomato", "Томаты", categories["ovoshchi"], "кг", "weight", "219.90", "249.90", "22.500"),
-        ("cucumber", "Огурцы", categories["ovoshchi"], "кг", "weight", "179.90", None, "31.000"),
-        ("milk-32", "Молоко 3.2%", categories["molochnye-produkty"], "шт", "piece", "89.90", None, "80.000"),
-        ("cheese-gouda", "Сыр Гауда", categories["molochnye-produkty"], "шт", "piece", "329.90", "369.90", "18.000"),
-        ("bread-rye", "Хлеб ржаной", categories["khleb-i-vypechka"], "шт", "piece", "59.90", None, "45.000"),
-        ("croissant", "Круассан", categories["khleb-i-vypechka"], "шт", "piece", "79.90", None, "25.000"),
+        ("apple-gala", "Яблоки Гала", categories["frukty-i-yagody"], "кг", "weight", "169.00", "199.00", "48.000"),
+        ("banana", "Бананы", categories["frukty-i-yagody"], "кг", "weight", "149.00", None, "36.000"),
+        ("apelsiny", "Апельсины", categories["frukty-i-yagody"], "кг", "weight", "179.00", None, "50.000"),
+        ("grushi", "Груши Конференция", categories["frukty-i-yagody"], "кг", "weight", "219.00", "249.00", "40.000"),
+        ("vinograd", "Виноград кишмиш", categories["frukty-i-yagody"], "кг", "weight", "269.00", None, "35.000"),
+        ("klubnika", "Клубника свежая", categories["frukty-i-yagody"], "шт", "piece", "399.00", "450.00", "20.000"),
+        ("mandariny", "Мандарины", categories["frukty-i-yagody"], "кг", "weight", "199.00", None, "60.000"),
+        ("tomato-pink", "Томаты розовые", categories["ovoshchi"], "кг", "weight", "289.00", "349.00", "22.500"),
+        ("cucumber-short", "Огурцы короткоплодные", categories["ovoshchi"], "кг", "weight", "199.00", None, "31.000"),
+        ("kartofel", "Картофель молодой", categories["ovoshchi"], "кг", "weight", "59.00", None, "150.000"),
+        ("morkov", "Морковь мытая", categories["ovoshchi"], "кг", "weight", "49.00", None, "100.000"),
+        ("perec", "Перец болгарский", categories["ovoshchi"], "кг", "weight", "249.00", "289.00", "45.000"),
+        ("luk", "Лук репчатый", categories["ovoshchi"], "кг", "weight", "39.00", None, "120.000"),
+        ("kabachki", "Кабачки свежие", categories["ovoshchi"], "кг", "weight", "129.00", None, "50.000"),
+        ("milk-32", "Молоко 3.2%", categories["molochnye-produkty"], "шт", "piece", "99.00", None, "80.000"),
+        ("cheese-gouda", "Сыр Гауда", categories["molochnye-produkty"], "шт", "piece", "329.00", "369.00", "18.000"),
+        ("maslo-slivochnoe", "Масло сливочное 82.5%", categories["molochnye-produkty"], "шт", "piece", "219.00", "249.00", "40.000"),
+        ("smetana", "Сметана 20%", categories["molochnye-produkty"], "шт", "piece", "109.00", None, "60.000"),
+        ("kefir", "Кефир 2.5%", categories["molochnye-produkty"], "шт", "piece", "89.00", None, "70.000"),
+        ("yogurt", "Йогурт греческий", categories["molochnye-produkty"], "шт", "piece", "79.00", None, "80.000"),
+        ("tvorog", "Творог фермерский", categories["molochnye-produkty"], "шт", "piece", "169.00", "199.00", "30.000"),
+        ("bread-rye", "Хлеб ржаной", categories["khleb-i-vypechka"], "шт", "piece", "59.00", None, "45.000"),
+        ("croissant", "Круассан", categories["khleb-i-vypechka"], "шт", "piece", "89.00", "109.00", "25.000"),
+        ("baget", "Багет французский", categories["khleb-i-vypechka"], "шт", "piece", "59.00", None, "50.000"),
+        ("bulochka-koritsa", "Булочка с корицей", categories["khleb-i-vypechka"], "шт", "piece", "79.00", "95.00", "30.000"),
+        ("lavash", "Лаваш армянский", categories["khleb-i-vypechka"], "шт", "piece", "49.00", None, "60.000"),
+        ("baton", "Батон нарезной", categories["khleb-i-vypechka"], "шт", "piece", "45.00", None, "80.000"),
+        ("chiabatta", "Чиабатта", categories["khleb-i-vypechka"], "шт", "piece", "85.00", None, "25.000"),
     )
     products: dict[str, Product] = {}
     for index, (slug, name, category, unit, product_type, price, old_price, stock) in enumerate(products_data, start=1):
