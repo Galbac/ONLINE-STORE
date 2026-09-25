@@ -110,7 +110,7 @@ async def repeat_profile_order(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="В заказе нет товаров") from error
     except OrderAccessDeniedError as error:
         await commiter.rollback()
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Заказ принадлежит другому пользователю") from error
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Заказ не найден") from error
     except InactiveUserError as error:
         await commiter.rollback()
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Пользователь заблокирован или удалён") from error
@@ -360,8 +360,8 @@ async def delete_profile_address(
     except AddressAccessDeniedError as error:
         await commiter.rollback()
         raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Адрес принадлежит другому пользователю",
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Адрес не найден",
         ) from error
     except InactiveUserError as error:
         await commiter.rollback()
@@ -452,8 +452,8 @@ async def update_profile_address(
     except AddressAccessDeniedError as error:
         await commiter.rollback()
         raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Адрес принадлежит другому пользователю",
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Адрес не найден",
         ) from error
     except InactiveUserError as error:
         await commiter.rollback()

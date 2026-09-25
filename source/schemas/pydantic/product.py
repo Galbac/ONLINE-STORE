@@ -120,6 +120,7 @@ class ProductShortResponse(BaseModel):
     product_type: str
     min_quantity: Decimal = Decimal("1")
     quantity_step: Decimal = Decimal("1")
+    is_halal: bool = False
     is_available: bool
     stock_display: str
     category: ProductCategoryShortResponse | None = None
@@ -157,6 +158,7 @@ class ProductDetailResponse(BaseModel):
     product_type: str
     quantity_step: Decimal
     min_quantity: Decimal
+    is_halal: bool = False
     is_available: bool
     stock_quantity: Decimal
     stock_display: str

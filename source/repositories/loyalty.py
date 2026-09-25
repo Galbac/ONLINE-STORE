@@ -10,8 +10,11 @@ class LoyaltyRepository:
         *,
         session: AsyncSession,
         user_id: int,
+        for_update: bool = False,
     ) -> LoyaltyAccount:
         stmt = select(LoyaltyAccount).where(LoyaltyAccount.user_id == user_id)
+        if for_update:
+            stmt = stmt.with_for_update()
         result = await session.execute(stmt)
         account = result.scalar_one_or_none()
         if account is None:

@@ -202,7 +202,7 @@ async def test_order_receipt_permissions():
     )
     order_repo.get_by_id.return_value = order
 
-    # Non-owner customer gets 403
+    # Non-owner customer gets 404 (BOLA/IDOR protection)
     with pytest.raises(HTTPException) as exc_info:
         await unwrap(get_order_receipt)(
             order_id=123,
@@ -210,7 +210,7 @@ async def test_order_receipt_permissions():
             session=session,
             order_repository=order_repo,
         )
-    assert exc_info.value.status_code == status.HTTP_403_FORBIDDEN
+    assert exc_info.value.status_code == status.HTTP_404_NOT_FOUND
 
     # Owner gets receipt
     receipt = await unwrap(get_order_receipt)(

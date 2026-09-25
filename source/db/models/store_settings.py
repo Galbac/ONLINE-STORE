@@ -15,7 +15,7 @@ class StoreSettings(IdBigIntPkMixin, CreateUpdateMixin, Base):
     ogrn: Mapped[str | None] = mapped_column(String(15), default="000000000000000", server_default="000000000000000")
     phone: Mapped[str | None] = mapped_column(String(32), default="+79990000000", server_default="+79990000000")
     email: Mapped[str | None] = mapped_column(String(255), default="info@example.com", server_default="info@example.com")
-    address: Mapped[str | None] = mapped_column(String(500), default="Москва, ул. Тверская, 10", server_default="Москва, ул. Тверская, 10")
+    address: Mapped[str | None] = mapped_column(String(500), default="ул. Победы, 87А, Кизляр", server_default="ул. Победы, 87А, Кизляр")
     working_hours: Mapped[str | None] = mapped_column(String(255), default="Пн-Вс 09:00-22:00", server_default="Пн-Вс 09:00-22:00")
     schedule: Mapped[list[dict] | None] = mapped_column(JSON, nullable=True)
     online_payment_enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true", nullable=False)

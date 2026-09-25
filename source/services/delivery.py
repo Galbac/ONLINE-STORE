@@ -44,8 +44,21 @@ from source.utils.query_hash import build_query_hash
 
 
 class DeliveryService:
-    def calculate_delivery_price(self, *, delivery_type: str) -> Decimal:
-        return Decimal("250.00") if delivery_type == "delivery" else Decimal("0")
+    def calculate_delivery_price(
+        self,
+        *,
+        delivery_type: str,
+        order_amount: Decimal | None = None,
+        delivery_settings: DeliverySettings | None = None,
+    ) -> Decimal:
+        if delivery_type != "delivery":
+            return Decimal("0")
+        free_from = getattr(delivery_settings, "free_from_amount", None) or Decimal("3000.00")
+        if order_amount is not None and free_from is not None and order_amount >= free_from:
+            return Decimal("0")
+        if delivery_settings and getattr(delivery_settings, "base_price", None) is not None:
+            return delivery_settings.base_price
+        return Decimal("250.00")
 
     async def calculate(
         self,
@@ -98,7 +111,7 @@ class DeliveryService:
             response = DeliveryCalculateResponse(
                 available=False,
                 delivery_price=None,
-                message="Доставка по этому адресу недоступна",
+                message="К сожалению, по данному адресу доставка не осуществляется. Доступен только самовывоз",
             )
         else:
             response = self._build_calculate_response(
@@ -322,9 +335,9 @@ class DeliveryService:
         return SimpleNamespace(
             delivery_enabled=True,
             delivery_title="Доставка",
-            delivery_description="Доставка по городу",
+            delivery_description="Доставка по городу Кизляр",
             min_order_amount=Decimal("1000.00"),
-            base_price=Decimal("250.00"),
+            base_price=Decimal("199.00"),
             free_from_amount=Decimal("3000.00"),
             has_time_slots=True,
             pickup_enabled=True,
@@ -444,7 +457,11 @@ class DeliveryTimeSlotService:
         slot,
         query: DeliveryTimeSlotsQueryParams,
     ) -> DeliveryTimeSlotResponse | None:
-        if not slot.is_active or not self._slot_time_available(date_=query.date, end_time=slot.end_time):
+        if not slot.is_active or not self._slot_time_available(
+            date_=query.date,
+            end_time=slot.end_time,
+            start_time=slot.start_time,
+        ):
             return None
         orders_count = await order_repository.count_orders_by_time_slot(
             session=session,
@@ -465,8 +482,12 @@ class DeliveryTimeSlotService:
             reason=None if available else "Интервал заполнен",
         )
 
-    def _slot_time_available(self, *, date_, end_time) -> bool:
-        from datetime import datetime
+    def _slot_time_available(self, *, date_, end_time, start_time=None) -> bool:
+        from datetime import datetime, timedelta
 
         now = datetime.now(settings.tz)
-        return date_ != now.date() or end_time > now.time()
+        if date_ != now.date():
+            return True
+        min_allowed_time = (now + timedelta(minutes=45)).time()
+        check_time = start_time if start_time is not None else end_time
+        return check_time > min_allowed_time and end_time > now.time()

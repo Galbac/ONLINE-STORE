@@ -139,7 +139,8 @@ async def seed_users(session: AsyncSession) -> dict[str, User]:
 
 
 async def seed_settings(session: AsyncSession) -> None:
-    if await get_one(session, StoreSettings) is None:
+    store_settings = await get_one(session, StoreSettings)
+    if store_settings is None:
         session.add(
             StoreSettings(
                 shop_name="Победа",
@@ -153,8 +154,28 @@ async def seed_settings(session: AsyncSession) -> None:
                 working_hours="Круглосуточно",
             )
         )
-    if await get_one(session, DeliverySettings) is None:
-        session.add(DeliverySettings(min_order_amount=Decimal("700.00"), base_price=Decimal("199.00")))
+    else:
+        store_settings.address = "ул. Победы, 87А, Кизляр"
+        store_settings.shop_name = "Победа"
+        store_settings.legal_name = "ИП Магомедов А. М."
+        session.add(store_settings)
+
+    delivery_settings = await get_one(session, DeliverySettings)
+    if delivery_settings is None:
+        session.add(
+            DeliverySettings(
+                min_order_amount=Decimal("1000.00"),
+                base_price=Decimal("199.00"),
+                free_delivery_from=Decimal("3000.00"),
+                default_city="Кизляр",
+            )
+        )
+    else:
+        delivery_settings.default_city = "Кизляр"
+        delivery_settings.base_price = Decimal("199.00")
+        delivery_settings.min_order_amount = Decimal("1000.00")
+        delivery_settings.free_delivery_from = Decimal("3000.00")
+        session.add(delivery_settings)
     if await get_one(session, NotificationSettings) is None:
         session.add(NotificationSettings(email_from="noreply@eda-pobeda.ru", telegram_admin_chat_id="100000001"))
     await session.flush()
@@ -295,7 +316,7 @@ async def seed_catalog(session: AsyncSession, admin: User) -> tuple[dict[str, Ca
                 "sync_status": "synced",
                 "last_sync_at": NOW,
                 "source": "seed",
-                "description": f"{name}. Демо-товар для каталога.",
+                "description": f"{name} свежего урожая и отборного качества.",
                 "search_keywords": name.lower(),
                 "preview_image_url": SEED_IMAGE_URL,
                 "unit": unit,
@@ -308,6 +329,7 @@ async def seed_catalog(session: AsyncSession, admin: User) -> tuple[dict[str, Ca
                 "quantity_step": Decimal("0.100") if product_type == "weight" else Decimal("1.000"),
                 "min_quantity": Decimal("0.500") if product_type == "weight" else Decimal("1.000"),
                 "low_stock_threshold": Decimal("5.000"),
+                "is_halal": False,
                 "popularity": 100 - index,
                 "is_active": True,
                 "is_available": True,
@@ -368,13 +390,13 @@ async def seed_delivery(session: AsyncSession, admin: User) -> tuple[DeliveryZon
     zone = await get_or_create(
         session,
         DeliveryZone,
-        name="Москва в пределах МКАД",
-        city="Москва",
+        name="Кизляр — Центр",
+        city="Кизляр",
         defaults={
-            "description": "Базовая зона доставки",
+            "description": "Базовая зона доставки по Кизляру",
             "price": Decimal("199.00"),
             "free_delivery_from": Decimal("3000.00"),
-            "min_order_amount": Decimal("700.00"),
+            "min_order_amount": Decimal("1000.00"),
             "sort_order": 1,
             "deleted_by": None,
         },
@@ -382,14 +404,14 @@ async def seed_delivery(session: AsyncSession, admin: User) -> tuple[DeliveryZon
     pickup = await get_or_create(
         session,
         PickupPoint,
-        name="Магазин на Тверской",
-        address="ул. Тверская, 10",
+        name="Супермаркет «Победа»",
+        address="ул. Победы, 87А",
         defaults={
-            "city": "Москва",
-            "working_hours": "09:00-22:00",
-            "phone": "+79990000000",
-            "latitude": Decimal("55.760000"),
-            "longitude": Decimal("37.610000"),
+            "city": "Кизляр",
+            "working_hours": "08:00-22:00",
+            "phone": "+7 (928) 519-14-85",
+            "latitude": Decimal("43.849900"),
+            "longitude": Decimal("46.711800"),
             "sort_order": 1,
         },
     )
@@ -397,11 +419,11 @@ async def seed_delivery(session: AsyncSession, admin: User) -> tuple[DeliveryZon
         session,
         DeliveryTimeSlot,
         delivery_type="delivery",
-        label="10:00-13:00",
+        label="09:00-11:00",
         defaults={
             "pickup_point_id": None,
-            "start_time": time(10, 0),
-            "end_time": time(13, 0),
+            "start_time": time(9, 0),
+            "end_time": time(11, 0),
             "orders_limit": 10,
             "sort_order": 1,
         },
@@ -481,7 +503,7 @@ async def seed_customer_flow(
         user_id=customer.id,
         title="Дом",
         defaults={
-            "city": "Москва",
+            "city": "Кизляр",
             "street": "Ленина",
             "house": "15",
             "apartment": "42",
@@ -690,6 +712,12 @@ async def seed_bulk_catalog(session: AsyncSession, admin: User) -> dict[str, Pro
         ("Шампунь", "Гель для душа", "Мыло", "Зубная паста", "Щетка зубная", "Бумага туалетная", "Ватные диски", "Дезодорант"),
     )
 
+    CHICKEN_FILLET_IMAGES = (
+        "https://images.unsplash.com/photo-1604503468506-a8da13d82791?auto=format&fit=crop&w=800&q=80",
+        "https://images.unsplash.com/photo-1587593810167-a84920ea0781?auto=format&fit=crop&w=800&q=80",
+        "https://images.unsplash.com/photo-1628771065518-0d82f1938462?auto=format&fit=crop&w=800&q=80",
+    )
+
     products: dict[str, Product] = {}
     for category_index, (slug, name, description) in enumerate(category_specs, start=10):
         upload = await get_or_create(
@@ -726,6 +754,48 @@ async def seed_bulk_catalog(session: AsyncSession, admin: User) -> dict[str, Pro
             price = Decimal(69 + category_index * 9 + product_index * 13).quantize(Decimal("1.00"))
             old_price = price + Decimal("30.00") if product_index % 3 == 0 else None
             product_type = "weight" if category_index in (10, 11) and product_index <= 4 else "piece"
+            unit = "кг" if product_type == "weight" else "шт"
+            min_quantity = Decimal("0.500") if product_type == "weight" else Decimal("1.000")
+            quantity_step = Decimal("0.100") if product_type == "weight" else Decimal("1.000")
+            article = f"ART-{category_index}{product_index:02}"
+            desc = f"{product_name} отборного качества с доставкой на дом."
+            is_halal = False
+            preview_img = SEED_IMAGE_URL
+
+            # Specific high-fidelity tuning for meat & poultry
+            if slug == "myaso-i-ptitsa":
+                if product_index == 1:  # Куриное филе
+                    product_name = "Куриное филе охлажденное"
+                    article = "PF-1041"
+                    desc = (
+                        "Нежное охлажденное филе куриной грудки высшего сорта от проверенных фермерских хозяйств Дагестана. "
+                        "Без антибиотиков и ГМО. Продукт сертифицирован Халяль. Идеально подходит для запекания, жарки на гриле "
+                        "и диетического рациона. Доставляется с соблюдением температурного режима от 0°C до +4°C."
+                    )
+                    price = Decimal("399.00")
+                    old_price = Decimal("449.00")
+                    product_type = "weight"
+                    unit = "кг"
+                    min_quantity = Decimal("0.500")
+                    quantity_step = Decimal("0.100")
+                    is_halal = True
+                    preview_img = CHICKEN_FILLET_IMAGES[0]
+                elif product_index == 7:  # Бекон из свинины
+                    product_name = "Бекон из свинины с/к, 200 г"
+                    article = "ART-1047"
+                    desc = "Сырокопченый бекон из свинины с тонкими мясными прослойками. Натуральное копчение на буковой щепе."
+                    price = Decimal("249.00")
+                    old_price = None
+                    product_type = "piece"
+                    unit = "шт"
+                    min_quantity = Decimal("1.000")
+                    quantity_step = Decimal("1.000")
+                    is_halal = False
+                elif "свинин" in product_name.lower() or "бекон" in product_name.lower():
+                    is_halal = False
+                else:
+                    is_halal = True
+
             product = await get_or_create(
                 session,
                 Product,
@@ -733,43 +803,76 @@ async def seed_bulk_catalog(session: AsyncSession, admin: User) -> dict[str, Pro
                 defaults={
                     "category_id": category.id,
                     "name": product_name,
-                    "article": f"BULK-{category_index:02}{product_index:02}",
+                    "article": article,
                     "barcode": f"4610000{category_index:02}{product_index:02}",
                     "external_1c_id": f"bulk-product-{category_index:03}-{product_index:02}",
                     "sync_status": "synced",
                     "last_sync_at": NOW,
                     "source": "seed",
-                    "description": f"{product_name}. Расширенный демо-каталог.",
+                    "description": desc,
                     "search_keywords": f"{product_name.lower()} {name.lower()}",
-                    "preview_image_url": SEED_IMAGE_URL,
-                    "unit": "кг" if product_type == "weight" else "шт",
+                    "preview_image_url": preview_img,
+                    "unit": unit,
                     "product_type": product_type,
                     "price": price,
                     "old_price": old_price,
                     "price_updated_at": NOW,
                     "stock_quantity": Decimal(15 + product_index * 7),
                     "stock_updated_at": NOW,
-                    "quantity_step": Decimal("0.100") if product_type == "weight" else Decimal("1.000"),
-                    "min_quantity": Decimal("0.500") if product_type == "weight" else Decimal("1.000"),
+                    "quantity_step": quantity_step,
+                    "min_quantity": min_quantity,
                     "low_stock_threshold": Decimal("5.000"),
+                    "is_halal": is_halal,
                     "popularity": 250 - category_index * 5 - product_index,
                     "is_active": True,
                     "is_available": product_index != 8,
                 },
             )
+            # Make sure updated values are refreshed in existing seed record
+            product.name = product_name
+            product.article = article
+            product.description = desc
+            product.price = price
+            product.old_price = old_price
+            product.product_type = product_type
+            product.unit = unit
+            product.min_quantity = min_quantity
+            product.quantity_step = quantity_step
+            product.is_halal = is_halal
+            product.preview_image_url = preview_img
+            session.add(product)
+            await session.flush()
+
             products[product_slug] = product
-            await get_or_create(
-                session,
-                ProductImage,
-                product_id=product.id,
-                url=SEED_IMAGE_URL,
-                defaults={
-                    "file_id": upload.id,
-                    "external_url": SEED_IMAGE_URL,
-                    "sort_order": 1,
-                    "is_main": True,
-                },
-            )
+
+            if product_slug == "myaso-i-ptitsa-01":
+                # Create 3 gallery images for chicken fillet
+                for img_order, img_url in enumerate(CHICKEN_FILLET_IMAGES, start=1):
+                    await get_or_create(
+                        session,
+                        ProductImage,
+                        product_id=product.id,
+                        sort_order=img_order,
+                        defaults={
+                            "url": img_url,
+                            "file_id": upload.id,
+                            "external_url": img_url,
+                            "is_main": img_order == 1,
+                        },
+                    )
+            else:
+                await get_or_create(
+                    session,
+                    ProductImage,
+                    product_id=product.id,
+                    url=SEED_IMAGE_URL,
+                    defaults={
+                        "file_id": upload.id,
+                        "external_url": SEED_IMAGE_URL,
+                        "sort_order": 1,
+                        "is_main": True,
+                    },
+                )
             await get_or_create(
                 session,
                 ProductPriceHistory,
@@ -801,12 +904,9 @@ async def seed_bulk_delivery(session: AsyncSession, admin: User) -> tuple[list[D
     zones = []
     for index, (name, city, price) in enumerate(
         (
-            ("Север Москвы", "Москва", "249.00"),
-            ("Юг Москвы", "Москва", "249.00"),
-            ("Запад Москвы", "Москва", "299.00"),
-            ("Восток Москвы", "Москва", "299.00"),
-            ("Химки", "Химки", "349.00"),
-            ("Мытищи", "Мытищи", "349.00"),
+            ("Кизляр — Центральный", "Кизляр", "199.00"),
+            ("Кизляр — Черёмушки", "Кизляр", "249.00"),
+            ("Кизляр — Южный / Пригород", "Кизляр", "299.00"),
         ),
         start=1,
     ):
@@ -817,12 +917,12 @@ async def seed_bulk_delivery(session: AsyncSession, admin: User) -> tuple[list[D
                 name=name,
                 city=city,
                 defaults={
-                    "description": f"Демо-зона доставки: {name}",
+                    "description": f"Зона доставки: {name}",
                     "price": Decimal(price),
-                    "free_delivery_from": Decimal("4000.00"),
-                    "min_order_amount": Decimal("900.00"),
-                    "sort_order": index + 10,
-                    "deleted_by": admin.id if index == 6 else None,
+                    "free_delivery_from": Decimal("3000.00"),
+                    "min_order_amount": Decimal("1000.00"),
+                    "sort_order": index,
+                    "deleted_by": None,
                 },
             )
         )
@@ -830,11 +930,8 @@ async def seed_bulk_delivery(session: AsyncSession, admin: User) -> tuple[list[D
     pickups = []
     for index, (name, city, address) in enumerate(
         (
-            ("ПВЗ Арбат", "Москва", "ул. Арбат, 12"),
-            ("ПВЗ Сокол", "Москва", "Ленинградский пр-т, 75"),
-            ("ПВЗ Коломенская", "Москва", "пр-т Андропова, 20"),
-            ("ПВЗ Химки", "Химки", "Юбилейный пр-т, 8"),
-            ("ПВЗ Мытищи", "Мытищи", "ул. Мира, 30"),
+            ("Супермаркет «Победа» (Центральный)", "Кизляр", "ул. Победы, 87А"),
+            ("Пункт выдачи «Победа» на Ленина", "Кизляр", "ул. Ленина, 45"),
         ),
         start=1,
     ):
@@ -846,11 +943,11 @@ async def seed_bulk_delivery(session: AsyncSession, admin: User) -> tuple[list[D
                 address=address,
                 defaults={
                     "city": city,
-                    "working_hours": "09:00-21:00",
-                    "phone": f"+79990200{index:03}",
-                    "latitude": Decimal("55.700000") + Decimal(index) / Decimal("1000"),
-                    "longitude": Decimal("37.500000") + Decimal(index) / Decimal("1000"),
-                    "sort_order": index + 10,
+                    "working_hours": "08:00-22:00",
+                    "phone": f"+7 (928) 519-14-8{index}",
+                    "latitude": Decimal("43.849900") + Decimal(index) / Decimal("1000"),
+                    "longitude": Decimal("46.711800") + Decimal(index) / Decimal("1000"),
+                    "sort_order": index,
                 },
             )
         )
@@ -868,7 +965,7 @@ async def seed_bulk_delivery(session: AsyncSession, admin: User) -> tuple[list[D
                     "start_time": time(start_hour, 0),
                     "end_time": time(end_hour, 0),
                     "orders_limit": 15,
-                    "sort_order": index + 10,
+                    "sort_order": index,
                 },
             )
         )

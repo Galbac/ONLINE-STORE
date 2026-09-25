@@ -1014,6 +1014,7 @@ class ProductRepository:
             product_type=product.product_type,
             min_quantity=product.min_quantity,
             quantity_step=product.quantity_step,
+            is_halal=bool(getattr(product, "is_halal", False)),
             is_available=product.is_available,
             stock_display=build_stock_display(
                 is_available=product.is_available,
@@ -1047,6 +1048,7 @@ class ProductRepository:
             product_type=product.product_type,
             stock_quantity=product.stock_quantity,
             low_stock_threshold=product.low_stock_threshold,
+            is_halal=bool(getattr(product, "is_halal", False)),
             is_active=product.is_active,
             is_available=product.is_available,
             sync_status=product.sync_status,
@@ -1081,6 +1083,7 @@ class ProductRepository:
             product_type=product.product_type,
             quantity_step=product.quantity_step,
             min_quantity=product.min_quantity,
+            is_halal=bool(getattr(product, "is_halal", False)),
             is_available=product.is_available,
             stock_quantity=product.stock_quantity,
             stock_display=build_detailed_stock_display(

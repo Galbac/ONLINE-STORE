@@ -256,6 +256,28 @@ class PaymentService:
     async def create_refund_request(self, *, order) -> None:
         return None
 
+    def build_fiscal_receipt_items(self, *, order, order_items) -> list[dict]:
+        items = []
+        for item in order_items:
+            items.append({
+                "name": item.product_name,
+                "quantity": item.quantity,
+                "price": item.price,
+                "total_amount": item.final_price,
+                "payment_subject": 1,
+                "payment_subject_name": "ТОВАР",
+            })
+        if getattr(order, "delivery_price", Decimal("0")) > Decimal("0"):
+            items.append({
+                "name": "Услуга курьерской доставки",
+                "quantity": Decimal("1.0"),
+                "price": order.delivery_price,
+                "total_amount": order.delivery_price,
+                "payment_subject": 4,
+                "payment_subject_name": "УСЛУГА",
+            })
+        return items
+
     async def get_payment_detail(
         self,
         *,

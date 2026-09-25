@@ -58,3 +58,7 @@ class Order(IdBigIntPkMixin, CreateUpdateMixin, Base):
     sync_error_code: Mapped[str | None] = mapped_column(String(100))
     last_sync_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     items_count: Mapped[int] = mapped_column(default=0, server_default="0", nullable=False)
+    user_ip: Mapped[str | None] = mapped_column(String(64))
+    user_agent: Mapped[str | None] = mapped_column(String(500))
+    accepted_terms_version: Mapped[str | None] = mapped_column(String(50))
+    accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

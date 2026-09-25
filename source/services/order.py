@@ -30,8 +30,10 @@ from source.errors.auth import (
     OrderPaymentMethodNotOnlineError,
     OrderAlreadyPaidError,
     OrderPaymentStatusNotAllowedError,
+    PhoneVerificationRequiredError,
 )
-from source.errors.delivery import DeliveryTimeSlotUnavailableError
+from source.db.models.choises.enum import UserRole
+from source.errors.delivery import DeliveryMinOrderAmountError, DeliveryTimeSlotUnavailableError
 from source.schemas.pydantic.order import (
     OrderAddressResponse,
     OrderCancelRequest,
@@ -49,6 +51,7 @@ from source.schemas.pydantic.order import (
     RepeatOrderResponse,
     RepeatOrderWarningResponse,
 )
+from source.db.models.choises.enum import UserRole
 from source.utils.query_hash import build_query_hash
 from source.utils.order import (
     build_order_next_action,
@@ -568,9 +571,20 @@ class OrderService:
         delivery_time_slot_repository=None,
         loyalty_service=None,
         loyalty_repository=None,
+        user_ip: str | None = None,
+        user_agent: str | None = None,
+        accepted_terms_version: str | None = None,
+        accepted_at: datetime | None = None,
     ) -> OrderCreateResponse:
         if not user.is_active or user.is_deleted:
             raise InactiveUserError
+
+        if (
+            data.payment_method == "on_delivery"
+            and not getattr(user, "is_phone_verified", False)
+            and getattr(user, "role", UserRole.CUSTOMER) == UserRole.CUSTOMER
+        ):
+            raise PhoneVerificationRequiredError
 
         cart = await cart_repository.get_by_user_id(session=session, user_id=user.id)
         if cart is None:
@@ -692,7 +706,10 @@ class OrderService:
             promo_code=promo_code,
             promo_discount_amount=promo_discount_amount,
         )
-        delivery_price = delivery_service.calculate_delivery_price(delivery_type=data.delivery_type)
+        delivery_price = delivery_service.calculate_delivery_price(
+            delivery_type=data.delivery_type,
+            order_amount=cart_snapshot.subtotal,
+        )
         final_price = calculate_order_totals(
             subtotal=cart_snapshot.subtotal,
             discount_amount=cart_snapshot.discount_amount,
@@ -700,9 +717,13 @@ class OrderService:
             delivery_price=delivery_price,
         )
 
+        items_subtotal_after_promos = cart_snapshot.subtotal - cart_snapshot.discount_amount - cart_snapshot.promo_discount_amount
+        if items_subtotal_after_promos < Decimal("0"):
+            items_subtotal_after_promos = Decimal("0")
+
         if getattr(data, "use_points", 0) > 0 and loyalty_service is not None and loyalty_repository is not None:
-            max_points = max(0, int(final_price) - 1)
-            points_to_spend = min(data.use_points, max_points)
+            max_points = max(0, int(items_subtotal_after_promos) - 1)
+            points_to_spend = max(0, min(data.use_points, max_points))
             if points_to_spend > 0:
                 deducted = await loyalty_service.write_off_points(
                     session=session,
@@ -711,7 +732,7 @@ class OrderService:
                     user_id=user.id,
                     points_to_spend=points_to_spend,
                 )
-                final_price = max(Decimal("1.00"), final_price - Decimal(deducted))
+                final_price = max(Decimal("1.00"), items_subtotal_after_promos - Decimal(deducted)) + delivery_price
 
         try:
             order = await order_repository.create(
@@ -740,6 +761,10 @@ class OrderService:
                 substitution_policy=getattr(data, "substitution_policy", "call"),
                 sync_status="pending",
                 items_count=len(cart_items),
+                user_ip=user_ip,
+                user_agent=user_agent,
+                accepted_terms_version=accepted_terms_version or "1.0",
+                accepted_at=accepted_at or datetime.now(settings.tz),
             )
             order.order_number = generate_order_number(prefix=settings.orders.number_prefix, order_id=order.id)
             await order_item_repository.bulk_create(

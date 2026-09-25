@@ -1,5 +1,5 @@
 from dishka.integrations.fastapi import FromDishka, inject
-from fastapi import APIRouter, Depends, Header, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from source.api.dependencies import get_current_user
@@ -11,12 +11,21 @@ from source.errors.auth import (
     EmptyUserProfileUpdateError,
     InvalidCurrentPasswordError,
     InactiveUserError,
+    PhoneOtpExpiredError,
+    PhoneOtpInvalidError,
+    PhoneOtpRateLimitError,
     UserDeleteConfirmationRequiredError,
     UserEmailAlreadyExistsError,
     UserPhoneAlreadyExistsError,
 )
 from source.schemas.pydantic.auth import MessageResponse
-from source.schemas.pydantic.user import UserMeDeleteRequest, UserMeResponse, UserMeUpdateRequest
+from source.schemas.pydantic.user import (
+    MarketingConsentUpdateRequest,
+    PhoneVerifyOtpRequest,
+    UserMeDeleteRequest,
+    UserMeResponse,
+    UserMeUpdateRequest,
+)
 from source.repositories.user import UserRepository
 from source.services.auth import AuthService
 from source.services.auth_cache import AuthCacheService
@@ -238,3 +247,116 @@ async def delete_user_me(
             status_code=status.HTTP_409_CONFLICT,
             detail="Нельзя удалить аккаунт, пока есть активные заказы",
         ) from error
+
+
+@router.post(
+    "/phone/send-otp",
+    response_model=MessageResponse,
+    status_code=status.HTTP_200_OK,
+    responses={
+        status.HTTP_401_UNAUTHORIZED: {"description": "Пользователь не авторизован."},
+        status.HTTP_429_TOO_MANY_REQUESTS: {"description": "Слишком много запросов кода."},
+    },
+)
+@inject
+async def send_phone_otp(
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    redis_service: FromDishka[RedisService] = None,
+    user_service: FromDishka[UserService] = None,
+) -> MessageResponse:
+    client_ip = request.client.host if request.client else "127.0.0.1"
+    try:
+        return await user_service.send_phone_verification_otp(
+            redis_service=redis_service,
+            user=current_user,
+            ip_address=client_ip,
+        )
+    except PhoneOtpRateLimitError as error:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Слишком много запросов кода. Пожалуйста, подождите 60 секунд",
+        ) from error
+
+
+@router.post(
+    "/phone/verify-otp",
+    response_model=UserMeResponse,
+    status_code=status.HTTP_200_OK,
+    responses={
+        status.HTTP_400_BAD_REQUEST: {"description": "Неверный или истёкший код."},
+        status.HTTP_401_UNAUTHORIZED: {"description": "Пользователь не авторизован."},
+    },
+)
+@inject
+async def verify_phone_otp(
+    body: PhoneVerifyOtpRequest,
+    current_user: User = Depends(get_current_user),
+    session: FromDishka[AsyncSession] = None,
+    commiter: FromDishka[Commiter] = None,
+    redis_service: FromDishka[RedisService] = None,
+    user_service: FromDishka[UserService] = None,
+    user_cache_service: FromDishka[UserCacheService] = None,
+    auth_cache_service: FromDishka[AuthCacheService] = None,
+    profile_cache_service: FromDishka[ProfileCacheService] = None,
+) -> UserMeResponse:
+    try:
+        response = await user_service.verify_phone_otp(
+            session=session,
+            redis_service=redis_service,
+            user_cache_service=user_cache_service,
+            auth_cache_service=auth_cache_service,
+            profile_cache_service=profile_cache_service,
+            user=current_user,
+            otp_code=body.otp_code,
+        )
+        await commiter.commit()
+        return response
+    except PhoneOtpExpiredError as error:
+        await commiter.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Срок действия кода истёк. Запросите новый код",
+        ) from error
+    except PhoneOtpInvalidError as error:
+        await commiter.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Неверный код подтверждения",
+        ) from error
+
+
+@router.patch(
+    "/marketing-consent",
+    response_model=UserMeResponse,
+    status_code=status.HTTP_200_OK,
+    responses={
+        status.HTTP_401_UNAUTHORIZED: {"description": "Пользователь не авторизован."},
+    },
+)
+@inject
+async def update_marketing_consent(
+    request: Request,
+    body: MarketingConsentUpdateRequest,
+    current_user: User = Depends(get_current_user),
+    session: FromDishka[AsyncSession] = None,
+    commiter: FromDishka[Commiter] = None,
+    redis_service: FromDishka[RedisService] = None,
+    user_service: FromDishka[UserService] = None,
+    user_cache_service: FromDishka[UserCacheService] = None,
+    auth_cache_service: FromDishka[AuthCacheService] = None,
+    profile_cache_service: FromDishka[ProfileCacheService] = None,
+) -> UserMeResponse:
+    client_ip = request.client.host if request.client else "127.0.0.1"
+    response = await user_service.update_marketing_consent(
+        session=session,
+        redis_service=redis_service,
+        user_cache_service=user_cache_service,
+        auth_cache_service=auth_cache_service,
+        profile_cache_service=profile_cache_service,
+        user=current_user,
+        marketing_consent=body.marketing_consent,
+        ip_address=client_ip,
+    )
+    await commiter.commit()
+    return response

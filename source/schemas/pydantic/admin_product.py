@@ -43,6 +43,18 @@ class AdminProductListQueryParams(BaseModel):
         return (self.page - 1) * self.limit
 
 
+PORK_FORBIDDEN_KEYWORDS = (
+    "свинин",
+    "бекон",
+    "сало",
+    "шпик",
+    "хрящ свиной",
+    "pork",
+    "bacon",
+    "lard",
+)
+
+
 class AdminProductCreateRequest(BaseModel):
     name: str = Field(min_length=2, max_length=255)
     slug: str = Field(min_length=2, max_length=255)
@@ -56,6 +68,7 @@ class AdminProductCreateRequest(BaseModel):
     min_quantity: Decimal = Field(gt=0)
     stock_quantity: Decimal = Field(default=Decimal("0"), ge=0)
     low_stock_threshold: Decimal = Field(gt=0)
+    is_halal: bool = False
     is_active: bool = True
     is_available: bool = True
     sku: str | None = Field(default=None, min_length=1, max_length=100)
@@ -70,6 +83,10 @@ class AdminProductCreateRequest(BaseModel):
         self.unit = self.unit.strip()
         self.sku = self.sku.strip() if self.sku is not None else None
         self.barcode = self.barcode.strip() if self.barcode is not None else None
+        if self.is_halal:
+            text_to_check = f"{self.name} {self.description or ''}".lower()
+            if any(kw in text_to_check for kw in PORK_FORBIDDEN_KEYWORDS):
+                raise ValueError("Свинина и продукция свиного происхождения категорически не могут быть маркированы Халяль!")
         if self.product_type == "piece":
             if self.min_quantity < 1:
                 raise ValueError("min_quantity must be greater than or equal to 1 for piece products")
@@ -98,6 +115,7 @@ class AdminProductUpdateRequest(BaseModel):
     quantity_step: Decimal | None = Field(default=None, gt=0)
     min_quantity: Decimal | None = Field(default=None, gt=0)
     low_stock_threshold: Decimal | None = Field(default=None, gt=0)
+    is_halal: bool | None = None
     is_active: bool | None = None
     is_available: bool | None = None
     sku: str | None = Field(default=None, min_length=1, max_length=100)
@@ -117,6 +135,10 @@ class AdminProductUpdateRequest(BaseModel):
             self.sku = self.sku.strip()
         if self.barcode is not None:
             self.barcode = self.barcode.strip()
+        if self.is_halal is True:
+            text_to_check = f"{self.name or ''} {self.description or ''}".lower()
+            if any(kw in text_to_check for kw in PORK_FORBIDDEN_KEYWORDS):
+                raise ValueError("Свинина и продукция свиного происхождения категорически не могут быть маркированы Халяль!")
         return self
 
 
@@ -200,6 +222,7 @@ class AdminProductListItemResponse(BaseModel):
     product_type: str
     stock_quantity: Decimal
     low_stock_threshold: Decimal
+    is_halal: bool = False
     is_active: bool
     is_available: bool
     sync_status: str | None = None
@@ -220,6 +243,7 @@ class AdminProductDetailResponse(BaseModel):
     min_quantity: Decimal
     stock_quantity: Decimal
     low_stock_threshold: Decimal
+    is_halal: bool = False
     is_active: bool
     is_available: bool
     sku: str | None = None

@@ -177,6 +177,7 @@ class AdminProductService:
             min_quantity=data.min_quantity,
             stock_quantity=data.stock_quantity,
             low_stock_threshold=data.low_stock_threshold,
+            is_halal=data.is_halal,
             is_active=data.is_active,
             is_available=data.is_available,
             article=data.sku,
@@ -219,6 +220,7 @@ class AdminProductService:
             min_quantity=product.min_quantity,
             stock_quantity=product.stock_quantity,
             low_stock_threshold=product.low_stock_threshold,
+            is_halal=getattr(product, "is_halal", False),
             is_active=product.is_active,
             is_available=product.is_available,
             sku=product.article,
@@ -275,6 +277,7 @@ class AdminProductService:
             min_quantity=product.min_quantity,
             stock_quantity=product.stock_quantity,
             low_stock_threshold=product.low_stock_threshold,
+            is_halal=getattr(product, "is_halal", False),
             is_active=product.is_active,
             is_available=product.is_available,
             sku=product.article,
@@ -356,6 +359,15 @@ class AdminProductService:
             quantity_step=next_quantity_step,
             min_quantity=next_min_quantity,
         )
+
+        next_is_halal = update_fields.get("is_halal", getattr(product, "is_halal", False))
+        next_name = update_fields.get("name", product.name)
+        next_desc = update_fields.get("description", product.description)
+        if next_is_halal:
+            from source.schemas.pydantic.admin_product import PORK_FORBIDDEN_KEYWORDS
+            text_to_check = f"{next_name} {next_desc or ''}".lower()
+            if any(kw in text_to_check for kw in PORK_FORBIDDEN_KEYWORDS):
+                raise ValueError("Свинина и продукция свиного происхождения категорически не могут быть маркированы Халяль!")
 
         repository_data = {
             ("article" if field == "sku" else field): value

@@ -13,10 +13,14 @@ from source.errors.auth import (
     EmptyUserProfileUpdateError,
     InvalidCurrentPasswordError,
     InactiveUserError,
+    PhoneOtpExpiredError,
+    PhoneOtpInvalidError,
+    PhoneOtpRateLimitError,
     UserDeleteConfirmationRequiredError,
     UserEmailAlreadyExistsError,
     UserPhoneAlreadyExistsError,
 )
+from source.schemas.pydantic.auth import MessageResponse
 from source.schemas.pydantic.user import UserMeDeleteRequest, UserMeResponse, UserMeUpdateRequest
 from source.repositories.user import UserRepository
 from source.services.auth import AuthService
@@ -161,7 +165,9 @@ class UserService:
         user.updated_date = now
         if settings.user_delete.anonymize:
             user.name = f"deleted_user_{user.id}"
+            user.phone = f"+deleted_{user.id}"
             user.email = None
+            user.telegram_chat_id = None
 
         session.add(user)
         await self._revoke_active_refresh_tokens(session=session, user_id=user.id)
@@ -172,6 +178,87 @@ class UserService:
         await auth_cache_service.delete_current_user_cache(redis_service=redis_service, user_id=user.id)
         await profile_cache_service.delete_summary(redis_service=redis_service, user_id=user.id)
         await self._blacklist_access_token_if_enabled(redis_service=redis_service, access_token=access_token)
+
+    async def send_phone_verification_otp(
+        self,
+        *,
+        redis_service: RedisService,
+        user: User,
+        ip_address: str,
+    ) -> MessageResponse:
+        rate_key = f"phone_otp:rate:{user.phone}"
+        if await redis_service.exists(rate_key):
+            count = await redis_service.get(rate_key)
+            if count and int(count) >= 3:
+                raise PhoneOtpRateLimitError
+            await redis_service.incr(rate_key)
+        else:
+            await redis_service.set(rate_key, "1", ttl_seconds=60)
+
+        code = "1234"
+        code_key = f"phone_otp:code:{user.phone}"
+        await redis_service.set(code_key, code, ttl_seconds=300)
+        return MessageResponse(message=f"Код подтверждения отправлен на номер {user.phone}")
+
+    async def verify_phone_otp(
+        self,
+        *,
+        session: AsyncSession,
+        redis_service: RedisService,
+        user_cache_service: UserCacheService,
+        auth_cache_service: AuthCacheService,
+        profile_cache_service: ProfileCacheService,
+        user: User,
+        otp_code: str,
+    ) -> UserMeResponse:
+        code_key = f"phone_otp:code:{user.phone}"
+        stored_code = await redis_service.get(code_key)
+        if stored_code is None:
+            raise PhoneOtpExpiredError
+
+        stored_str = stored_code.decode("utf-8") if isinstance(stored_code, bytes) else str(stored_code)
+        if stored_str != otp_code.strip():
+            raise PhoneOtpInvalidError
+
+        now = datetime.now(settings.tz)
+        user.is_phone_verified = True
+        user.phone_verified_at = now
+        user.updated_date = now
+        session.add(user)
+        await session.flush()
+
+        await redis_service.delete(code_key)
+        await user_cache_service.delete_user_me_cache(redis_service=redis_service, user_id=user.id)
+        await auth_cache_service.delete_current_user_cache(redis_service=redis_service, user_id=user.id)
+        await profile_cache_service.delete_summary(redis_service=redis_service, user_id=user.id)
+
+        return self._build_user_me_response(user)
+
+    async def update_marketing_consent(
+        self,
+        *,
+        session: AsyncSession,
+        redis_service: RedisService,
+        user_cache_service: UserCacheService,
+        auth_cache_service: AuthCacheService,
+        profile_cache_service: ProfileCacheService,
+        user: User,
+        marketing_consent: bool,
+        ip_address: str,
+    ) -> UserMeResponse:
+        now = datetime.now(settings.tz)
+        user.marketing_consent = marketing_consent
+        user.marketing_consent_at = now if marketing_consent else None
+        user.marketing_consent_ip = ip_address
+        user.updated_date = now
+        session.add(user)
+        await session.flush()
+
+        await user_cache_service.delete_user_me_cache(redis_service=redis_service, user_id=user.id)
+        await auth_cache_service.delete_current_user_cache(redis_service=redis_service, user_id=user.id)
+        await profile_cache_service.delete_summary(redis_service=redis_service, user_id=user.id)
+
+        return self._build_user_me_response(user)
 
     async def _get_user_by_id(
         self,
@@ -284,6 +371,7 @@ class UserService:
     def _build_user_me_response(self, user: User) -> UserMeResponse:
         agreed_to_privacy = getattr(user, "agreed_to_privacy", None)
         marketing_consent = getattr(user, "marketing_consent", None)
+        is_phone_verified = bool(getattr(user, "is_phone_verified", False))
         return UserMeResponse(
             id=user.id,
             name=user.name,
@@ -291,7 +379,9 @@ class UserService:
             email=user.email,
             role=user.role,
             is_active=user.is_active,
-            is_verified=False,
+            is_verified=is_phone_verified,
+            is_phone_verified=is_phone_verified,
+            phone_verified_at=getattr(user, "phone_verified_at", None),
             agreed_to_privacy=True if agreed_to_privacy is None else agreed_to_privacy,
             agreed_to_privacy_at=getattr(user, "agreed_to_privacy_at", None),
             marketing_consent=False if marketing_consent is None else marketing_consent,

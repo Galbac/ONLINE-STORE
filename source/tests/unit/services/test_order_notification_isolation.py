@@ -66,6 +66,7 @@ async def test_order_creation_succeeds_even_if_notifications_fail():
         email="buyer@example.com",
         role=UserRole.CUSTOMER,
         is_active=True,
+        is_phone_verified=True,
         telegram_chat_id="123456789",
     )
 

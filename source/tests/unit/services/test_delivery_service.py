@@ -489,7 +489,7 @@ async def test_calculate_delivery_address_out_of_zone() -> None:
 
     assert response.available is False
     assert response.delivery_price is None
-    assert response.message == "Доставка по этому адресу недоступна"
+    assert response.message == "К сожалению, по данному адресу доставка не осуществляется. Доступен только самовывоз"
 
 
 @pytest.mark.asyncio

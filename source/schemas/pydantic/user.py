@@ -9,6 +9,8 @@ from source.utils.user_profile import normalize_email, validate_phone
 
 
 class UserMeUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
     name: str | None = Field(default=None, min_length=2, max_length=100)
     phone: str | None = Field(default=None, min_length=5, max_length=32)
     email: EmailStr | None = None
@@ -36,7 +38,28 @@ class UserMeUpdateRequest(BaseModel):
         return normalize_email(value)
 
 
+class PhoneVerifyOtpRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    otp_code: str = Field(min_length=4, max_length=10)
+
+    @field_validator("otp_code", mode="before")
+    @classmethod
+    def normalize_code(cls, value: str) -> str:
+        if isinstance(value, str):
+            return value.strip()
+        return value
+
+
+class MarketingConsentUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    marketing_consent: bool
+
+
 class UserMeDeleteRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     password: str = Field(min_length=1)
     confirm: bool
 
@@ -49,6 +72,8 @@ class UserMeResponse(BaseModel):
     role: UserRole
     is_active: bool
     is_verified: bool = False
+    is_phone_verified: bool = False
+    phone_verified_at: datetime | None = None
     agreed_to_privacy: bool = True
     agreed_to_privacy_at: datetime | None = None
     marketing_consent: bool = False

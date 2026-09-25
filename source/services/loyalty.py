@@ -62,7 +62,7 @@ class LoyaltyService:
     ) -> int:
         if points_to_spend <= 0:
             return 0
-        account = await loyalty_repository.get_or_create_account(session=session, user_id=user_id)
+        account = await loyalty_repository.get_or_create_account(session=session, user_id=user_id, for_update=True)
         actual_deduct = min(account.balance, points_to_spend)
         if actual_deduct <= 0:
             return 0

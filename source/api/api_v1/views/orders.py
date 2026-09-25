@@ -1,13 +1,15 @@
 from dishka.integrations.fastapi import FromDishka, inject
-from datetime import date
+from datetime import date, datetime
+from decimal import Decimal
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, Request, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from source.api.dependencies import get_current_user
 from source.common.commiter import Commiter
+from source.config.settings import settings
 from source.db.models.user import User
 from source.errors.auth import (
     CartEmptyError,
@@ -26,8 +28,9 @@ from source.errors.auth import (
     OrderUnavailableItemsError,
     OrderItemsNotFoundError,
     RepeatOrderUnavailableError,
+    PhoneVerificationRequiredError,
 )
-from source.errors.delivery import DeliveryTimeSlotUnavailableError
+from source.errors.delivery import DeliveryMinOrderAmountError, DeliveryTimeSlotUnavailableError
 from source.repositories.address import AddressRepository
 from source.repositories.cart import CartRepository
 from source.repositories.cart_item import CartItemRepository
@@ -53,7 +56,7 @@ from source.schemas.pydantic.order import (
     RepeatOrderResponse,
 )
 from source.schemas.pydantic.order_tracking import OrderTrackingResponse
-from source.schemas.pydantic.receipt import OrderReceiptResponse
+from source.schemas.pydantic.receipt import OrderReceiptResponse, ReceiptItemResponse
 from source.services.order_tracking import OrderTrackingService
 from source.services.cart import CartCalculatorService, CartService
 from source.services.cart_cache import CartCacheService
@@ -140,7 +143,7 @@ async def get_order_status(
     except OrderNotFoundError as error:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Заказ не найден") from error
     except OrderAccessDeniedError as error:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Заказ принадлежит другому пользователю") from error
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Заказ не найден") from error
 
 
 @router.get("/orders/{order_id}/tracking", response_model=OrderTrackingResponse, status_code=status.HTTP_200_OK)
@@ -174,6 +177,8 @@ async def get_order_receipt(
     current_user: User = Depends(get_current_user),
     session: FromDishka[AsyncSession] = None,
     order_repository: FromDishka[OrderRepository] = None,
+    order_item_repository: FromDishka[OrderItemRepository] = None,
+    payment_service: FromDishka[PaymentService] = None,
 ) -> OrderReceiptResponse:
     if order_id <= 0:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Неверный order_id")
@@ -181,10 +186,19 @@ async def get_order_receipt(
     if order is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Заказ не найден")
     if order.user_id != current_user.id and current_user.role == "customer":
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Заказ принадлежит другому пользователю")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Заказ не найден")
 
     receipt_url = f"https://receipt.ofd.ru/check/{order.order_number}"
     fiscal_num = f"FP-{order.id * 8831 % 900000 + 100000}"
+
+    receipt_items = []
+    if order_item_repository is not None and payment_service is not None:
+        try:
+            order_items = await order_item_repository.get_by_order_id(session=session, order_id=order.id)
+            raw_items = payment_service.build_fiscal_receipt_items(order=order, order_items=order_items)
+            receipt_items = [ReceiptItemResponse.model_validate(it) for it in raw_items]
+        except Exception:
+            receipt_items = []
 
     return OrderReceiptResponse(
         order_id=order.id,
@@ -193,6 +207,7 @@ async def get_order_receipt(
         fiscal_number=fiscal_num,
         total_amount=order.final_price,
         issued_at=order.updated_date,
+        items=receipt_items,
     )
 
 
@@ -239,7 +254,7 @@ async def repeat_order(
     except OrderNotFoundError as error:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Заказ не найден") from error
     except OrderAccessDeniedError as error:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Заказ принадлежит другому пользователю") from error
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Заказ не найден") from error
     except OrderItemsNotFoundError as error:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="В заказе нет товаров") from error
     except RepeatOrderUnavailableError as error:
@@ -281,7 +296,7 @@ async def get_order_detail(
     except OrderNotFoundError as error:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Заказ не найден") from error
     except OrderAccessDeniedError as error:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Заказ принадлежит другому пользователю") from error
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Заказ не найден") from error
 
 
 @router.post("/orders/{order_id}/cancel", response_model=OrderCancelResponse, status_code=status.HTTP_200_OK)
@@ -343,7 +358,7 @@ async def cancel_order(
     except OrderNotFoundError as error:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Заказ не найден") from error
     except OrderAccessDeniedError as error:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Заказ принадлежит другому пользователю") from error
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Заказ не найден") from error
     except OrderAlreadyCancelledError as error:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Заказ уже отменён") from error
     except OrderCancellationNotAllowedError as error:
@@ -358,7 +373,9 @@ async def cancel_order(
 @router.post("/orders", response_model=OrderCreateResponse, status_code=status.HTTP_201_CREATED)
 @inject
 async def create_order(
+    request: Request,
     body: OrderCreateRequest = Body(),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     current_user: User = Depends(get_current_user),
     session: FromDishka[AsyncSession] = None,
     commiter: FromDishka[Commiter] = None,
@@ -393,8 +410,53 @@ async def create_order(
     loyalty_repository: FromDishka[LoyaltyRepository] = None,
     loyalty_service: FromDishka[LoyaltyService] = None,
 ) -> OrderCreateResponse:
+    # 1. Защита от повторной отправки (Idempotency)
+    idempotency_redis_key = None
+    if idempotency_key and redis_service is not None:
+        idempotency_redis_key = f"order:idempotency:{current_user.id}:{idempotency_key}"
+        cached_order_data = await redis_service.get(idempotency_redis_key)
+        if cached_order_data:
+            if isinstance(cached_order_data, bytes):
+                cached_order_data = cached_order_data.decode("utf-8")
+            return OrderCreateResponse.model_validate_json(cached_order_data)
+
+    # 2. Валидация корзины и минимальной суммы в контроллере
+    if cart_repository is not None and cart_item_repository is not None:
+        cart = await cart_repository.get_by_user_id(session=session, user_id=current_user.id)
+        if cart is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Корзина не найдена")
+        cart_items = await cart_item_repository.get_by_cart_id(session=session, cart_id=cart.id)
+        if not cart_items or len(cart_items) == 0:
+            return JSONResponse(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                content={"code": "EMPTY_CART", "detail": "Корзина пустая"},
+            )
+        if product_repository is not None:
+            products = await product_repository.get_by_ids(
+                session=session,
+                product_ids=[item.product_id for item in cart_items],
+            )
+            products_by_id = {p.id: p for p in products}
+            items_total = sum(
+                (products_by_id[item.product_id].price * item.quantity for item in cart_items if item.product_id in products_by_id),
+                Decimal("0"),
+            )
+            if items_total < Decimal("1000.00"):
+                return JSONResponse(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    content={
+                        "code": "MIN_ORDER_AMOUNT_NOT_MET",
+                        "detail": "Минимальная сумма заказа для оформления — 1 000 ₽",
+                        "min_amount": 1000,
+                        "current_amount": float(items_total),
+                    },
+                )
+
+    client_ip = request.client.host if request.client else None
+    user_agent = request.headers.get("user-agent")
+
     try:
-        return await order_service.create_order(
+        response = await order_service.create_order(
             session=session,
             commiter=commiter,
             redis_service=redis_service,
@@ -428,17 +490,39 @@ async def create_order(
             telegram_service=telegram_service,
             loyalty_service=loyalty_service,
             loyalty_repository=loyalty_repository,
+            user_ip=client_ip,
+            user_agent=user_agent,
+            accepted_terms_version="1.0",
+            accepted_at=datetime.now(settings.tz),
         )
+
+        if idempotency_redis_key and redis_service is not None:
+            await redis_service.set(idempotency_redis_key, response.model_dump_json(), ex=1800)
+
+        return response
     except InactiveUserError as error:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Пользователь заблокирован или удалён") from error
+    except PhoneVerificationRequiredError as error:
+        return JSONResponse(
+            status_code=status.HTTP_403_FORBIDDEN,
+            content={"code": "PHONE_VERIFICATION_REQUIRED", "detail": "Для оплаты при получении требуется подтверждение номера телефона"},
+        )
     except OrderCartNotFoundError as error:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Корзина не найдена") from error
     except CartEmptyError as error:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Корзина пустая") from error
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content={"code": "EMPTY_CART", "detail": "Корзина пустая"},
+        )
+    except DeliveryMinOrderAmountError as error:
+        return JSONResponse(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            content={"code": "MIN_ORDER_AMOUNT_NOT_MET", "detail": "Минимальная сумма заказа для оформления — 1 000 ₽"},
+        )
     except OrderAddressNotFoundError as error:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Адрес не найден") from error
     except OrderAddressAccessDeniedError as error:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Адрес принадлежит другому пользователю") from error
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Адрес не найден") from error
     except OrderPickupPointNotFoundError as error:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Точка самовывоза не найдена") from error
     except OrderPickupPointInactiveError as error:

@@ -33,7 +33,7 @@ class DeliveryTimeSlotRepository:
                 DeliveryTimeSlot.delivery_type == delivery_type,
                 DeliveryTimeSlot.weekdays.like(f"%{weekday}%"),
             )
-            .order_by(DeliveryTimeSlot.sort_order.asc(), DeliveryTimeSlot.start_time.asc())
+            .order_by(DeliveryTimeSlot.start_time.asc(), DeliveryTimeSlot.sort_order.asc())
         )
         if delivery_type == "pickup":
             statement = statement.where(

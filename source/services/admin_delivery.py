@@ -734,7 +734,7 @@ class AdminDeliveryService:
             time_slots_enabled=delivery_settings.has_time_slots,
             delivery_comment=delivery_settings.delivery_description,
             pickup_comment=delivery_settings.pickup_description,
-            default_city=getattr(delivery_settings, "default_city", "Москва"),
+            default_city=getattr(delivery_settings, "default_city", "Кизляр"),
             currency=getattr(delivery_settings, "currency", settings.payments.currency),
             updated_at=getattr(delivery_settings, "updated_date", None),
         )

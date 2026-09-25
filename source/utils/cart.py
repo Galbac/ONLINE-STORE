@@ -13,10 +13,14 @@ def validate_product_quantity(*, quantity: Decimal, available_quantity: Decimal,
     return steps * quantity_step
 
 
-def is_quantity_valid_for_step(*, quantity: Decimal, quantity_step: Decimal) -> bool:
+def is_quantity_valid_for_step(*, quantity: Decimal, quantity_step: Decimal, min_quantity: Decimal | None = None) -> bool:
     if quantity_step <= 0:
         return True
-    return quantity % quantity_step == 0
+    if quantity % quantity_step == 0:
+        return True
+    if min_quantity is not None and (quantity - min_quantity) % quantity_step == 0:
+        return True
+    return False
 
 
 def calculate_cart_totals(items) -> tuple[Decimal, Decimal, Decimal]:

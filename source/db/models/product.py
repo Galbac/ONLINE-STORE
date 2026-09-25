@@ -38,6 +38,7 @@ class Product(IdBigIntPkMixin, CreateUpdateMixin, Base):
     popularity: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
     meta_title: Mapped[str | None] = mapped_column(String(255))
     meta_description: Mapped[str | None] = mapped_column(String(500))
+    is_halal: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false", nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true", nullable=False)
     is_available: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true", nullable=False)
     is_deleted: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false", nullable=False)

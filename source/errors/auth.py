@@ -438,3 +438,19 @@ class RegisterOtpMaxAttemptsError(Exception):
 class RegisterEmailRequiredError(Exception):
     pass
 
+
+class PhoneVerificationRequiredError(Exception):
+    pass
+
+
+class PhoneOtpRateLimitError(Exception):
+    pass
+
+
+class PhoneOtpInvalidError(Exception):
+    pass
+
+
+class PhoneOtpExpiredError(Exception):
+    pass
+

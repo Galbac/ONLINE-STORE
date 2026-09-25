@@ -49,7 +49,7 @@ class StockService:
             raise CartPieceQuantityMustBeIntegerError
         if quantity < product.min_quantity:
             raise CartQuantityBelowMinimumError
-        if not is_quantity_valid_for_step(quantity=quantity, quantity_step=product.quantity_step):
+        if not is_quantity_valid_for_step(quantity=quantity, quantity_step=product.quantity_step, min_quantity=product.min_quantity):
             raise CartQuantityStepError
 
     def check_available_stock(self, *, product: Product, quantity: Decimal) -> None:

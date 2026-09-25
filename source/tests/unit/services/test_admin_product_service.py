@@ -897,6 +897,19 @@ def test_admin_product_create_invalid_quantity_step_error() -> None:
         build_create_request(product_type="weight", quantity_step=Decimal("0.3"))
 
 
+def test_admin_product_create_halal_pork_forbidden() -> None:
+    with pytest.raises(ValidationError, match="Свинина и продукция свиного происхождения категорически не могут быть маркированы Халяль"):
+        build_create_request(name="Бекон из свинины с/к", is_halal=True)
+
+    with pytest.raises(ValidationError, match="Свинина и продукция свиного происхождения категорически не могут быть маркированы Халяль"):
+        build_create_request(name="Колбаса домашняя", description="Содержит шпик и свиной жир", is_halal=True)
+
+
+def test_admin_product_create_halal_beef_allowed() -> None:
+    request = build_create_request(name="Говядина мякоть Халяль", is_halal=True)
+    assert request.is_halal is True
+
+
 @pytest.mark.asyncio
 async def test_admin_product_create_invalidates_cache() -> None:
     redis_service = FakeRedisService()

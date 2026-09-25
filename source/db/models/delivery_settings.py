@@ -44,5 +44,5 @@ class DeliverySettings(IdBigIntPkMixin, CreateUpdateMixin, Base):
         server_default="Можно забрать заказ из магазина",
     )
     pickup_price: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=Decimal("0"), server_default="0", nullable=False)
-    default_city: Mapped[str | None] = mapped_column(String(100), default="Москва", server_default="Москва")
+    default_city: Mapped[str | None] = mapped_column(String(100), default="Кизляр", server_default="Кизляр")
     currency: Mapped[str] = mapped_column(String(3), default="RUB", server_default="RUB", nullable=False)

@@ -7,6 +7,7 @@ from fastapi import HTTPException
 from pydantic import ValidationError
 
 from source.api.dependencies import resolve_access_token
+from source.db.models.choises.enum import UserRole
 from source.errors.auth import (
     CartEmptyError,
     OrderAccessDeniedError,
@@ -18,6 +19,7 @@ from source.errors.auth import (
     OrderPickupPointInactiveError,
     OrderPromoCodeInvalidError,
     OrderUnavailableItemsError,
+    PhoneVerificationRequiredError,
     RepeatOrderUnavailableError,
 )
 from source.schemas.pydantic.order import OrderCancelRequest, OrderCreateRequest, RepeatOrderRequest
@@ -508,7 +510,15 @@ async def execute_create_order(
     promo_code=None,
     fail_create=False,
     delivery_cache_service=None,
+    user=None,
+    use_points=0,
+    loyalty_service=None,
+    loyalty_repository=None,
+    user_ip=None,
+    user_agent=None,
+    accepted_terms_version=None,
 ):
+    user = SimpleNamespace(id=1, is_active=True, is_deleted=False, is_phone_verified=True, role=UserRole.CUSTOMER) if user is None else user
     items = [build_cart_item()] if items is None else items
     product = build_product() if product is None else product
     cart = SimpleNamespace(id=10, user_id=1, promo_code_id=None if promo_code is None else promo_code.id) if cart is None else cart
@@ -530,7 +540,7 @@ async def execute_create_order(
         session=None,
         commiter=commiter,
         redis_service=redis_service,
-        user=SimpleNamespace(id=1, is_active=True, is_deleted=False),
+        user=user,
         data=OrderCreateRequest(
             delivery_type=delivery_type,
             payment_method=payment_method,
@@ -539,6 +549,7 @@ async def execute_create_order(
             customer_name="Иван Иванов",
             customer_phone="+79990000000",
             customer_email="ivan@example.com",
+            use_points=use_points,
         ),
         cart_repository=FakeCartRepository(cart),
         cart_item_repository=cart_item_repository,
@@ -564,6 +575,11 @@ async def execute_create_order(
         notification_service=notification_service,
         email_service=FakeEmailService(),
         telegram_service=FakeTelegramService(),
+        loyalty_service=loyalty_service,
+        loyalty_repository=loyalty_repository,
+        user_ip=user_ip,
+        user_agent=user_agent,
+        accepted_terms_version=accepted_terms_version,
     )
     return SimpleNamespace(
         response=response,
@@ -740,6 +756,16 @@ async def test_create_order_delivery_success() -> None:
 
 
 @pytest.mark.asyncio
+async def test_create_order_without_phone_verification_raises_error() -> None:
+    with pytest.raises(PhoneVerificationRequiredError):
+        await execute_create_order(
+            user=SimpleNamespace(id=1, is_active=True, is_deleted=False, is_phone_verified=False, role=UserRole.CUSTOMER),
+            delivery_type="delivery",
+            payment_method="on_delivery",
+        )
+
+
+@pytest.mark.asyncio
 async def test_create_order_invalidates_time_slots_cache() -> None:
     result = await execute_create_order(delivery_cache_service=DeliveryCacheService())
 
@@ -845,7 +871,7 @@ async def test_create_order_rolls_back_on_error() -> None:
             session=None,
             commiter=commiter,
             redis_service=FakeRedisService(),
-            user=SimpleNamespace(id=1, is_active=True, is_deleted=False),
+            user=SimpleNamespace(id=1, is_active=True, is_deleted=False, is_phone_verified=True, role=UserRole.CUSTOMER),
             data=OrderCreateRequest(
                 delivery_type="delivery",
                 payment_method="on_delivery",
@@ -1266,3 +1292,88 @@ async def test_repeat_order_all_items_unavailable() -> None:
 async def test_repeat_order_invalidates_cart_cache() -> None:
     result = await execute_repeat_order()
     assert result.cart_cache_service.invalidated is True
+
+
+@pytest.mark.asyncio
+async def test_create_order_on_delivery_requires_phone_verification() -> None:
+    unverified_user = SimpleNamespace(id=1, is_active=True, is_deleted=False, is_phone_verified=False, role=UserRole.CUSTOMER)
+    with pytest.raises(PhoneVerificationRequiredError):
+        await execute_create_order(payment_method="on_delivery", user=unverified_user)
+
+
+@pytest.mark.asyncio
+async def test_create_order_online_payment_allows_unverified_phone() -> None:
+    unverified_user = SimpleNamespace(id=1, is_active=True, is_deleted=False, is_phone_verified=False, role=UserRole.CUSTOMER)
+    result = await execute_create_order(payment_method="online", user=unverified_user)
+    assert result.response.payment_url is not None
+
+
+@pytest.mark.asyncio
+async def test_create_order_loyalty_points_cannot_cover_delivery() -> None:
+    class FakeLoyaltyRepo:
+        def __init__(self):
+            self.account = SimpleNamespace(balance=1000)
+
+        async def get_or_create_account(self, *, session, user_id, for_update=False):
+            return self.account
+
+        async def add_transaction(self, *, session, user_id, amount, transaction_type, description, order_id=None):
+            self.account.balance += amount
+
+    class FakeLoyaltyService:
+        async def write_off_points(self, *, session, loyalty_repository, commiter, user_id, points_to_spend, order_id=None):
+            account = await loyalty_repository.get_or_create_account(session=session, user_id=user_id, for_update=True)
+            deduct = min(account.balance, points_to_spend)
+            await loyalty_repository.add_transaction(session=session, user_id=user_id, amount=-deduct, transaction_type="write_off", description="Списание")
+            return deduct
+
+    items = [build_cart_item()]
+    product = build_product(price=Decimal("200.00"))  # items total = 200 * 1.5 = 300
+    loyalty_repo = FakeLoyaltyRepo()
+    loyalty_svc = FakeLoyaltyService()
+    user = SimpleNamespace(id=1, is_active=True, is_deleted=False, is_phone_verified=True, role=UserRole.CUSTOMER)
+
+    result = await execute_create_order(
+        product=product,
+        items=items,
+        user=user,
+        payment_method="online",
+        use_points=500,
+        loyalty_service=loyalty_svc,
+        loyalty_repository=loyalty_repo,
+        user_ip="192.168.1.1",
+        user_agent="Mozilla/5.0",
+        accepted_terms_version="1.0",
+    )
+    # final_price must have delivery untouched: 1.00 for goods + 250.00 for delivery = 251.00
+    assert result.response.final_price == Decimal("251.00")
+    created = result.order_repository.order
+    assert created.delivery_price == Decimal("250.00")
+    assert created.user_ip == "192.168.1.1"
+    assert created.user_agent == "Mozilla/5.0"
+    assert created.accepted_terms_version == "1.0"
+
+
+def test_54_fz_fiscal_receipt_subjects() -> None:
+    order = SimpleNamespace(delivery_price=Decimal("250.00"))
+    order_items = [
+        SimpleNamespace(product_name="Молоко", quantity=Decimal("2"), price=Decimal("100.00"), final_price=Decimal("200.00")),
+        SimpleNamespace(product_name="Хлеб", quantity=Decimal("1"), price=Decimal("50.00"), final_price=Decimal("50.00")),
+    ]
+    payment_service = PaymentService()
+    fiscal_items = payment_service.build_fiscal_receipt_items(order=order, order_items=order_items)
+
+    assert len(fiscal_items) == 3
+    # Goods
+    assert fiscal_items[0]["name"] == "Молоко"
+    assert fiscal_items[0]["payment_subject"] == 1
+    assert fiscal_items[0]["payment_subject_name"] == "ТОВАР"
+    assert fiscal_items[1]["name"] == "Хлеб"
+    assert fiscal_items[1]["payment_subject"] == 1
+    assert fiscal_items[1]["payment_subject_name"] == "ТОВАР"
+    # Delivery service
+    assert fiscal_items[2]["name"] == "Услуга курьерской доставки"
+    assert fiscal_items[2]["payment_subject"] == 4
+    assert fiscal_items[2]["payment_subject_name"] == "УСЛУГА"
+    assert fiscal_items[2]["total_amount"] == Decimal("250.00")
+

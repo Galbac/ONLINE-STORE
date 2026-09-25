@@ -20,9 +20,12 @@ class DeliverySettingsRepository:
         delivery_settings = DeliverySettings(
             delivery_enabled=True,
             pickup_enabled=True,
-            delivery_description="Доставка по городу",
+            delivery_description="Доставка по городу Кизляр",
             pickup_description="Самовывоз доступен из выбранных магазинов",
-            default_city="Москва",
+            default_city="Кизляр",
+            base_price=Decimal("199.00"),
+            min_order_amount=Decimal("1000.00"),
+            free_from_amount=Decimal("3000.00"),
             currency="RUB",
         )
         session.add(delivery_settings)
