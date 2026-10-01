@@ -13,6 +13,12 @@ DiscountValueType = Literal["percent", "fixed_price", "fixed_amount"]
 DiscountProductsSort = Literal["discount_desc", "price_asc", "price_desc", "newest"]
 
 
+def normalize_discount_type_value(value: str | None) -> str | None:
+    if value == "fixed":
+        return "fixed_amount"
+    return value
+
+
 class MessageResponse(BaseModel):
     message: str
 
@@ -95,6 +101,11 @@ class AdminDiscountListQueryParams(BaseModel):
     date_from: date | None = None
     date_to: date | None = None
 
+    @field_validator("discount_type", mode="before")
+    @classmethod
+    def normalize_discount_type(cls, value: str | None) -> str | None:
+        return normalize_discount_type_value(value)
+
     @field_validator("q", mode="before")
     @classmethod
     def normalize_q(cls, value: str | None) -> str | None:
@@ -176,6 +187,11 @@ class AdminDiscountCreateRequest(BaseModel):
     ends_at: datetime | None = None
     is_active: bool = True
 
+    @field_validator("discount_type", mode="before")
+    @classmethod
+    def normalize_discount_type(cls, value: str) -> str:
+        return normalize_discount_type_value(value) or value
+
     @field_validator("name", mode="before")
     @classmethod
     def normalize_name(cls, value: str) -> str:
@@ -219,6 +235,11 @@ class AdminDiscountUpdateRequest(BaseModel):
     starts_at: datetime | None = None
     ends_at: datetime | None = None
     is_active: bool | None = None
+
+    @field_validator("discount_type", mode="before")
+    @classmethod
+    def normalize_discount_type(cls, value: str | None) -> str | None:
+        return normalize_discount_type_value(value)
 
     @field_validator("name", mode="before")
     @classmethod

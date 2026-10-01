@@ -1084,10 +1084,13 @@ async def create_admin_promo_code(
             user_agent=request.headers.get("user-agent"),
         )
     except ValidationError as error:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Неверные данные промокода") from error
+        first_err = error.errors()[0] if error.errors() else None
+        detail = f"Неверные данные промокода ({' -> '.join(str(l) for l in first_err.get('loc', []))}: {first_err.get('msg', '')})" if first_err else "Неверные данные промокода"
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=detail) from error
     except ValueError as error:
         await commiter.rollback()
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Неверные данные промокода") from error
+        detail = f"Неверные данные промокода: {str(error)}" if str(error) else "Неверные данные промокода"
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=detail) from error
     except InvalidCredentialsError as error:
         await commiter.rollback()
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь не авторизован") from error
@@ -1197,13 +1200,16 @@ async def update_admin_promo_code(
             user_agent=request.headers.get("user-agent"),
         )
     except ValidationError as error:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Неверные данные промокода") from error
+        first_err = error.errors()[0] if error.errors() else None
+        detail = f"Неверные данные промокода ({' -> '.join(str(l) for l in first_err.get('loc', []))}: {first_err.get('msg', '')})" if first_err else "Неверные данные промокода"
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=detail) from error
     except EmptyPromoCodeUpdateError as error:
         await commiter.rollback()
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Не передано ни одного поля для изменения") from error
     except ValueError as error:
         await commiter.rollback()
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Неверные данные промокода") from error
+        detail = f"Неверные данные промокода: {str(error)}" if str(error) else "Неверные данные промокода"
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=detail) from error
     except InvalidCredentialsError as error:
         await commiter.rollback()
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь не авторизован") from error

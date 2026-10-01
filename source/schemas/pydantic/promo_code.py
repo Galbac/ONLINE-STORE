@@ -11,6 +11,12 @@ from source.schemas.pydantic.cart import CartResponse
 AdminPromoCodeDiscountType = Literal["percent", "fixed_amount"]
 
 
+def normalize_discount_type_value(value: str | None) -> str | None:
+    if value == "fixed":
+        return "fixed_amount"
+    return value
+
+
 class MessageResponse(BaseModel):
     message: str
 
@@ -23,6 +29,11 @@ class AdminPromoCodeListQueryParams(BaseModel):
     discount_type: AdminPromoCodeDiscountType | None = None
     date_from: date | None = None
     date_to: date | None = None
+
+    @field_validator("discount_type", mode="before")
+    @classmethod
+    def normalize_discount_type(cls, value: str | None) -> str | None:
+        return normalize_discount_type_value(value)
 
     @field_validator("q", mode="before")
     @classmethod
@@ -100,6 +111,11 @@ class AdminPromoCodeCreateRequest(BaseModel):
     product_ids: list[int] = Field(default_factory=list)
     category_ids: list[int] = Field(default_factory=list)
 
+    @field_validator("discount_type", mode="before")
+    @classmethod
+    def normalize_discount_type(cls, value: str) -> str:
+        return normalize_discount_type_value(value) or value
+
     @field_validator("code", mode="before")
     @classmethod
     def normalize_code(cls, value: str) -> str:
@@ -156,6 +172,11 @@ class AdminPromoCodeUpdateRequest(BaseModel):
     is_active: bool | None = None
     product_ids: list[int] | None = None
     category_ids: list[int] | None = None
+
+    @field_validator("discount_type", mode="before")
+    @classmethod
+    def normalize_discount_type(cls, value: str | None) -> str | None:
+        return normalize_discount_type_value(value)
 
     @field_validator("code", mode="before")
     @classmethod
