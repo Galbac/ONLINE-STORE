@@ -1,3 +1,4 @@
+import re
 from datetime import datetime
 
 from sqlalchemy import func, or_, select
@@ -135,10 +136,22 @@ class DeliveryZoneRepository:
         session: AsyncSession,
         city: str,
     ) -> DeliveryZone | None:
+        normalized_city = city.strip().lower()
+        clean_city = re.sub(r"^(?:г|город|пгт|пос|поселок)\.?\s*", "", normalized_city, flags=re.IGNORECASE).strip()
+        clean_city = re.sub(r"\s*(?:г|город)\.?$", "", clean_city, flags=re.IGNORECASE).strip()
+
+        conditions = [
+            func.lower(DeliveryZone.city) == normalized_city,
+            func.lower(DeliveryZone.city) == clean_city,
+            func.lower(city).contains(func.lower(DeliveryZone.city)),
+        ]
+        if len(clean_city) >= 3:
+            conditions.append(func.lower(DeliveryZone.city).contains(clean_city))
+
         result = await session.execute(
             select(DeliveryZone)
             .where(
-                func.lower(DeliveryZone.city) == city.lower(),
+                or_(*conditions),
                 DeliveryZone.is_active.is_(True),
                 DeliveryZone.is_deleted.is_(False),
             )
