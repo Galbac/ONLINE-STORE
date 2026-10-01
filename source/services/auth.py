@@ -233,7 +233,7 @@ class AuthService:
         user = await self._get_user_by_login(session=session, login=data.login)
         if user is None:
             raise InvalidCredentialsError
-        if not user.is_active:
+        if not user.is_active or user.is_deleted or getattr(user, "is_blocked", False):
             raise InactiveUserError
         if not self.verify_password(data.password, user.password_hash):
             raise InvalidCredentialsError
@@ -391,7 +391,7 @@ class AuthService:
         user_agent: str | None,
     ) -> MessageResponse:
         user = await self._get_user_by_login(session=session, login=data.login)
-        if user is None or not user.is_active:
+        if user is None or not user.is_active or user.is_deleted or getattr(user, "is_blocked", False):
             return MessageResponse(message=PASSWORD_RESET_SUCCESS_MESSAGE)
 
         normalized_login = self._normalize_login(data.login)
@@ -474,7 +474,7 @@ class AuthService:
         user = await self._get_user_by_id(session=session, user_id=user_id)
         if user is None:
             raise PasswordResetUserNotFoundError
-        if not user.is_active:
+        if not user.is_active or user.is_deleted or getattr(user, "is_blocked", False):
             raise InactiveUserError
         if self.verify_password(data.new_password, user.password_hash):
             raise NewPasswordSameAsOldError
@@ -500,7 +500,7 @@ class AuthService:
         ip_address: str,
         access_token: str | None,
     ) -> MessageResponse:
-        if not user.is_active:
+        if not user.is_active or user.is_deleted or getattr(user, "is_blocked", False):
             raise InactiveUserError
 
         await self._check_change_password_rate_limit(
@@ -564,7 +564,7 @@ class AuthService:
         user = await self._get_user_by_id(session=session, user_id=user_id)
         if user is None:
             raise CurrentUserNotFoundError
-        if not user.is_active:
+        if not user.is_active or user.is_deleted or getattr(user, "is_blocked", False):
             raise InactiveUserError
 
         response = self._build_current_user_response(user)

@@ -5,6 +5,7 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from source.config.settings import settings
+from source.db.models.order import Order
 from source.db.models.refresh_token import RefreshToken
 from source.db.models.user import User
 from source.errors.auth import (
@@ -186,6 +187,9 @@ class UserService:
         user: User,
         ip_address: str,
     ) -> MessageResponse:
+        if not user.is_active or user.is_deleted or getattr(user, "is_blocked", False):
+            raise InactiveUserError
+
         rate_key = f"phone_otp:rate:{user.phone}"
         if await redis_service.exists(rate_key):
             count = await redis_service.get(rate_key)
@@ -211,6 +215,9 @@ class UserService:
         user: User,
         otp_code: str,
     ) -> UserMeResponse:
+        if not user.is_active or user.is_deleted or getattr(user, "is_blocked", False):
+            raise InactiveUserError
+
         code_key = f"phone_otp:code:{user.phone}"
         stored_code = await redis_service.get(code_key)
         if stored_code is None:
@@ -246,6 +253,9 @@ class UserService:
         marketing_consent: bool,
         ip_address: str,
     ) -> UserMeResponse:
+        if not user.is_active or user.is_deleted or getattr(user, "is_blocked", False):
+            raise InactiveUserError
+
         now = datetime.now(settings.tz)
         user.marketing_consent = marketing_consent
         user.marketing_consent_at = now if marketing_consent else None
@@ -307,7 +317,15 @@ class UserService:
         session: AsyncSession,
         user_id: int,
     ) -> bool:
-        return False
+        result = await session.execute(
+            select(Order.id)
+            .where(
+                Order.user_id == user_id,
+                Order.status.in_(("new", "pending_payment", "paid", "assembling", "delivering", "in_progress")),
+            )
+            .limit(1),
+        )
+        return result.scalar_one_or_none() is not None
 
     async def _revoke_active_refresh_tokens(
         self,

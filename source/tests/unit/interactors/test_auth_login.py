@@ -39,6 +39,8 @@ def build_user(
     auth_service: AuthService,
     password: str = "StrongPassword123",
     is_active: bool = True,
+    is_deleted: bool = False,
+    is_blocked: bool = False,
 ) -> User:
     user = User(
         name="Иван Иванов",
@@ -47,6 +49,8 @@ def build_user(
         password_hash=auth_service.hash_password(password),
         role=UserRole.CUSTOMER,
         is_active=is_active,
+        is_deleted=is_deleted,
+        is_blocked=is_blocked,
     )
     user.id = 1
     return user
@@ -118,6 +122,32 @@ async def test_login_user_not_found() -> None:
 async def test_login_user_inactive() -> None:
     auth_service = AuthService()
     session = FakeSession(execute_results=[build_user(auth_service=auth_service, is_active=False)])
+
+    with pytest.raises(InactiveUserError):
+        await AuthLoginInteractor().execute(
+            session=session,
+            auth_service=auth_service,
+            data=UserLoginRequest(login="+79990000000", password="StrongPassword123"),
+        )
+
+
+@pytest.mark.asyncio
+async def test_login_user_deleted() -> None:
+    auth_service = AuthService()
+    session = FakeSession(execute_results=[build_user(auth_service=auth_service, is_active=True, is_deleted=True)])
+
+    with pytest.raises(InactiveUserError):
+        await AuthLoginInteractor().execute(
+            session=session,
+            auth_service=auth_service,
+            data=UserLoginRequest(login="+79990000000", password="StrongPassword123"),
+        )
+
+
+@pytest.mark.asyncio
+async def test_login_user_blocked() -> None:
+    auth_service = AuthService()
+    session = FakeSession(execute_results=[build_user(auth_service=auth_service, is_active=True, is_blocked=True)])
 
     with pytest.raises(InactiveUserError):
         await AuthLoginInteractor().execute(
