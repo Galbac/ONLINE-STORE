@@ -102,15 +102,15 @@ class AdminProductCreateRequest(BaseModel):
                 raise ValueError("Свинина и продукция свиного происхождения категорически не могут быть маркированы Халяль!")
         if self.product_type == "piece":
             if self.min_quantity < 1:
-                raise ValueError("min_quantity must be greater than or equal to 1 for piece products")
+                raise ValueError("Минимальное количество для штучных товаров должно быть больше или равно 1")
             if self.quantity_step != Decimal("1"):
-                raise ValueError("quantity_step must be 1 for piece products")
+                raise ValueError("Шаг количества для штучных товаров должен быть равен 1")
         if self.product_type == "weight" and self.quantity_step not in {
             Decimal("0.1"),
             Decimal("0.5"),
             Decimal("1"),
         }:
-            raise ValueError("quantity_step must be one of 0.1, 0.5, 1 for weight products")
+            raise ValueError("Шаг количества для весовых товаров должен быть 0.1, 0.5 или 1")
         return self
 
 
@@ -224,7 +224,7 @@ class ProductImagesSortRequest(BaseModel):
     @model_validator(mode="after")
     def validate_single_main(self) -> "ProductImagesSortRequest":
         if sum(1 for image in self.images if image.is_main) > 1:
-            raise ValueError("only one image can be main")
+            raise ValueError("Только одно изображение может быть основным")
         return self
 
 

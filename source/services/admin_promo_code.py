@@ -281,12 +281,12 @@ class AdminPromoCodeService:
         next_discount_type = update_fields.get("discount_type", promo_code.discount_type)
         next_discount_value = update_fields.get("discount_value", promo_code.discount_value)
         if next_discount_type == "percent" and not Decimal("1") <= next_discount_value <= Decimal("100"):
-            raise ValueError("percent discount_value must be between 1 and 100")
+            raise ValueError("Размер процентной скидки должен быть от 1 до 100%")
 
         next_starts_at = update_fields.get("starts_at", promo_code.starts_at)
         next_ends_at = update_fields.get("ends_at", promo_code.ends_at)
         if next_starts_at is not None and next_ends_at is not None and next_starts_at >= next_ends_at:
-            raise ValueError("starts_at must be less than ends_at")
+            raise ValueError("Дата начала должна быть строго раньше даты окончания")
 
         usage_count = await promo_code_usage_repository.count_by_promo_code_id(
             session=session,

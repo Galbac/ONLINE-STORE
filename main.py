@@ -98,14 +98,50 @@ def create_app() -> FastAPI:
 app = create_app()
 
 
+def format_pydantic_error_msg(error: dict) -> str:
+    msg = str(error.get("msg", ""))
+    if msg.startswith("Value error, "):
+        msg = msg[len("Value error, "):]
+    if "Field required" in msg:
+        msg = "Поле обязательно для заполнения"
+    elif "Input should be a valid integer" in msg:
+        msg = "Значение должно быть целым числом"
+    elif "Input should be a valid number" in msg:
+        msg = "Значение должно быть числом"
+    elif "Input should be a valid boolean" in msg:
+        msg = "Значение должно быть логическим (true/false)"
+    elif "Input should be a valid string" in msg:
+        msg = "Значение должно быть строкой"
+    elif "Extra inputs are not permitted" in msg:
+        msg = "Переданы непредусмотренные поля"
+    elif "value is not a valid email address" in msg:
+        msg = "Некорректный адрес электронной почты"
+    return msg
+
+
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(
     _request,
     exc: RequestValidationError,
 ) -> JSONResponse:
+    cleaned_errors = []
+    first_readable_message = None
+    for err in exc.errors():
+        err_copy = dict(err)
+        cleaned_msg = format_pydantic_error_msg(err_copy)
+        err_copy["msg"] = cleaned_msg
+        cleaned_errors.append(err_copy)
+        if first_readable_message is None:
+            loc_items = [str(item) for item in err_copy.get("loc", []) if str(item) and str(item) not in ("body", "query", "path")]
+            loc = " -> ".join(loc_items)
+            first_readable_message = f"Поле \"{loc}\": {cleaned_msg}" if loc else cleaned_msg
+
     return JSONResponse(
         status_code=status.HTTP_400_BAD_REQUEST,
-        content={"detail": exc.errors()},
+        content={
+            "detail": cleaned_errors,
+            "message": first_readable_message or "Ошибка валидации данных",
+        },
     )
 
 

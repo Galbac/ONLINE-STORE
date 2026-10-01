@@ -29,20 +29,20 @@ class StockService:
             case "decrease":
                 new_stock = current_stock - quantity
             case _:
-                raise ValueError("Invalid stock operation")
+                raise ValueError("Некорректная операция изменения остатка")
         if new_stock < 0:
-            raise ValueError("Stock quantity cannot be negative")
+            raise ValueError("Количество остатка не может быть отрицательным")
         return new_stock
 
     def validate_stock_quantity(self, *, product: Product, stock_quantity: Decimal) -> None:
         if stock_quantity < 0:
-            raise ValueError("Stock quantity cannot be negative")
+            raise ValueError("Количество остатка не может быть отрицательным")
         if (
             settings.products.piece_stock_integer_required
             and product.product_type == "piece"
             and stock_quantity != stock_quantity.to_integral_value()
         ):
-            raise ValueError("Stock quantity must be integer for piece products")
+            raise ValueError("Количество остатка для штучных товаров должно быть целым числом")
 
     def validate_quantity(self, *, product: Product, quantity: Decimal) -> None:
         if product.product_type == "piece" and quantity != quantity.to_integral_value():

@@ -31,7 +31,7 @@ class EmailService:
         if not settings.email_notifications.enabled:
             raise NotificationEmailDisabledError
         if not settings.email_notifications.host or not settings.email_notifications.from_email:
-            raise NotificationSendError("Email settings are incomplete")
+            raise NotificationSendError("Настройки Email не заполнены полностью")
 
         email_message = EmailMessage()
         email_message["Subject"] = subject
@@ -254,7 +254,7 @@ class TelegramNotificationService:
         if not settings.telegram.enabled:
             raise NotificationTelegramDisabledError
         if not settings.telegram.bot_token:
-            raise NotificationSendError("Telegram bot token is not configured")
+            raise NotificationSendError("Токен Telegram-бота не настроен")
 
         await asyncio.to_thread(self._send_telegram_message, chat_id, message)
 
@@ -267,7 +267,7 @@ class TelegramNotificationService:
         )
         with urlopen(request, timeout=10) as response:
             if response.status >= 400:
-                raise NotificationSendError("Telegram send failed")
+                raise NotificationSendError("Ошибка отправки сообщения в Telegram")
 
     async def notify_admin_password_reset_issue(
         self,

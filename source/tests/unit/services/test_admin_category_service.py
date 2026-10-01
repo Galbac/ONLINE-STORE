@@ -731,7 +731,7 @@ async def test_admin_category_update_success() -> None:
 
 @pytest.mark.asyncio
 async def test_admin_category_update_no_fields_error() -> None:
-    with pytest.raises(ValueError, match="No fields to update"):
+    with pytest.raises(ValueError, match="Не передано ни одного поля для обновления"):
         await update_category(data=AdminCategoryUpdateRequest())
 
 

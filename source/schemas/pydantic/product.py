@@ -29,7 +29,7 @@ class ProductListQueryParams(BaseModel):
     @model_validator(mode="after")
     def validate_prices(self) -> "ProductListQueryParams":
         if self.min_price is not None and self.max_price is not None and self.min_price > self.max_price:
-            raise ValueError("min_price must be less than or equal to max_price")
+            raise ValueError("Минимальная цена (min_price) должна быть меньше или равна максимальной цене (max_price)")
         return self
 
     @property
@@ -60,9 +60,9 @@ class ProductSearchQueryParams(BaseModel):
     def normalize_query(self) -> "ProductSearchQueryParams":
         self.q = self.q.strip()
         if len(self.q) < 2:
-            raise ValueError("q must contain at least 2 characters")
+            raise ValueError("Поисковый запрос (q) должен содержать не менее 2 символов")
         if self.min_price is not None and self.max_price is not None and self.min_price > self.max_price:
-            raise ValueError("min_price must be less than or equal to max_price")
+            raise ValueError("Минимальная цена (min_price) должна быть меньше или равна максимальной цене (max_price)")
         return self
 
     @property

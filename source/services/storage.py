@@ -68,7 +68,7 @@ class S3StorageProvider:
                 import boto3
                 from botocore.config import Config
             except ImportError as exc:
-                raise UploadStorageError("boto3 package is required for S3 storage") from exc
+                raise UploadStorageError("Для использования хранилища S3 требуется пакет boto3") from exc
 
             config = Config(
                 signature_version="s3v4",
@@ -109,7 +109,7 @@ class S3StorageProvider:
     async def save(self, *, stored_filename: str, content: bytes) -> str:
         bucket = self.media_settings.effective_bucket
         if not bucket:
-            raise UploadStorageError("S3 bucket name is not configured")
+            raise UploadStorageError("Имя S3 bucket не настроено")
 
         mime_type, _ = guess_type(stored_filename)
         content_type = mime_type or "application/octet-stream"
@@ -148,7 +148,7 @@ class S3StorageProvider:
     async def health_check(self, *, check_write: bool = False) -> dict:
         bucket = self.media_settings.effective_bucket
         if not bucket:
-            raise UploadStorageError("S3 bucket is not configured")
+            raise UploadStorageError("S3 bucket не настроен")
 
         def _check() -> dict:
             client = self._get_client()

@@ -14,6 +14,6 @@ class CustomDoesNotExist(ApplicationError):
 
     @property
     def message(self):
-        text = f"{self.class_name} does not exist with id: {self.model_id}"
+        text = f"Объект {self.class_name} с идентификатором {self.model_id} не найден"
         logger.warning(text)
         return text

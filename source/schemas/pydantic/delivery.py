@@ -111,9 +111,9 @@ class AdminDeliveryZoneCreateRequest(BaseModel):
         self.name = self.name.strip()
         self.city = self.city.strip()
         if not self.name:
-            raise ValueError("name is required")
+            raise ValueError("Название обязательно для заполнения")
         if not self.city:
-            raise ValueError("city is required")
+            raise ValueError("Город обязателен для заполнения")
         if self.description is not None:
             self.description = self.description.strip() or None
         if self.delivery_price < 0:
@@ -147,11 +147,11 @@ class AdminDeliveryZoneUpdateRequest(BaseModel):
         if self.name is not None:
             self.name = self.name.strip()
             if not self.name:
-                raise ValueError("name is required")
+                raise ValueError("Название обязательно для заполнения")
         if self.city is not None:
             self.city = self.city.strip()
             if not self.city:
-                raise ValueError("city is required")
+                raise ValueError("Город обязателен для заполнения")
         if self.description is not None:
             self.description = self.description.strip() or None
         if self.delivery_price is not None and self.delivery_price < 0:

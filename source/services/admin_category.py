@@ -216,7 +216,7 @@ class AdminCategoryService:
 
         slug = normalize_slug(data.slug) if data.slug is not None else generate_slug(data.name)
         if not validate_slug(slug):
-            raise ValueError("Invalid slug")
+            raise ValueError("Некорректный символьный код (slug)")
         if await category_repository.get_by_slug(session=session, slug=slug) is not None:
             raise CategorySlugAlreadyExistsError
 
@@ -300,7 +300,7 @@ class AdminCategoryService:
 
         update_fields = data.model_dump(exclude_unset=True)
         if not update_fields:
-            raise ValueError("No fields to update")
+            raise ValueError("Не передано ни одного поля для обновления")
 
         category = await category_repository.admin_get_by_id(session=session, category_id=category_id)
         if category is None:
@@ -310,7 +310,7 @@ class AdminCategoryService:
         if "slug" in update_fields and update_fields["slug"] is not None:
             update_fields["slug"] = normalize_slug(update_fields["slug"])
             if not validate_slug(update_fields["slug"]):
-                raise ValueError("Invalid slug")
+                raise ValueError("Некорректный символьный код (slug)")
             if update_fields["slug"] != category.slug:
                 existing_category = await category_repository.get_by_slug(session=session, slug=update_fields["slug"])
                 if existing_category is not None and existing_category.id != category.id:

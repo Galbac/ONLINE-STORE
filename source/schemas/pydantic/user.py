@@ -103,7 +103,7 @@ class AdminUserListQueryParams(BaseModel):
     @model_validator(mode="after")
     def validate_dates(self) -> "AdminUserListQueryParams":
         if self.date_from is not None and self.date_to is not None and self.date_from > self.date_to:
-            raise ValueError("date_from must be less than or equal to date_to")
+            raise ValueError("Начальная дата (date_from) должна быть меньше или равна конечной дате (date_to)")
         return self
 
     @computed_field
@@ -280,7 +280,7 @@ class AdminUserOrdersQueryParams(BaseModel):
     @model_validator(mode="after")
     def validate_dates(self) -> "AdminUserOrdersQueryParams":
         if self.date_from is not None and self.date_to is not None and self.date_from > self.date_to:
-            raise ValueError("date_from must be less than or equal to date_to")
+            raise ValueError("Начальная дата (date_from) должна быть меньше или равна конечной дате (date_to)")
         return self
 
     @computed_field

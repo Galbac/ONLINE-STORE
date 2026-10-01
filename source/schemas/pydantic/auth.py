@@ -68,14 +68,14 @@ class ForgotPasswordRequest(BaseModel):
     def validate_login(cls, value: str) -> str:
         login = value.strip()
         if not login:
-            raise ValueError("login is required")
+            raise ValueError("Логин обязателен для заполнения")
 
         if "@" in login:
             TypeAdapter(EmailStr).validate_python(login)
             return login.lower()
 
         if re.fullmatch(r"\+?\d{5,15}", login) is None:
-            raise ValueError("login must be a valid email or phone")
+            raise ValueError("Логин должен быть корректным email или номером телефона")
         return login
 
 

@@ -131,7 +131,7 @@ async def get_one_c_health(
             status="error",
             enabled=True,
             available=False,
-            message="1C unavailable",
+            message="Сервис 1С недоступен",
         )
         await health_cache_service.set_1c_status(
             redis_service=redis_service,
@@ -179,4 +179,4 @@ def verify_internal_health_token(
         if scheme.lower() == "bearer":
             token = value
     if not expected_token or not token or not compare_digest(token, expected_token):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized")
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Требуется авторизация")

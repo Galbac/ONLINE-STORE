@@ -103,7 +103,7 @@ class OrderMyListQueryParams(BaseModel):
     @model_validator(mode="after")
     def validate_dates(self) -> "OrderMyListQueryParams":
         if self.date_from is not None and self.date_to is not None and self.date_from > self.date_to:
-            raise ValueError("date_from must be less than or equal to date_to")
+            raise ValueError("Начальная дата (date_from) должна быть меньше или равна конечной дате (date_to)")
         return self
 
     @computed_field
@@ -163,9 +163,9 @@ class AdminOrderListQueryParams(BaseModel):
     @model_validator(mode="after")
     def validate_ranges(self) -> "AdminOrderListQueryParams":
         if self.date_from is not None and self.date_to is not None and self.date_from > self.date_to:
-            raise ValueError("date_from must be less than or equal to date_to")
+            raise ValueError("Начальная дата (date_from) должна быть меньше или равна конечной дате (date_to)")
         if self.min_amount is not None and self.max_amount is not None and self.min_amount > self.max_amount:
-            raise ValueError("min_amount must be less than or equal to max_amount")
+            raise ValueError("Минимальная сумма (min_amount) должна быть меньше или равна максимальной сумме (max_amount)")
         return self
 
     @computed_field

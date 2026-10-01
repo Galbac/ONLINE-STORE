@@ -51,7 +51,7 @@ def test_product_search_query_params_invalid_prices() -> None:
     from decimal import Decimal
     from source.schemas.pydantic.product import ProductSearchQueryParams
 
-    with pytest.raises(ValueError, match="min_price must be less than or equal to max_price"):
+    with pytest.raises(ValueError, match=r"Минимальная цена \(min_price\) должна быть меньше или равна максимальной цене \(max_price\)"):
         ProductSearchQueryParams(
             q="яблоки",
             min_price=Decimal("500"),

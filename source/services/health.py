@@ -77,7 +77,7 @@ class HealthService:
                 status="error",
                 enabled=True,
                 available=False,
-                message="1C unavailable",
+                message="Сервис 1С недоступен",
             )
 
         started_at = perf_counter()

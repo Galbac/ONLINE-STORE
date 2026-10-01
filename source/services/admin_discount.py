@@ -337,9 +337,9 @@ class AdminDiscountService:
             next_category_ids=next_category_ids,
         )
         if next_type == "product" and not next_product_ids:
-            raise ValueError("product discount must contain product_ids")
+            raise ValueError("Скидка на товары должна содержать список product_ids")
         if next_type == "category" and not next_category_ids:
-            raise ValueError("category discount must contain category_ids")
+            raise ValueError("Скидка на категории должна содержать список category_ids")
         if next_type == "cart":
             next_product_ids = []
             next_category_ids = []
@@ -347,12 +347,12 @@ class AdminDiscountService:
         next_discount_type = update_fields.get("discount_type", discount.discount_type)
         next_discount_value = update_fields.get("discount_value", discount.discount_value)
         if next_discount_type == "percent" and not Decimal("1") <= next_discount_value <= Decimal("100"):
-            raise ValueError("percent discount_value must be between 1 and 100")
+            raise ValueError("Размер процентной скидки должен быть от 1 до 100%")
 
         next_starts_at = update_fields.get("starts_at", discount.starts_at)
         next_ends_at = update_fields.get("ends_at", discount.ends_at)
         if next_starts_at is not None and next_ends_at is not None and next_starts_at >= next_ends_at:
-            raise ValueError("starts_at must be less than ends_at")
+            raise ValueError("Дата начала должна быть строго раньше даты окончания")
 
         next_is_active = update_fields.get("is_active", discount.is_active)
         await discount_conflict_service.check_conflicts(

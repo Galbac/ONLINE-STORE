@@ -1091,7 +1091,7 @@ async def test_admin_one_c_get_status_api_url_not_configured() -> None:
     assert response.available is False
     assert response.status == "error"
     assert response.api_url_configured is False
-    assert response.last_error_message == "1C API URL is not configured"
+    assert response.last_error_message == "URL API 1С не настроен"
     assert deps["one_c_integration_service"].timeout_values == []
 
 

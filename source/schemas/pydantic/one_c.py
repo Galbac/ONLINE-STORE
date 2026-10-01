@@ -62,9 +62,9 @@ class OneCProductImportItem(BaseModel):
     def validate_quantity_rules(self) -> "OneCProductImportItem":
         if self.product_type == "piece":
             if self.quantity_step != self.quantity_step.to_integral_value():
-                raise ValueError("quantity_step for piece product must be integer")
+                raise ValueError("Шаг количества для штучного товара должен быть целым числом")
             if self.min_quantity != self.min_quantity.to_integral_value():
-                raise ValueError("min_quantity for piece product must be integer")
+                raise ValueError("Минимальное количество для штучного товара должно быть целым числом")
         return self
 
 

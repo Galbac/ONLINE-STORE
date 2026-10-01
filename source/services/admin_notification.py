@@ -250,7 +250,7 @@ class AdminNotificationService:
                 chat_id=chat_id,
                 message=message,
                 status="error",
-                error_message="Telegram bot token is not configured",
+                error_message="Токен Telegram-бота не настроен",
             )
             await commiter.commit()
             raise NotificationSendError

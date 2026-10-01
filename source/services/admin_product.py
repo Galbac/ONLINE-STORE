@@ -83,15 +83,15 @@ class AdminProductService:
     ) -> None:
         if product_type == "piece":
             if min_quantity < 1:
-                raise ValueError("min_quantity must be greater than or equal to 1 for piece products")
+                raise ValueError("Минимальное количество для штучных товаров должно быть больше или равно 1")
             if quantity_step != Decimal("1"):
-                raise ValueError("quantity_step must be 1 for piece products")
+                raise ValueError("Шаг количества для штучных товаров должен быть равен 1")
         if product_type == "weight" and quantity_step not in {
             Decimal("0.1"),
             Decimal("0.5"),
             Decimal("1"),
         }:
-            raise ValueError("quantity_step must be one of 0.1, 0.5, 1 for weight products")
+            raise ValueError("Шаг количества для весовых товаров должен быть 0.1, 0.5 или 1")
 
     async def get_products(
         self,
@@ -326,7 +326,7 @@ class AdminProductService:
 
         update_fields = data.model_dump(exclude_unset=True)
         if not update_fields:
-            raise ValueError("No fields to update")
+            raise ValueError("Не передано ни одного поля для обновления")
 
         row = await product_repository.admin_get_by_id(session=session, product_id=product_id)
         if row is None:

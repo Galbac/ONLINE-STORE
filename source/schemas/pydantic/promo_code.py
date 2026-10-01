@@ -46,7 +46,7 @@ class AdminPromoCodeListQueryParams(BaseModel):
     @model_validator(mode="after")
     def validate_dates(self) -> "AdminPromoCodeListQueryParams":
         if self.date_from is not None and self.date_to is not None and self.date_from > self.date_to:
-            raise ValueError("date_from must be less than or equal to date_to")
+            raise ValueError("Начальная дата (date_from) должна быть меньше или равна конечной дате (date_to)")
         return self
 
     @computed_field
@@ -145,7 +145,7 @@ class AdminPromoCodeCreateRequest(BaseModel):
     def validate_ids(cls, value: list[int]) -> list[int]:
         unique_ids = list(dict.fromkeys(value))
         if any(item_id <= 0 for item_id in unique_ids):
-            raise ValueError("ids must be positive")
+            raise ValueError("Идентификаторы (id) должны быть положительными числами")
         return unique_ids
 
     @model_validator(mode="after")
@@ -209,7 +209,7 @@ class AdminPromoCodeUpdateRequest(BaseModel):
             return value
         unique_ids = list(dict.fromkeys(value))
         if any(item_id <= 0 for item_id in unique_ids):
-            raise ValueError("ids must be positive")
+            raise ValueError("Идентификаторы (id) должны быть положительными числами")
         return unique_ids
 
     @model_validator(mode="after")

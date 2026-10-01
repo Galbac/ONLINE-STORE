@@ -67,7 +67,7 @@ class OneCIntegrationService:
 
     async def sync_order(self, *, payload: dict) -> dict:
         if not settings.one_c.api_url:
-            raise OneCSyncError("1C API URL is not configured")
+            raise OneCSyncError("URL API 1С не настроен")
 
         url = settings.one_c.api_url.rstrip("/") + "/orders"
         headers = {"Content-Type": "application/json"}
@@ -94,11 +94,11 @@ class OneCIntegrationService:
         try:
             return json.loads(response_body)
         except json.JSONDecodeError as error:
-            raise OneCSyncError("Invalid 1C response") from error
+            raise OneCSyncError("Некорректный ответ от 1С") from error
 
     async def health_check(self, *, timeout_seconds: int) -> None:
         if not settings.one_c.api_url:
-            raise OneCSyncError("1C API URL is not configured")
+            raise OneCSyncError("URL API 1С не настроен")
 
         url = settings.one_c.api_url.rstrip("/") + "/health"
         headers = {}
@@ -108,17 +108,17 @@ class OneCIntegrationService:
         try:
             with urlopen(request, timeout=timeout_seconds) as response:
                 if response.status >= 400:
-                    raise OneCSyncError("1C health check failed")
+                    raise OneCSyncError("Ошибка проверки работоспособности 1С")
         except HTTPError as error:
             raise OneCSyncError(f"1C HTTP error {error.code}") from error
         except URLError as error:
-            raise OneCSyncError("1C unavailable") from error
+            raise OneCSyncError("Сервис 1С недоступен") from error
 
 
 class OneCClient:
     async def sync_order(self, *, payload: dict) -> dict:
         if not settings.one_c.api_url:
-            raise OneCSyncError("1C API URL is not configured")
+            raise OneCSyncError("URL API 1С не настроен")
 
         url = settings.one_c.api_url.rstrip("/") + "/orders"
         headers = {"Content-Type": "application/json"}
@@ -145,11 +145,11 @@ class OneCClient:
         try:
             return json.loads(response_body)
         except json.JSONDecodeError as error:
-            raise OneCSyncError("Invalid 1C response") from error
+            raise OneCSyncError("Некорректный ответ от 1С") from error
 
     async def fetch_products(self, *, full_sync: bool = False) -> OneCProductImportRequest:
         if not settings.one_c.api_url:
-            raise OneCSyncError("1C API URL is not configured")
+            raise OneCSyncError("URL API 1С не настроен")
 
         query = urlencode({"full_sync": str(full_sync).lower()})
         url = settings.one_c.api_url.rstrip("/") + f"/products?{query}"
@@ -170,7 +170,7 @@ class OneCClient:
         try:
             payload = json.loads(response_body)
         except json.JSONDecodeError as error:
-            raise OneCSyncError("Invalid 1C response") from error
+            raise OneCSyncError("Некорректный ответ от 1С") from error
 
         if isinstance(payload, list):
             payload = {"items": payload}
@@ -178,7 +178,7 @@ class OneCClient:
 
     async def fetch_prices(self, *, full_sync: bool = False) -> OneCPriceImportRequest:
         if not settings.one_c.api_url:
-            raise OneCSyncError("1C API URL is not configured")
+            raise OneCSyncError("URL API 1С не настроен")
 
         query = urlencode({"full_sync": str(full_sync).lower()})
         url = settings.one_c.api_url.rstrip("/") + f"/prices?{query}"
@@ -199,7 +199,7 @@ class OneCClient:
         try:
             payload = json.loads(response_body)
         except json.JSONDecodeError as error:
-            raise OneCSyncError("Invalid 1C response") from error
+            raise OneCSyncError("Некорректный ответ от 1С") from error
 
         if isinstance(payload, list):
             payload = {"items": payload}
@@ -207,7 +207,7 @@ class OneCClient:
 
     async def fetch_stocks(self, *, full_sync: bool = False) -> OneCStockImportRequest:
         if not settings.one_c.api_url:
-            raise OneCSyncError("1C API URL is not configured")
+            raise OneCSyncError("URL API 1С не настроен")
 
         query = urlencode({"full_sync": str(full_sync).lower()})
         url = settings.one_c.api_url.rstrip("/") + f"/stocks?{query}"
@@ -228,7 +228,7 @@ class OneCClient:
         try:
             payload = json.loads(response_body)
         except json.JSONDecodeError as error:
-            raise OneCSyncError("Invalid 1C response") from error
+            raise OneCSyncError("Некорректный ответ от 1С") from error
 
         if isinstance(payload, list):
             payload = {"items": payload}
@@ -1708,7 +1708,7 @@ class AdminOneCIntegrationService:
             except Exception as error:
                 health_error = self._sanitize_error_message(str(error))
         else:
-            health_error = "1C API URL is not configured"
+            health_error = "URL API 1С не настроен"
 
         last_success = await integration_log_repository.get_last_success(session=session)
         last_error = await integration_log_repository.get_last_error(session=session)
