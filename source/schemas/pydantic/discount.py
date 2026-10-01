@@ -212,15 +212,15 @@ class AdminDiscountCreateRequest(BaseModel):
     @model_validator(mode="after")
     def validate_discount(self) -> "AdminDiscountCreateRequest":
         if self.ends_at is not None and self.starts_at is not None and self.starts_at >= self.ends_at:
-            raise ValueError("starts_at must be less than ends_at")
+            raise ValueError("Дата начала должна быть строго раньше даты окончания")
         if self.type == "product" and not self.product_ids:
-            raise ValueError("product_ids required")
+            raise ValueError("Необходимо выбрать хотя бы один товар")
         if self.type == "category" and not self.category_ids:
-            raise ValueError("category_ids required")
+            raise ValueError("Необходимо выбрать хотя бы одну категорию")
         if self.type == "cart" and (self.product_ids or self.category_ids):
-            raise ValueError("cart discount must not contain product_ids or category_ids")
+            raise ValueError("Скидка на корзину не должна содержать привязанные товары или категории")
         if self.discount_type == "percent" and not Decimal("1") <= self.discount_value <= Decimal("100"):
-            raise ValueError("percent discount_value must be between 1 and 100")
+            raise ValueError("Размер процентной скидки должен быть от 1 до 100")
         return self
 
 
@@ -261,7 +261,7 @@ class AdminDiscountUpdateRequest(BaseModel):
     @model_validator(mode="after")
     def validate_dates(self) -> "AdminDiscountUpdateRequest":
         if self.ends_at is not None and self.starts_at is not None and self.starts_at >= self.ends_at:
-            raise ValueError("starts_at must be less than ends_at")
+            raise ValueError("Дата начала должна быть строго раньше даты окончания")
         return self
 
 

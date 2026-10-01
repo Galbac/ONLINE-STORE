@@ -151,9 +151,9 @@ class AdminPromoCodeCreateRequest(BaseModel):
     @model_validator(mode="after")
     def validate_promo_code(self) -> "AdminPromoCodeCreateRequest":
         if self.discount_type == "percent" and not Decimal("1") <= self.discount_value <= Decimal("100"):
-            raise ValueError("percent discount_value must be between 1 and 100")
+            raise ValueError("Размер процентной скидки должен быть от 1 до 100")
         if self.starts_at is not None and self.ends_at is not None and self.starts_at >= self.ends_at:
-            raise ValueError("starts_at must be less than ends_at")
+            raise ValueError("Дата начала должна быть строго раньше даты окончания")
         return self
 
 
@@ -216,9 +216,9 @@ class AdminPromoCodeUpdateRequest(BaseModel):
     def validate_promo_code(self) -> "AdminPromoCodeUpdateRequest":
         if self.discount_type == "percent" and self.discount_value is not None:
             if not Decimal("1") <= self.discount_value <= Decimal("100"):
-                raise ValueError("percent discount_value must be between 1 and 100")
+                raise ValueError("Размер процентной скидки должен быть от 1 до 100")
         if self.starts_at is not None and self.ends_at is not None and self.starts_at >= self.ends_at:
-            raise ValueError("starts_at must be less than ends_at")
+            raise ValueError("Дата начала должна быть строго раньше даты окончания")
         return self
 
 
