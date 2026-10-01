@@ -1,5 +1,6 @@
 from datetime import datetime
 from math import ceil
+from typing import Any
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -39,6 +40,19 @@ class AdminCategoryCreateRequest(BaseModel):
     is_active: bool = True
     meta_title: str | None = Field(default=None, max_length=255)
     meta_description: str | None = Field(default=None, max_length=500)
+    seo: dict | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def unpack_seo_payload(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            seo = data.get("seo")
+            if isinstance(seo, dict):
+                if not data.get("meta_title") and seo.get("meta_title"):
+                    data["meta_title"] = seo["meta_title"]
+                if not data.get("meta_description") and seo.get("meta_description"):
+                    data["meta_description"] = seo["meta_description"]
+        return data
 
     @model_validator(mode="after")
     def normalize_strings(self) -> "AdminCategoryCreateRequest":
@@ -72,6 +86,19 @@ class AdminCategoryUpdateRequest(BaseModel):
     is_active: bool | None = None
     meta_title: str | None = Field(default=None, max_length=255)
     meta_description: str | None = Field(default=None, max_length=500)
+    seo: dict | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def unpack_seo_payload(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            seo = data.get("seo")
+            if isinstance(seo, dict):
+                if not data.get("meta_title") and seo.get("meta_title"):
+                    data["meta_title"] = seo["meta_title"]
+                if not data.get("meta_description") and seo.get("meta_description"):
+                    data["meta_description"] = seo["meta_description"]
+        return data
 
     @model_validator(mode="after")
     def normalize_strings(self) -> "AdminCategoryUpdateRequest":

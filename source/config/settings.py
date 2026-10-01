@@ -5,7 +5,7 @@ from typing import Optional
 from urllib.parse import quote_plus
 from zoneinfo import ZoneInfo
 
-from pydantic import AliasChoices, BaseModel, Field, PostgresDsn
+from pydantic import AliasChoices, BaseModel, Field, PostgresDsn, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -136,7 +136,7 @@ class AuthSettings(BaseSettings):
     )
     jwt_algorithm: str = Field(default="HS256", alias="JWT_ALGORITHM")
     access_token_expire_minutes: int = Field(
-        default=30,
+        default=60 * 24 * 7,
         alias="JWT_ACCESS_TOKEN_EXPIRE_MINUTES",
     )
     refresh_token_expire_minutes: int = Field(
@@ -146,6 +146,16 @@ class AuthSettings(BaseSettings):
     refresh_rotation_enabled: bool = Field(default=True, alias="JWT_REFRESH_ROTATION_ENABLED")
     refresh_reuse_detection_enabled: bool = Field(default=True, alias="JWT_REFRESH_REUSE_DETECTION_ENABLED")
     refresh_rate_limit_per_minute: int = Field(default=20, alias="AUTH_REFRESH_RATE_LIMIT_PER_MINUTE")
+
+    @field_validator("access_token_expire_minutes", mode="before")
+    @classmethod
+    def ensure_long_access_token_ttl(cls, value: object) -> int:
+        if value is None:
+            return 60 * 24 * 7
+        try:
+            return max(int(str(value)), 60 * 24 * 7)
+        except Exception:
+            return 60 * 24 * 7
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
@@ -230,9 +240,19 @@ class AuthMeSettings(BaseSettings):
 class AdminAuthSettings(BaseSettings):
     login_failed_limit: int = Field(default=5, alias="ADMIN_LOGIN_FAILED_LIMIT")
     login_failed_window_seconds: int = Field(default=900, alias="ADMIN_LOGIN_FAILED_WINDOW_SECONDS")
-    access_expire_minutes: int = Field(default=30, alias="JWT_ACCESS_EXPIRE_MINUTES")
+    access_expire_minutes: int = Field(default=60 * 24 * 7, alias="JWT_ACCESS_EXPIRE_MINUTES")
     refresh_expire_days: int = Field(default=30, alias="JWT_REFRESH_EXPIRE_DAYS")
     me_cache_ttl_seconds: int = Field(default=120, alias="ADMIN_AUTH_ME_CACHE_TTL_SECONDS")
+
+    @field_validator("access_expire_minutes", mode="before")
+    @classmethod
+    def ensure_long_admin_access_ttl(cls, value: object) -> int:
+        if value is None:
+            return 60 * 24 * 7
+        try:
+            return max(int(str(value)), 60 * 24 * 7)
+        except Exception:
+            return 60 * 24 * 7
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

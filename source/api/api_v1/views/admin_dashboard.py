@@ -245,6 +245,16 @@ from source.services.stock import StockMovementService, StockService
 from source.services.upload import UploadService
 from source.services.user_cache import UserCacheService
 
+
+def format_validation_error_detail(error: ValidationError, prefix: str = "Неверные данные") -> str:
+    if not error.errors():
+        return prefix
+    first = error.errors()[0]
+    loc = " -> ".join(str(item) for item in first.get("loc", []))
+    msg = first.get("msg", "")
+    return f"{prefix} ({loc}: {msg})" if loc else f"{prefix}: {msg}"
+
+
 router = APIRouter(prefix="/admin", tags=["admin-dashboard"])
 
 
@@ -1385,7 +1395,10 @@ async def create_admin_discount(
             user_agent=request.headers.get("user-agent"),
         )
     except ValidationError as error:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Неверные данные скидки") from error
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=format_validation_error_detail(error, "Неверные данные скидки")) from error
+    except ValueError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Неверные данные скидки: {str(error)}" if str(error) else "Неверные данные скидки") from error
     except InvalidCredentialsError as error:
         await commiter.rollback()
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь не авторизован") from error
@@ -1492,13 +1505,13 @@ async def update_admin_discount(
             user_agent=request.headers.get("user-agent"),
         )
     except ValidationError as error:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Неверные данные скидки") from error
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=format_validation_error_detail(error, "Неверные данные скидки")) from error
     except EmptyDiscountUpdateError as error:
         await commiter.rollback()
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Не передано ни одного поля для изменения") from error
     except ValueError as error:
         await commiter.rollback()
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Неверные данные скидки") from error
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Неверные данные скидки: {str(error)}" if str(error) else "Неверные данные скидки") from error
     except InvalidCredentialsError as error:
         await commiter.rollback()
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь не авторизован") from error
@@ -2143,9 +2156,9 @@ async def create_admin_category(
             admin_category_cache_service=admin_category_cache_service,
         )
     except ValidationError as error:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Неверные данные") from error
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=format_validation_error_detail(error, "Неверные данные категории")) from error
     except ValueError as error:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Неверные данные") from error
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Неверные данные категории: {str(error)}" if str(error) else "Неверные данные категории") from error
     except InvalidCredentialsError as error:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь не авторизован") from error
     except AdminAuthAccessDeniedError as error:
@@ -3537,7 +3550,9 @@ async def create_admin_product(
             category_cache_service=category_cache_service,
         )
     except ValidationError as error:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Неверные данные") from error
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=format_validation_error_detail(error, "Неверные данные товара")) from error
+    except ValueError as error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Неверные данные товара: {str(error)}" if str(error) else "Неверные данные товара") from error
     except InvalidCredentialsError as error:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь не авторизован") from error
     except AdminAuthAccessDeniedError as error:
@@ -3686,9 +3701,9 @@ async def update_admin_product(
             admin_category_cache_service=admin_category_cache_service,
         )
     except ValidationError as error:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Неверные данные") from error
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=format_validation_error_detail(error, "Неверные данные товара")) from error
     except ValueError as error:
-        detail = "Нет полей для обновления" if str(error) == "No fields to update" else "Неверные данные"
+        detail = "Нет полей для обновления" if str(error) == "No fields to update" else f"Неверные данные: {str(error)}"
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=detail) from error
     except InvalidCredentialsError as error:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Пользователь не авторизован") from error

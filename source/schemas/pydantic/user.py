@@ -233,14 +233,14 @@ class AdminUserUpdateResponse(BaseModel):
 
 
 class AdminUserBlockRequest(BaseModel):
-    reason: str = Field(min_length=1, max_length=500)
+    reason: str = Field(default="Заблокирован администратором", min_length=1, max_length=500)
     revoke_sessions: bool = True
 
     @field_validator("reason", mode="before")
     @classmethod
-    def normalize_reason(cls, value: str) -> str:
-        if not isinstance(value, str):
-            return value
+    def normalize_reason(cls, value: str | None) -> str:
+        if not value or not isinstance(value, str) or not value.strip():
+            return "Заблокирован администратором"
         return " ".join(value.strip().split())
 
 
@@ -251,13 +251,13 @@ class AdminUserBlockResponse(BaseModel):
 
 
 class AdminUserUnblockRequest(BaseModel):
-    reason: str = Field(min_length=1, max_length=500)
+    reason: str = Field(default="Разблокирован администратором", min_length=1, max_length=500)
 
     @field_validator("reason", mode="before")
     @classmethod
-    def normalize_reason(cls, value: str) -> str:
-        if not isinstance(value, str):
-            return value
+    def normalize_reason(cls, value: str | None) -> str:
+        if not value or not isinstance(value, str) or not value.strip():
+            return "Разблокирован администратором"
         return " ".join(value.strip().split())
 
 
