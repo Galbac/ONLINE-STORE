@@ -15,6 +15,7 @@ class DeliveryZone(IdBigIntPkMixin, CreateUpdateMixin, Base):
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     city: Mapped[str] = mapped_column(String(100), index=True, nullable=False)
     description: Mapped[str | None] = mapped_column(Text)
+    warehouse_id: Mapped[int | None] = mapped_column(ForeignKey("pickup_points.id", ondelete="SET NULL"), index=True, nullable=True)
     price: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
     free_delivery_from: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
     min_order_amount: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))

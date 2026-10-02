@@ -144,6 +144,14 @@ class ProductSeoResponse(BaseModel):
     meta_description: str | None = None
 
 
+class StoreStockResponse(BaseModel):
+    store_id: int
+    store_name: str
+    address: str
+    stock_quantity: Decimal
+    is_available: bool
+
+
 class ProductDetailResponse(BaseModel):
     id: int
     name: str
@@ -166,6 +174,7 @@ class ProductDetailResponse(BaseModel):
     breadcrumbs: list[ProductBreadcrumbResponse] | None = None
     similar: list[ProductShortResponse] | None = None
     seo: ProductSeoResponse | None = None
+    stores_stock: list[StoreStockResponse] = Field(default_factory=list)
 
 
 class ProductListResponse(BaseModel):

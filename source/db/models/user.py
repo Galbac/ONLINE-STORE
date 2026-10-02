@@ -51,6 +51,11 @@ class User(IdBigIntPkMixin, CreateUpdateMixin, Base):
     unblocked_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), index=True)
     unblock_reason: Mapped[str | None] = mapped_column(Text)
     telegram_chat_id: Mapped[str | None] = mapped_column(String(64), unique=True, index=True, nullable=True)
+    assigned_pickup_point_id: Mapped[int | None] = mapped_column(
+        ForeignKey("pickup_points.id", ondelete="SET NULL"),
+        index=True,
+        nullable=True,
+    )
     is_phone_verified: Mapped[bool] = mapped_column(
         Boolean,
         default=False,

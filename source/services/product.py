@@ -1,8 +1,11 @@
 from datetime import datetime, timedelta
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from source.config.settings import settings
+from source.db.models.pickup_point import PickupPoint
+from source.db.models.product_stock import ProductStock
 from source.errors.category import CategoryNotFoundError
 from source.errors.product import ProductNotFoundError
 from source.repositories.category import CategoryRepository
@@ -24,6 +27,7 @@ from source.schemas.pydantic.product import (
     ProductSearchResponse,
     ProductSimilarQueryParams,
     ProductSimilarResponse,
+    StoreStockResponse,
 )
 from source.services.product_cache import ProductCacheService
 from source.services.redis import RedisService
@@ -476,6 +480,30 @@ class ProductService:
                 category_id=product.category.id if product.category is not None else None,
             )
 
+        stores_stock: list[StoreStockResponse] = []
+        if hasattr(session, "execute"):
+            stores_stmt = (
+                select(ProductStock, PickupPoint)
+                .join(PickupPoint, ProductStock.pickup_point_id == PickupPoint.id)
+                .where(
+                    ProductStock.product_id == product.id,
+                    PickupPoint.is_active.is_(True),
+                    PickupPoint.is_deleted.is_(False),
+                )
+                .order_by(PickupPoint.sort_order.asc(), PickupPoint.id.asc())
+            )
+            stores_res = await session.execute(stores_stmt)
+            stores_stock = [
+                StoreStockResponse(
+                    store_id=pp.id,
+                    store_name=pp.name,
+                    address=pp.address,
+                    stock_quantity=ps.stock_quantity,
+                    is_available=ps.stock_quantity > 0,
+                )
+                for ps, pp in stores_res.all()
+            ]
+
         return product.model_copy(
             update={
                 "images": await product_image_repository.get_by_product_id(
@@ -484,5 +512,6 @@ class ProductService:
                 ),
                 "breadcrumbs": breadcrumbs,
                 "similar": similar,
+                "stores_stock": stores_stock,
             },
         )

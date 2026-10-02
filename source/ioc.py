@@ -44,6 +44,7 @@ from source.repositories.refresh_token import RefreshTokenRepository
 from source.repositories.role import PermissionRepository, RoleRepository, UserRoleRepository
 from source.repositories.pickup_point import PickupPointRepository
 from source.repositories.product import ProductRepository
+from source.repositories.product_stock import ProductStockRepository
 from source.repositories.product_availability_log import ProductAvailabilityLogRepository
 from source.repositories.product_image import ProductImageRepository
 from source.repositories.product_price_history import ProductPriceHistoryRepository
@@ -306,6 +307,10 @@ class AppProvider(Provider):
     )
     product_repository = provide(
         ProductRepository,
+        scope=Scope.REQUEST,
+    )
+    product_stock_repository = provide(
+        ProductStockRepository,
         scope=Scope.REQUEST,
     )
     product_availability_log_repository = provide(

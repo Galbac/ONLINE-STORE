@@ -33,9 +33,13 @@ async def get_orders_for_assembly(
     session: FromDishka[AsyncSession] = None,
     order_repository: FromDishka[OrderRepository] = None,
 ) -> AdminOrderListResponse:
+    conditions = [Order.status.in_(["paid", "confirmed", "assembling"])]
+    if getattr(current_user, "assigned_pickup_point_id", None) is not None:
+        conditions.append(Order.fulfilling_store_id == current_user.assigned_pickup_point_id)
+
     stmt = (
         select(Order)
-        .where(Order.status.in_(["paid", "confirmed", "assembling"]))
+        .where(*conditions)
         .order_by(Order.created_date.asc())
         .limit(100)
     )
@@ -122,12 +126,16 @@ async def get_courier_orders_queue(
     session: FromDishka[AsyncSession] = None,
     order_repository: FromDishka[OrderRepository] = None,
 ) -> AdminOrderListResponse:
+    conditions = [
+        Order.delivery_type == "delivery",
+        Order.status.in_(["assembled", "in_delivery"]),
+    ]
+    if getattr(current_user, "assigned_pickup_point_id", None) is not None:
+        conditions.append(Order.fulfilling_store_id == current_user.assigned_pickup_point_id)
+
     stmt = (
         select(Order)
-        .where(
-            Order.delivery_type == "delivery",
-            Order.status.in_(["assembled", "in_delivery"]),
-        )
+        .where(*conditions)
         .order_by(Order.created_date.asc())
         .limit(100)
     )

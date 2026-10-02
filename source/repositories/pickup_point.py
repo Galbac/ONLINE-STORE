@@ -27,6 +27,22 @@ class PickupPointRepository:
         )
         return result.scalar_one_or_none()
 
+    async def get_by_external_1c_id(
+        self,
+        *,
+        session: AsyncSession,
+        external_1c_id: str,
+    ) -> PickupPoint | None:
+        result = await session.execute(
+            select(PickupPoint)
+            .where(
+                PickupPoint.external_1c_id == external_1c_id,
+                PickupPoint.is_deleted.is_(False),
+            )
+            .limit(1),
+        )
+        return result.scalar_one_or_none()
+
     async def create(
         self,
         *,

@@ -18,6 +18,8 @@ class PickupPoint(IdBigIntPkMixin, CreateUpdateMixin, Base):
     description: Mapped[str | None] = mapped_column(Text)
     latitude: Mapped[Decimal | None] = mapped_column(Numeric(9, 6))
     longitude: Mapped[Decimal | None] = mapped_column(Numeric(9, 6))
+    external_1c_id: Mapped[str | None] = mapped_column(String(100), index=True, nullable=True)
+    is_warehouse: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true", nullable=False)
     sort_order: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true", nullable=False)
     is_deleted: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false", nullable=False)

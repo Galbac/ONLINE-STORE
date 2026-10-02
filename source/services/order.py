@@ -606,6 +606,7 @@ class OrderService:
 
         address_id = None
         pickup_point_id = None
+        fulfilling_store_id = None
         if data.delivery_type == "delivery":
             address = await address_repository.get_by_id(session=session, address_id=data.address_id)
             if address is None or address.is_deleted:
@@ -613,6 +614,8 @@ class OrderService:
             if address.user_id != user.id:
                 raise OrderAddressAccessDeniedError
             address_id = address.id
+            if getattr(data, "pickup_point_id", None) is not None:
+                fulfilling_store_id = data.pickup_point_id
         else:
             pickup_point = await pickup_point_repository.get_by_id(
                 session=session,
@@ -623,6 +626,7 @@ class OrderService:
             if not pickup_point.is_active:
                 raise OrderPickupPointInactiveError
             pickup_point_id = pickup_point.id
+            fulfilling_store_id = pickup_point.id
 
         if (
             data.delivery_time_slot_id is not None
@@ -740,6 +744,7 @@ class OrderService:
                 user_id=user.id,
                 address_id=address_id,
                 pickup_point_id=pickup_point_id,
+                fulfilling_store_id=fulfilling_store_id,
                 order_number="TEMP",
                 status=settings.orders.online_payment_status if data.payment_method in {"online", "sbp"} else settings.orders.default_status,
                 payment_method=data.payment_method,

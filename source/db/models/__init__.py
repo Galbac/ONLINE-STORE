@@ -24,6 +24,7 @@ from source.db.models.payment import Payment
 from source.db.models.payment_webhook_log import PaymentWebhookLog
 from source.db.models.pickup_point import PickupPoint
 from source.db.models.product import Product
+from source.db.models.product_stock import ProductStock
 from source.db.models.product_availability_log import ProductAvailabilityLog
 from source.db.models.product_image import ProductImage
 from source.db.models.product_price_history import ProductPriceHistory
@@ -67,6 +68,7 @@ __all__ = (
     "PaymentWebhookLog",
     "PickupPoint",
     "Product",
+    "ProductStock",
     "ProductAvailabilityLog",
     "ProductImage",
     "ProductPriceHistory",
