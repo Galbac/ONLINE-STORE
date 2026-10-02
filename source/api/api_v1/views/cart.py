@@ -38,6 +38,21 @@ from source.services.promo_code import PromoCodeService
 router = APIRouter(tags=["cart"])
 
 
+def _format_insufficient_stock_detail(error: CartInsufficientStockError) -> str:
+    if error.available_quantity is not None:
+        unit_str = f" {error.unit}" if error.unit else ""
+        name_str = f" «{error.product_name}»" if error.product_name else ""
+        if error.available_quantity <= 0:
+            return f"Товар{name_str} временно закончился на складе"
+        avail_str = (
+            f"{error.available_quantity:f}".rstrip("0").rstrip(".")
+            if "." in f"{error.available_quantity:f}"
+            else f"{error.available_quantity}"
+        )
+        return f"Недостаточно товара{name_str} на складе. В наличии: {avail_str}{unit_str}"
+    return "Недостаточно товара на складе"
+
+
 @router.get(
     "/cart/summary",
     response_model=CartSummaryResponse,
@@ -275,7 +290,10 @@ async def update_cart_item(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Товар недоступен") from error
     except CartInsufficientStockError as error:
         await commiter.rollback()
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Недостаточно товара на складе") from error
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=_format_insufficient_stock_detail(error),
+        ) from error
     except CartPieceQuantityMustBeIntegerError as error:
         await commiter.rollback()
         raise HTTPException(
@@ -346,7 +364,10 @@ async def add_cart_item(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Товар недоступен") from error
     except CartInsufficientStockError as error:
         await commiter.rollback()
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Недостаточно товара на складе") from error
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=_format_insufficient_stock_detail(error),
+        ) from error
     except CartPieceQuantityMustBeIntegerError as error:
         await commiter.rollback()
         raise HTTPException(

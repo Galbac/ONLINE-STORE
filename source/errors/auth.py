@@ -186,8 +186,24 @@ class CartProductUnavailableError(Exception):
     pass
 
 
+from decimal import Decimal
+
+
 class CartInsufficientStockError(Exception):
-    pass
+    def __init__(
+        self,
+        message: str = "Недостаточно товара на складе",
+        available_quantity: Decimal | None = None,
+        requested_quantity: Decimal | None = None,
+        unit: str | None = None,
+        product_name: str | None = None,
+    ):
+        super().__init__(message)
+        self.message = message
+        self.available_quantity = available_quantity
+        self.requested_quantity = requested_quantity
+        self.unit = unit
+        self.product_name = product_name
 
 
 class CartPieceQuantityMustBeIntegerError(Exception):

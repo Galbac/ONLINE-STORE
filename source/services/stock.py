@@ -54,7 +54,12 @@ class StockService:
 
     def check_available_stock(self, *, product: Product, quantity: Decimal) -> None:
         if product.stock_quantity < quantity:
-            raise CartInsufficientStockError
+            raise CartInsufficientStockError(
+                available_quantity=product.stock_quantity,
+                requested_quantity=quantity,
+                unit=product.unit,
+                product_name=product.name,
+            )
 
     def validate_order_items(self, *, cart_items: list, products_by_id: dict[int, Product]) -> list[dict]:
         unavailable_items: list[dict] = []
