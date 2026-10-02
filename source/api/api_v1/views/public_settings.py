@@ -3,6 +3,7 @@ from fastapi import APIRouter, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from source.repositories.settings import SettingsRepository
+from source.repositories.delivery_settings import DeliverySettingsRepository
 from source.schemas.pydantic.public_settings import PublicStoreSettingsResponse
 from source.schemas.pydantic.settings import DayScheduleItem
 from source.utils.schedule import calculate_schedule_status, format_schedule_summary, normalize_schedule
@@ -15,8 +16,12 @@ router = APIRouter(tags=["settings"])
 async def get_public_store_settings(
     session: FromDishka[AsyncSession] = None,
     settings_repository: FromDishka[SettingsRepository] = None,
+    delivery_settings_repository: FromDishka[DeliverySettingsRepository] = None,
 ) -> PublicStoreSettingsResponse:
     store_settings, _ = await settings_repository.get_or_create_default(session=session)
+    delivery_settings = None
+    if delivery_settings_repository is not None:
+        delivery_settings, _ = await delivery_settings_repository.get_or_create_default(session=session)
     raw_schedule = getattr(store_settings, "schedule", None)
     normalized_sched = normalize_schedule(raw_schedule)
     maintenance = getattr(store_settings, "maintenance_mode", False)
@@ -48,6 +53,7 @@ async def get_public_store_settings(
         schedule=schedule_items,
         is_open_now=is_open_now,
         current_status_text=current_status_text,
+        default_city=delivery_settings.default_city if delivery_settings else "Кизляр",
         online_payment_enabled=bool(store_settings.online_payment_enabled) if store_settings.online_payment_enabled is not None else True,
         pay_on_delivery_enabled=bool(store_settings.pay_on_delivery_enabled) if store_settings.pay_on_delivery_enabled is not None else True,
         maintenance_mode=bool(store_settings.maintenance_mode) if store_settings.maintenance_mode is not None else False,

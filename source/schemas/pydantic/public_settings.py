@@ -15,6 +15,7 @@ class PublicStoreSettingsResponse(BaseModel):
     schedule: list[DayScheduleItem] | None = None
     is_open_now: bool = True
     current_status_text: str | None = None
+    default_city: str | None = None
     online_payment_enabled: bool = True
     pay_on_delivery_enabled: bool = True
     maintenance_mode: bool = False

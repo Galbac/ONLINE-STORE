@@ -51,6 +51,31 @@ async def test_get_public_store_settings_success() -> None:
     assert response.personal_data_consent_url == "/personal-data-consent"
     assert response.online_payment_enabled is True
     assert response.maintenance_mode is False
+    assert response.default_city == "Кизляр"
+
+
+@pytest.mark.asyncio
+async def test_get_public_store_settings_with_delivery_settings() -> None:
+    session = AsyncMock()
+    settings_repo = AsyncMock()
+    delivery_settings_repo = AsyncMock()
+
+    store_settings = StoreSettings(
+        shop_name="Супермаркет Победа",
+    )
+    settings_repo.get_or_create_default.return_value = (store_settings, False)
+    delivery_settings_repo.get_or_create_default.return_value = (
+        SimpleNamespace(default_city="Махачкала"),
+        False,
+    )
+
+    response = await unwrap(get_public_store_settings)(
+        session=session,
+        settings_repository=settings_repo,
+        delivery_settings_repository=delivery_settings_repo,
+    )
+
+    assert response.default_city == "Махачкала"
 
 
 @pytest.mark.asyncio
