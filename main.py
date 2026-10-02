@@ -98,25 +98,11 @@ def create_app() -> FastAPI:
 app = create_app()
 
 
+from source.utils.validation import format_validation_error_message
+
 def format_pydantic_error_msg(error: dict) -> str:
     msg = str(error.get("msg", ""))
-    if msg.startswith("Value error, "):
-        msg = msg[len("Value error, "):]
-    if "Field required" in msg:
-        msg = "Поле обязательно для заполнения"
-    elif "Input should be a valid integer" in msg:
-        msg = "Значение должно быть целым числом"
-    elif "Input should be a valid number" in msg:
-        msg = "Значение должно быть числом"
-    elif "Input should be a valid boolean" in msg:
-        msg = "Значение должно быть логическим (true/false)"
-    elif "Input should be a valid string" in msg:
-        msg = "Значение должно быть строкой"
-    elif "Extra inputs are not permitted" in msg:
-        msg = "Переданы непредусмотренные поля"
-    elif "value is not a valid email address" in msg:
-        msg = "Некорректный адрес электронной почты"
-    return msg
+    return format_validation_error_message(msg)
 
 
 @app.exception_handler(RequestValidationError)

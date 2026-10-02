@@ -121,3 +121,27 @@ async def test_admin_settings_update_without_permission_returns_403() -> None:
         )
 
     assert exc_info.value.status_code == 403
+
+@pytest.mark.asyncio
+async def test_admin_settings_update_invalid_email_returns_localized_russian_error() -> None:
+    with pytest.raises(HTTPException) as exc_info:
+        await update_admin_settings.__dishka_orig_func__(
+            request=SimpleNamespace(client=None, headers={}),
+            payload={"email": "info@eda-pobeda.ru22222222"},
+            token_payload={"token_type": "access"},
+            current_user=build_user(role=UserRole.ADMIN),
+            commiter=FakeCommiter(),
+            redis_service=FakeRedisService(),
+            admin_settings_service=AdminSettingsService(),
+            settings_cache_service=SettingsCacheService(),
+            delivery_cache_service=DeliveryCacheService(),
+            cart_cache_service=FakeCartCacheService(),
+            permission_service=PermissionService(),
+            settings_repository=FakeSettingsRepository(),
+            delivery_settings_repository=FakeDeliverySettingsRepository(),
+            audit_log_service=AuditLogService(),
+            admin_audit_log_repository=FakeAuditLogRepository(),
+        )
+
+    assert exc_info.value.status_code == 400
+    assert "Некорректный адрес электронной почты" in exc_info.value.detail

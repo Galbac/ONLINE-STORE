@@ -4,6 +4,7 @@ from datetime import date
 from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Path, Query, Request, UploadFile, status
 from fastapi.responses import HTMLResponse
 from pydantic import ValidationError
+from source.utils.validation import format_pydantic_validation_error
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from source.api.dependencies import get_current_user, require_permission, verify_access_token
@@ -356,10 +357,7 @@ async def update_admin_settings(
         )
     except ValidationError as error:
         await commiter.rollback()
-        detail = "Неверные входные данные"
-        first_error = error.errors()[0] if error.errors() else None
-        if first_error is not None and isinstance(first_error.get("msg"), str):
-            detail = first_error["msg"].replace("Value error, ", "", 1)
+        detail = format_pydantic_validation_error(error)
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=detail) from error
     except EmptyAdminSettingsUpdateError as error:
         await commiter.rollback()
@@ -421,10 +419,7 @@ async def create_admin_delivery_zone(
         )
     except ValidationError as error:
         await commiter.rollback()
-        detail = "Неверные входные данные"
-        first_error = error.errors()[0] if error.errors() else None
-        if first_error is not None and isinstance(first_error.get("msg"), str):
-            detail = first_error["msg"].replace("Value error, ", "", 1)
+        detail = format_pydantic_validation_error(error)
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=detail) from error
     except ValueError as error:
         await commiter.rollback()
@@ -491,10 +486,7 @@ async def update_admin_delivery_zone(
         )
     except ValidationError as error:
         await commiter.rollback()
-        detail = "Неверные входные данные"
-        first_error = error.errors()[0] if error.errors() else None
-        if first_error is not None and isinstance(first_error.get("msg"), str):
-            detail = first_error["msg"].replace("Value error, ", "", 1)
+        detail = format_pydantic_validation_error(error)
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=detail) from error
     except EmptyDeliveryZoneUpdateError as error:
         await commiter.rollback()
@@ -630,10 +622,7 @@ async def create_admin_delivery_pickup_point(
         )
     except ValidationError as error:
         await commiter.rollback()
-        detail = "Неверные входные данные"
-        first_error = error.errors()[0] if error.errors() else None
-        if first_error is not None and isinstance(first_error.get("msg"), str):
-            detail = first_error["msg"].replace("Value error, ", "", 1)
+        detail = format_pydantic_validation_error(error)
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=detail) from error
     except InvalidCredentialsError as error:
         await commiter.rollback()
@@ -697,10 +686,7 @@ async def update_admin_delivery_pickup_point(
         )
     except ValidationError as error:
         await commiter.rollback()
-        detail = "Неверные входные данные"
-        first_error = error.errors()[0] if error.errors() else None
-        if first_error is not None and isinstance(first_error.get("msg"), str):
-            detail = first_error["msg"].replace("Value error, ", "", 1)
+        detail = format_pydantic_validation_error(error)
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=detail) from error
     except EmptyPickupPointUpdateError as error:
         await commiter.rollback()
