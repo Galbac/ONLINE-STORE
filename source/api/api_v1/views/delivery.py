@@ -35,6 +35,7 @@ from source.schemas.pydantic.delivery import (
 from source.services.delivery import DeliveryService, DeliveryTimeSlotService, DeliveryZoneService
 from source.services.delivery_cache import DeliveryCacheService
 from source.services.redis import RedisService
+from source.utils.validation import format_pydantic_validation_error
 
 router = APIRouter(tags=["delivery"])
 
@@ -99,7 +100,10 @@ async def get_pickup_points(
             query=query,
         )
     except ValidationError as error:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Неверные query params") from error
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=format_pydantic_validation_error(error),
+        ) from error
     except Exception as error:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Внутренняя ошибка сервера") from error
 
@@ -176,7 +180,10 @@ async def get_delivery_time_slots(
             query=query,
         )
     except ValidationError as error:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Неверные query params") from error
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=format_pydantic_validation_error(error),
+        ) from error
     except DeliveryDateInPastError as error:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="date не должна быть в прошлом") from error
     except PickupPointNotFoundError as error:
@@ -237,7 +244,10 @@ async def calculate_delivery(
             data=data,
         )
     except ValidationError as error:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Неверные входные данные") from error
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=format_pydantic_validation_error(error),
+        ) from error
     except DeliveryMinOrderAmountError as error:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Сумма заказа меньше минимальной") from error
     except DeliveryAddressAccessDeniedError as error:

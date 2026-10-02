@@ -27,6 +27,7 @@ from source.services.cart import CartCalculatorService, CartService
 from source.services.cart_cache import CartCacheService
 from source.services.promo_code import PromoCodeService
 from source.services.redis import RedisService
+from source.utils.validation import format_pydantic_validation_error
 
 router = APIRouter(tags=["promo-codes"])
 
@@ -59,7 +60,10 @@ async def check_promo_code(
             data=body,
         )
     except ValidationError as error:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Неверные входные данные") from error
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=format_pydantic_validation_error(error),
+        ) from error
     except CartPromoCodeNotFoundError as error:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Промокод не найден") from error
     except CartPromoCodeInactiveError as error:

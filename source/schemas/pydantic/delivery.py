@@ -2,7 +2,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from math import ceil
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from source.utils.delivery import normalize_address_part
 
@@ -361,12 +361,19 @@ class AdminPickupPointListResponse(BaseModel):
 
 
 class DeliveryCalculateRequest(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
     city: str | None = Field(default=None, min_length=1, max_length=100)
     street: str | None = Field(default=None, min_length=1, max_length=150)
     house: str | None = Field(default=None, min_length=1, max_length=50)
     apartment: str | None = Field(default=None, max_length=50)
-    order_amount: Decimal = Field(gt=0)
+    order_amount: Decimal = Field(
+        gt=0,
+        validation_alias=AliasChoices("order_amount", "cart_total"),
+    )
     address_id: int | None = Field(default=None, gt=0)
+    delivery_type: str | None = Field(default="delivery")
+    pickup_point_id: int | None = Field(default=None)
 
     @field_validator("city", "street", "house", "apartment", mode="before")
     @classmethod

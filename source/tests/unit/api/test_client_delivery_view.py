@@ -1,6 +1,7 @@
 from datetime import date
 from decimal import Decimal
-from unittest.mock import AsyncMock
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from fastapi import HTTPException
@@ -286,3 +287,69 @@ async def test_calculate_delivery_address_not_found():
             address_repository=AsyncMock(),
         )
     assert exc.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_calculate_delivery_with_cart_total_and_address_id():
+    service = AsyncMock()
+    service.calculate.return_value = DeliveryCalculateResponse(
+        delivery_price=Decimal("0.00"),
+        available=True,
+        message="Бесплатная доставка",
+    )
+
+    body = {
+        "delivery_type": "delivery",
+        "cart_total": "41070.00000",
+        "address_id": 75,
+        "city": "г. Кизляр",
+    }
+
+    with patch("source.api.api_v1.views.delivery.resolve_current_user", new=AsyncMock(return_value=SimpleNamespace(id=1))):
+        response = await unwrap(calculate_delivery)(
+            body=body,
+            authorization="Bearer test_token",
+            session=AsyncMock(),
+            redis_service=AsyncMock(),
+            delivery_service=service,
+            delivery_zone_service=AsyncMock(),
+            delivery_cache_service=AsyncMock(),
+            delivery_settings_repository=AsyncMock(),
+            delivery_zone_repository=AsyncMock(),
+            address_repository=AsyncMock(),
+        )
+
+    assert response.available is True
+    assert response.delivery_price == Decimal("0.00")
+    service.calculate.assert_called_once()
+    called_data = service.calculate.call_args.kwargs["data"]
+    assert called_data.order_amount == Decimal("41070.00000")
+    assert called_data.address_id == 75
+
+
+@pytest.mark.asyncio
+async def test_calculate_delivery_validation_error_returns_localized_field_detail():
+    # Neither order_amount nor cart_total is provided
+    body = {
+        "delivery_type": "delivery",
+        "address_id": 75,
+        "city": "г. Кизляр",
+    }
+
+    with pytest.raises(HTTPException) as exc:
+        await unwrap(calculate_delivery)(
+            body=body,
+            authorization=None,
+            session=AsyncMock(),
+            redis_service=AsyncMock(),
+            delivery_service=AsyncMock(),
+            delivery_zone_service=AsyncMock(),
+            delivery_cache_service=AsyncMock(),
+            delivery_settings_repository=AsyncMock(),
+            delivery_zone_repository=AsyncMock(),
+            address_repository=AsyncMock(),
+        )
+
+    assert exc.value.status_code == 400
+    assert "order_amount" in exc.value.detail or "Сумма заказа" in exc.value.detail
+    assert "обязательно для заполнения" in exc.value.detail
