@@ -15,6 +15,7 @@ from source.repositories.order_item import OrderItemRepository
 from source.repositories.payment import PaymentRepository
 from source.repositories.pickup_point import PickupPointRepository
 from source.repositories.product import ProductRepository
+from source.repositories.product_stock import ProductStockRepository
 from source.repositories.product_image import ProductImageRepository
 from source.repositories.product_price_history import ProductPriceHistoryRepository
 from source.repositories.stock_movement import StockMovementRepository
@@ -293,6 +294,8 @@ async def admin_sync_one_c_stocks(
             cart_cache_service=cart_cache_service,
             admin_dashboard_cache_service=admin_dashboard_cache_service,
             admin_product_cache_service=admin_product_cache_service,
+            product_stock_repository=product_stock_repository,
+            pickup_point_repository=pickup_point_repository,
         )
     except (AdminAuthAccessDeniedError, InactiveUserError) as error:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Недостаточно прав") from error
@@ -675,6 +678,8 @@ async def import_one_c_stocks(
     cart_cache_service: FromDishka[CartCacheService] = None,
     admin_dashboard_cache_service: FromDishka[AdminDashboardCacheService] = None,
     admin_product_cache_service: FromDishka[AdminProductCacheService] = None,
+    product_stock_repository: FromDishka[ProductStockRepository] = None,
+    pickup_point_repository: FromDishka[PickupPointRepository] = None,
 ) -> OneCImportResultResponse:
     if not body.items:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="items пустой")

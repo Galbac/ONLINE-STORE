@@ -284,6 +284,7 @@ class OneCOrderPayloadBuilder:
                 date=order.delivery_date,
                 time_slot=self._build_time_slot(delivery_time_slot=delivery_time_slot),
                 pickup_point=pickup_point.name if pickup_point is not None else None,
+                warehouse_external_1c_id=getattr(pickup_point, "external_1c_id", None) if pickup_point is not None else None,
             ),
             payment=OneCOrderPaymentResponse(
                 method=order.payment_method,
@@ -989,6 +990,8 @@ class ProductStockSyncService:
         product_repository,
         stock_movement_service,
         stock_movement_repository,
+        product_stock_repository=None,
+        pickup_point_repository=None,
     ) -> OneCImportResultResponse:
         now = datetime.now(settings.tz)
         product_external_ids = {item.product_external_1c_id for item in data.items}
@@ -1006,7 +1009,7 @@ class ProductStockSyncService:
         skipped = 0
         updated_products = []
         movement_payloads: list[dict] = []
-        seen_external_ids: set[str] = set()
+        seen_batch_keys: set[tuple[str, str | None]] = set()
 
         for item in data.items:
             item_errors = self._validate_item(item=item)
@@ -1014,7 +1017,8 @@ class ProductStockSyncService:
                 skipped += 1
                 errors.extend(item_errors)
                 continue
-            if item.product_external_1c_id in seen_external_ids:
+            batch_key = (item.product_external_1c_id, item.warehouse_external_1c_id)
+            if batch_key in seen_batch_keys:
                 skipped += 1
                 errors.append(
                     OneCImportItemErrorResponse(
@@ -1024,7 +1028,7 @@ class ProductStockSyncService:
                     ),
                 )
                 continue
-            seen_external_ids.add(item.product_external_1c_id)
+            seen_batch_keys.add(batch_key)
 
             product = products_by_external_id.get(item.product_external_1c_id)
             if product is None:
@@ -1057,6 +1061,21 @@ class ProductStockSyncService:
                         "reason": "1C stock import",
                     },
                 )
+
+            if item.warehouse_external_1c_id and pickup_point_repository and product_stock_repository:
+                pickup_point = await pickup_point_repository.get_by_external_1c_id(
+                    session=session,
+                    external_1c_id=item.warehouse_external_1c_id,
+                )
+                if pickup_point is not None:
+                    await product_stock_repository.upsert_stock(
+                        session=session,
+                        product_id=product.id,
+                        pickup_point_id=pickup_point.id,
+                        stock_quantity=item.stock_quantity,
+                        reserved_quantity=item.reserved_quantity if item.reserved_quantity is not None else 0,
+                        low_stock_threshold=product.low_stock_threshold,
+                    )
 
             product.stock_quantity = item.stock_quantity
             product.reserved_quantity = item.reserved_quantity if item.reserved_quantity is not None else 0
@@ -1516,6 +1535,8 @@ class OneCImportService:
         cart_cache_service,
         admin_dashboard_cache_service,
         admin_product_cache_service,
+        product_stock_repository=None,
+        pickup_point_repository=None,
     ) -> OneCImportResultResponse:
         result = await product_stock_sync_service.update_stocks_from_1c(
             session=session,
@@ -1523,6 +1544,8 @@ class OneCImportService:
             product_repository=product_repository,
             stock_movement_service=stock_movement_service,
             stock_movement_repository=stock_movement_repository,
+            product_stock_repository=product_stock_repository,
+            pickup_point_repository=pickup_point_repository,
         )
         status = "partial" if result.errors else "success"
         await integration_log_service.create_log(

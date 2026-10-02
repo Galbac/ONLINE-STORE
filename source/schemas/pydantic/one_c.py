@@ -278,6 +278,7 @@ class OneCOrderDeliveryResponse(BaseModel):
     date: date_type | None = None
     time_slot: str | None = None
     pickup_point: str | None = None
+    warehouse_external_1c_id: str | None = None
 
 
 class OneCOrderPaymentResponse(BaseModel):

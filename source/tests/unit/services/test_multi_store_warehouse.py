@@ -131,3 +131,64 @@ async def test_staff_order_assignment_filtering():
     assert len(filtered_orders) == 1
     assert filtered_orders[0].id == 101
     assert filtered_orders[0].fulfilling_store_id == 1
+
+
+@pytest.mark.asyncio
+async def test_one_c_import_multi_warehouse_same_product():
+    from source.services.one_c import ProductStockSyncService
+    from source.schemas.pydantic.one_c import OneCStockImportRequest, OneCStockImportItem
+
+    product = Product(
+        id=10,
+        name="Сахар 1кг",
+        slug="sahar-1kg",
+        price=Decimal("80.00"),
+        unit="шт",
+        product_type="piece",
+        stock_quantity=Decimal("0"),
+        external_1c_id="PROD-SUGAR",
+        low_stock_threshold=Decimal("5"),
+        is_active=True,
+        is_available=True,
+    )
+
+    class FakeProdRepo:
+        async def get_by_external_1c_ids(self, session, external_1c_ids):
+            return [product]
+        async def bulk_update_stocks(self, session, products):
+            pass
+
+    class FakeMoveRepo:
+        pass
+
+    class FakeMoveService:
+        async def create_bulk(self, session, stock_movement_repository, items):
+            pass
+
+    sync_service = ProductStockSyncService()
+    req = OneCStockImportRequest(
+        items=[
+            OneCStockImportItem(
+                product_external_1c_id="PROD-SUGAR",
+                stock_quantity=Decimal("20"),
+                warehouse_external_1c_id="WH-1",
+            ),
+            OneCStockImportItem(
+                product_external_1c_id="PROD-SUGAR",
+                stock_quantity=Decimal("35"),
+                warehouse_external_1c_id="WH-2",
+            ),
+        ]
+    )
+
+    res = await sync_service.update_stocks_from_1c(
+        session=AsyncMock(),
+        data=req,
+        product_repository=FakeProdRepo(),
+        stock_movement_service=FakeMoveService(),
+        stock_movement_repository=FakeMoveRepo(),
+    )
+
+    assert res.skipped == 0
+    assert len(res.errors) == 0
+    assert res.updated == 1

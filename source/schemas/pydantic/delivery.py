@@ -415,6 +415,7 @@ class PickupPointResponse(BaseModel):
     working_hours: str | None = None
     phone: str | None = None
     is_active: bool
+    is_warehouse: bool = True
     latitude: Decimal | None = None
     longitude: Decimal | None = None
 
