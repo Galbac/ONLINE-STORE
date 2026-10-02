@@ -329,11 +329,12 @@ async def test_calculate_delivery_with_cart_total_and_address_id():
 
 @pytest.mark.asyncio
 async def test_calculate_delivery_validation_error_returns_localized_field_detail():
-    # Neither order_amount nor cart_total is provided
+    # Negative order amount triggers pydantic validation error
     body = {
-        "delivery_type": "delivery",
-        "address_id": 75,
-        "city": "г. Кизляр",
+        "city": "Кизляр",
+        "street": "Ленина",
+        "house": "10",
+        "order_amount": -50,
     }
 
     with pytest.raises(HTTPException) as exc:
@@ -352,4 +353,4 @@ async def test_calculate_delivery_validation_error_returns_localized_field_detai
 
     assert exc.value.status_code == 400
     assert "order_amount" in exc.value.detail or "Сумма заказа" in exc.value.detail
-    assert "обязательно для заполнения" in exc.value.detail
+    assert "должно быть больше" in exc.value.detail

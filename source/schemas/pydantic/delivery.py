@@ -368,7 +368,8 @@ class DeliveryCalculateRequest(BaseModel):
     house: str | None = Field(default=None, min_length=1, max_length=50)
     apartment: str | None = Field(default=None, max_length=50)
     order_amount: Decimal = Field(
-        gt=0,
+        default=Decimal("0"),
+        ge=0,
         validation_alias=AliasChoices("order_amount", "cart_total"),
     )
     address_id: int | None = Field(default=None, gt=0)

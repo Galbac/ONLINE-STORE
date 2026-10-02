@@ -97,7 +97,7 @@ class DeliveryService:
             delivery_settings = self._default_settings()
         if not delivery_settings.delivery_enabled:
             raise DeliveryDisabledError
-        if data.order_amount < delivery_settings.min_order_amount:
+        if Decimal("0") < data.order_amount < delivery_settings.min_order_amount:
             raise DeliveryMinOrderAmountError
 
         zone = await delivery_zone_service.find_zone_by_address(

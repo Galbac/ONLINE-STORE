@@ -497,7 +497,7 @@ async def create_order(
         )
 
         if idempotency_redis_key and redis_service is not None:
-            await redis_service.set(idempotency_redis_key, response.model_dump_json(), ex=1800)
+            await redis_service.set(idempotency_redis_key, response.model_dump_json(), ttl_seconds=1800)
 
         return response
     except InactiveUserError as error:

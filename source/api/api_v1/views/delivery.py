@@ -249,7 +249,10 @@ async def calculate_delivery(
             detail=format_pydantic_validation_error(error),
         ) from error
     except DeliveryMinOrderAmountError as error:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Сумма заказа меньше минимальной") from error
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Минимальная сумма заказа для доставки — 1 000 ₽",
+        ) from error
     except DeliveryAddressAccessDeniedError as error:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Адрес принадлежит другому пользователю") from error
     except DeliveryAddressNotFoundError as error:

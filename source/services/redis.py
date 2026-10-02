@@ -10,8 +10,9 @@ class RedisService:
     async def get(self, key: str) -> Any:
         return await self._redis.get(key)
 
-    async def set(self, key: str, value: str, *, ttl_seconds: int | None = None) -> None:
-        await self._redis.set(key, value, ex=ttl_seconds)
+    async def set(self, key: str, value: str, *, ttl_seconds: int | None = None, ex: int | None = None) -> None:
+        expire_time = ttl_seconds if ttl_seconds is not None else ex
+        await self._redis.set(key, value, ex=expire_time)
 
     async def set_if_not_exists(self, key: str, value: str, *, ttl_seconds: int | None = None) -> bool:
         return bool(await self._redis.set(key, value, ex=ttl_seconds, nx=True))
