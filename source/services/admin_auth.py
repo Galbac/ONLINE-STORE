@@ -536,4 +536,8 @@ class AdminAuthService:
     async def _get_user(self, *, user_repository, session, login: str):
         if "@" in login:
             return await user_repository.get_by_email(session=session, email=login.lower())
+        if login.lower() == "admin":
+            admin_user = await user_repository.get_by_email(session=session, email="admin@example.com")
+            if admin_user is not None:
+                return admin_user
         return await user_repository.get_by_phone(session=session, phone=login)

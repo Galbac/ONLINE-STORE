@@ -124,12 +124,16 @@ async def validation_exception_handler(
     _request,
     exc: RequestValidationError,
 ) -> JSONResponse:
+    from fastapi.encoders import jsonable_encoder
+
     cleaned_errors = []
     first_readable_message = None
     for err in exc.errors():
         err_copy = dict(err)
         cleaned_msg = format_pydantic_error_msg(err_copy)
         err_copy["msg"] = cleaned_msg
+        if "ctx" in err_copy and isinstance(err_copy["ctx"], dict):
+            err_copy["ctx"] = {k: str(v) for k, v in err_copy["ctx"].items()}
         cleaned_errors.append(err_copy)
         if first_readable_message is None:
             loc_items = [str(item) for item in err_copy.get("loc", []) if str(item) and str(item) not in ("body", "query", "path")]
@@ -138,10 +142,10 @@ async def validation_exception_handler(
 
     return JSONResponse(
         status_code=status.HTTP_400_BAD_REQUEST,
-        content={
+        content=jsonable_encoder({
             "detail": cleaned_errors,
             "message": first_readable_message or "Ошибка валидации данных",
-        },
+        }),
     )
 
 

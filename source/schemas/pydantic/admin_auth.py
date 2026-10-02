@@ -18,7 +18,7 @@ class AdminLoginRequest(BaseModel):
         if "@" in login:
             TypeAdapter(EmailStr).validate_python(login)
             return login.lower()
-        if re.fullmatch(r"\+?\d{5,15}", login) is None:
+        if re.fullmatch(r"\+?\d{5,15}", login) is None and login.lower() != "admin":
             raise ValueError("Логин должен быть корректным email или номером телефона")
         return login
 
