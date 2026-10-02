@@ -1,7 +1,7 @@
 from contextlib import asynccontextmanager
 
 from dishka.integrations import fastapi as fastapi_integration
-from fastapi import FastAPI, status
+from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -132,6 +132,23 @@ async def validation_exception_handler(
             "detail": cleaned_errors,
             "message": first_readable_message or "Ошибка валидации данных",
         }),
+    )
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    import traceback
+    tb = traceback.format_exc()
+    error_msg = f"Unhandled {type(exc).__name__}: {exc}\n{tb}"
+    try:
+        with open("/tmp/last_backend_error.log", "w", encoding="utf-8") as f:
+            f.write(error_msg)
+    except Exception:
+        pass
+    print(error_msg, flush=True)
+    return JSONResponse(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        content={"detail": "Внутренняя ошибка сервера", "error_type": type(exc).__name__, "message": str(exc), "traceback": tb},
     )
 
 

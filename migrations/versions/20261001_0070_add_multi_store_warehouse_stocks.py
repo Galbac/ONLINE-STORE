@@ -34,8 +34,8 @@ def upgrade() -> None:
     op.create_table(
         'product_stocks',
         sa.Column('id', sa.BigInteger(), autoincrement=True, nullable=False),
-        sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
-        sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+        sa.Column('created_date', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+        sa.Column('updated_date', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
         sa.Column('product_id', sa.BigInteger(), nullable=False),
         sa.Column('pickup_point_id', sa.BigInteger(), nullable=False),
         sa.Column('stock_quantity', sa.Numeric(precision=12, scale=3), server_default=sa.text('0'), nullable=False),
@@ -98,7 +98,7 @@ def upgrade() -> None:
     # 6. Data backfill: populate product_stocks for existing products if at least one pickup point exists
     op.execute(
         """
-        INSERT INTO product_stocks (product_id, pickup_point_id, stock_quantity, reserved_quantity, low_stock_threshold, stock_updated_at, created_at, updated_at)
+        INSERT INTO product_stocks (product_id, pickup_point_id, stock_quantity, reserved_quantity, low_stock_threshold, stock_updated_at, created_date, updated_date)
         SELECT p.id, pp.id, p.stock_quantity, p.reserved_quantity, p.low_stock_threshold, p.stock_updated_at, now(), now()
         FROM products p
         CROSS JOIN LATERAL (
