@@ -5,10 +5,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from source.api.dependencies import get_current_user, require_admin_or_manager
 from source.common.commiter import Commiter
 from source.db.models.user import User
+from source.repositories.order_item import OrderItemRepository
 from source.repositories.product import ProductRepository
 from source.repositories.product_review import ProductReviewRepository
 from source.schemas.pydantic.review import (
     ReviewCreateRequest,
+    ReviewEligibilityResponse,
     ReviewListResponse,
     ReviewModerateRequest,
     ReviewResponse,
@@ -16,6 +18,31 @@ from source.schemas.pydantic.review import (
 from source.services.review import ReviewService
 
 router = APIRouter(tags=["reviews"])
+
+
+@router.get(
+    "/products/{product_id}/reviews/eligibility",
+    response_model=ReviewEligibilityResponse,
+    status_code=status.HTTP_200_OK,
+)
+@inject
+async def get_product_review_eligibility(
+    product_id: int,
+    current_user: User = Depends(get_current_user),
+    session: FromDishka[AsyncSession] = None,
+    product_repository: FromDishka[ProductRepository] = None,
+    order_item_repository: FromDishka[OrderItemRepository] = None,
+) -> ReviewEligibilityResponse:
+    product = await product_repository.get_by_id(session=session, product_id=product_id)
+    if product is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Товар не найден")
+
+    can_review = await order_item_repository.user_has_purchased_product(
+        session=session,
+        user_id=current_user.id,
+        product_id=product_id,
+    )
+    return ReviewEligibilityResponse(can_review=can_review)
 
 
 @router.get("/products/{product_id}/reviews", response_model=ReviewListResponse, status_code=status.HTTP_200_OK)
@@ -42,12 +69,24 @@ async def create_product_review(
     session: FromDishka[AsyncSession] = None,
     review_repository: FromDishka[ProductReviewRepository] = None,
     product_repository: FromDishka[ProductRepository] = None,
+    order_item_repository: FromDishka[OrderItemRepository] = None,
     review_service: FromDishka[ReviewService] = None,
     commiter: FromDishka[Commiter] = None,
 ) -> ReviewResponse:
     product = await product_repository.get_by_id(session=session, product_id=product_id)
     if product is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Товар не найден")
+
+    can_review = await order_item_repository.user_has_purchased_product(
+        session=session,
+        user_id=current_user.id,
+        product_id=product_id,
+    )
+    if not can_review:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Оставить отзыв могут только покупатели этого товара после получения заказа",
+        )
 
     return await review_service.create_review(
         session=session,

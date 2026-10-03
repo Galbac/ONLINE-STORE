@@ -34,3 +34,7 @@ class ReviewListResponse(BaseModel):
     items: list[ReviewResponse]
     total: int
     average_rating: float = 5.0
+
+
+class ReviewEligibilityResponse(BaseModel):
+    can_review: bool

@@ -88,6 +88,8 @@ async def test_create_product_review_success(active_user, fake_review_response):
 
     service = AsyncMock()
     service.create_review.return_value = fake_review_response
+    order_item_repo = AsyncMock()
+    order_item_repo.user_has_purchased_product.return_value = True
 
     body = ReviewCreateRequest(
         rating=5,
@@ -102,6 +104,7 @@ async def test_create_product_review_success(active_user, fake_review_response):
         session=AsyncMock(),
         review_repository=AsyncMock(),
         product_repository=product_repo,
+        order_item_repository=order_item_repo,
         review_service=service,
         commiter=AsyncMock(),
     )

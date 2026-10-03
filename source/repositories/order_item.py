@@ -49,3 +49,22 @@ class OrderItemRepository:
             .limit(1),
         )
         return result.scalar_one_or_none() is not None
+
+    async def user_has_purchased_product(
+        self,
+        *,
+        session: AsyncSession,
+        user_id: int,
+        product_id: int,
+    ) -> bool:
+        result = await session.execute(
+            select(OrderItem.id)
+            .join(Order, Order.id == OrderItem.order_id)
+            .where(
+                Order.user_id == user_id,
+                OrderItem.product_id == product_id,
+                Order.status.in_(("delivered", "completed")),
+            )
+            .limit(1),
+        )
+        return result.scalar_one_or_none() is not None
