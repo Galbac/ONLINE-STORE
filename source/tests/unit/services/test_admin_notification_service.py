@@ -363,6 +363,12 @@ def test_admin_notification_settings_update_invalid_email_error() -> None:
         AdminNotificationSettingsUpdateRequest(email_from="not-an-email")
 
 
+def test_admin_notification_settings_update_accepts_local_sender_address() -> None:
+    request = AdminNotificationSettingsUpdateRequest(email_from="noreply@grocery.local")
+
+    assert request.email_from == "noreply@grocery.local"
+
+
 def test_admin_notification_settings_update_rejects_invalid_sound_volume() -> None:
     with pytest.raises(ValidationError):
         AdminNotificationSettingsUpdateRequest(admin_order_sound_volume=1.1)

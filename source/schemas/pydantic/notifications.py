@@ -1,7 +1,11 @@
+import re
 from datetime import datetime
 from typing import ClassVar
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, computed_field, field_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, TypeAdapter, ValidationError, computed_field, field_validator
+
+
+_EMAIL_ADDRESS_ADAPTER = TypeAdapter(EmailStr)
 
 
 class NotificationQueryParams(BaseModel):
@@ -45,7 +49,7 @@ class NotificationListResponse(BaseModel):
 
 class AdminNotificationSettingsResponse(BaseModel):
     email_enabled: bool
-    email_from: EmailStr | None = None
+    email_from: str | None = None
     email_sender_name: str
     telegram_enabled: bool
     telegram_admin_chat_id: str | None = None
@@ -65,7 +69,7 @@ class AdminNotificationSettingsUpdateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     email_enabled: bool | None = None
-    email_from: EmailStr | None = None
+    email_from: str | None = Field(default=None, max_length=255)
     email_sender_name: str | None = Field(default=None, min_length=1, max_length=255)
     telegram_enabled: bool | None = None
     telegram_admin_chat_id: str | None = Field(default=None, min_length=1, max_length=100)
@@ -86,6 +90,21 @@ class AdminNotificationSettingsUpdateRequest(BaseModel):
             return value
         return " ".join(value.strip().split())
 
+    @field_validator("email_from", mode="before")
+    @classmethod
+    def validate_email_from(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized_value = value.strip()
+        if normalized_value.lower().endswith(".local"):
+            if not re.fullmatch(r"[^@\s]+@(?:[A-Za-z0-9-]+\.)+local", normalized_value, re.IGNORECASE):
+                raise ValueError("Email отправителя должен быть корректным адресом")
+            return normalized_value
+        try:
+            return str(_EMAIL_ADDRESS_ADAPTER.validate_python(normalized_value))
+        except ValidationError as error:
+            raise ValueError("Email отправителя должен быть корректным адресом") from error
+
 
 class TestEmailRequest(BaseModel):
     __test__: ClassVar[bool] = False
@@ -101,7 +120,6 @@ class TestEmailRequest(BaseModel):
             return value
         normalized_value = " ".join(value.strip().split())
         return normalized_value or None
-
 
 class AdminTestEmailRequest(TestEmailRequest):
     model_config = ConfigDict(extra="forbid")
