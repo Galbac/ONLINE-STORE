@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, String, Text
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from source.db.models.base import Base
@@ -42,3 +42,5 @@ class NotificationSettings(IdBigIntPkMixin, CreateUpdateMixin, Base):
     notify_customer_order_status: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true", nullable=False)
     notify_customer_payment: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true", nullable=False)
     notify_customer_delivery: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true", nullable=False)
+    admin_order_sound_enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true", nullable=False)
+    admin_order_sound_volume: Mapped[float] = mapped_column(Float, default=0.5, server_default="0.5", nullable=False)

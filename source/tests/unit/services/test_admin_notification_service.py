@@ -136,6 +136,8 @@ def build_notification_settings(**kwargs):
         "notify_customer_order_status": True,
         "notify_customer_payment": True,
         "notify_customer_delivery": True,
+        "admin_order_sound_enabled": True,
+        "admin_order_sound_volume": 0.5,
         "updated_date": datetime(2026, 5, 12, 10, 0, tzinfo=settings.tz),
     }
     defaults.update(kwargs)
@@ -229,6 +231,8 @@ async def test_admin_notification_settings_success() -> None:
     assert response.email_sender_name == "Супермаркет"
     assert response.telegram_admin_chat_id == "123456789"
     assert response.notify_admin_new_order is True
+    assert response.admin_order_sound_enabled is True
+    assert response.admin_order_sound_volume == 0.5
 
 
 @pytest.mark.asyncio
@@ -247,6 +251,8 @@ async def test_admin_notification_settings_from_redis() -> None:
         notify_customer_order_status=True,
         notify_customer_payment=True,
         notify_customer_delivery=True,
+        admin_order_sound_enabled=True,
+        admin_order_sound_volume=0.5,
         updated_at=datetime(2026, 5, 12, 10, 0, tzinfo=settings.tz),
     )
     redis_service.values["admin:notifications:settings"] = cached.model_dump_json()
@@ -320,6 +326,26 @@ async def test_admin_notification_settings_update_telegram_enabled_success() -> 
 
 
 @pytest.mark.asyncio
+async def test_admin_notification_settings_update_order_sound_success() -> None:
+    repository = FakeNotificationSettingsRepository(build_notification_settings())
+
+    response = await update_settings(
+        data=AdminNotificationSettingsUpdateRequest(
+            admin_order_sound_enabled=False,
+            admin_order_sound_volume=0.8,
+        ),
+        repository=repository,
+    )
+
+    assert response.admin_order_sound_enabled is False
+    assert response.admin_order_sound_volume == 0.8
+    assert repository.updated_payload == {
+        "admin_order_sound_enabled": False,
+        "admin_order_sound_volume": 0.8,
+    }
+
+
+@pytest.mark.asyncio
 async def test_admin_notification_settings_update_telegram_admin_chat_id_success() -> None:
     response = await update_settings(data=AdminNotificationSettingsUpdateRequest(telegram_admin_chat_id="-100123456789"))
 
@@ -335,6 +361,11 @@ async def test_admin_notification_settings_update_empty_body_error() -> None:
 def test_admin_notification_settings_update_invalid_email_error() -> None:
     with pytest.raises(ValidationError):
         AdminNotificationSettingsUpdateRequest(email_from="not-an-email")
+
+
+def test_admin_notification_settings_update_rejects_invalid_sound_volume() -> None:
+    with pytest.raises(ValidationError):
+        AdminNotificationSettingsUpdateRequest(admin_order_sound_volume=1.1)
 
 
 def test_admin_notification_settings_update_rejects_secrets() -> None:

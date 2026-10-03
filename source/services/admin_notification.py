@@ -355,5 +355,7 @@ class AdminNotificationService:
             notify_customer_order_status=notification_settings.notify_customer_order_status,
             notify_customer_payment=notification_settings.notify_customer_payment,
             notify_customer_delivery=notification_settings.notify_customer_delivery,
+            admin_order_sound_enabled=notification_settings.admin_order_sound_enabled,
+            admin_order_sound_volume=notification_settings.admin_order_sound_volume,
             updated_at=notification_settings.updated_date,
         )

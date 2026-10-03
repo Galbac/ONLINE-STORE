@@ -56,6 +56,8 @@ class AdminNotificationSettingsResponse(BaseModel):
     notify_customer_order_status: bool
     notify_customer_payment: bool
     notify_customer_delivery: bool
+    admin_order_sound_enabled: bool = True
+    admin_order_sound_volume: float = Field(default=0.5, ge=0, le=1)
     updated_at: datetime
 
 
@@ -74,6 +76,8 @@ class AdminNotificationSettingsUpdateRequest(BaseModel):
     notify_customer_order_status: bool | None = None
     notify_customer_payment: bool | None = None
     notify_customer_delivery: bool | None = None
+    admin_order_sound_enabled: bool | None = None
+    admin_order_sound_volume: float | None = Field(default=None, ge=0, le=1)
 
     @field_validator("email_sender_name", "telegram_admin_chat_id", mode="before")
     @classmethod
