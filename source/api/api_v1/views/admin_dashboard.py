@@ -2991,7 +2991,8 @@ async def confirm_admin_order(
             detail=(
                 f"Заказ нельзя подтвердить: текущий статус — «{current_status}». "
                 "Подтверждение доступно для заказов со статусом «Новый» "
-                "или «Ожидает подтверждения»."
+                "или «Ожидает подтверждения», а также для заказов с оплатой при получении "
+                "со статусом «Ожидает оплаты»."
             ),
         ) from error
     except (OrderItemsNotFoundError, OrderUnavailableItemsError) as error:

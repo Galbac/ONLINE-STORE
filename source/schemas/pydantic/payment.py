@@ -24,7 +24,7 @@ class PaymentCreateResponse(BaseModel):
     currency: str
     status: str
     provider: str
-    payment_url: str
+    payment_url: str | None = None
     created_at: datetime
 
 

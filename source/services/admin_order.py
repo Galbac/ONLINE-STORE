@@ -421,7 +421,12 @@ class AdminOrderService:
         order = await order_repository.admin_get_by_id(session=session, order_id=order_id)
         if order is None:
             raise OrderNotFoundError
-        if order.status not in {"new", "awaiting_confirmation"}:
+        can_confirm_unpaid_on_delivery = (
+            order.status == "pending_payment"
+            and order.payment_method == "on_delivery"
+            and order.payment_status != "paid"
+        )
+        if order.status not in {"new", "awaiting_confirmation"} and not can_confirm_unpaid_on_delivery:
             raise OrderConfirmNotAllowedError(order.status)
 
         order_items = await order_item_repository.get_by_order_id(session=session, order_id=order.id)

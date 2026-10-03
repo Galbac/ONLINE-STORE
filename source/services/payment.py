@@ -352,6 +352,34 @@ class PaymentService:
             order_service.validate_order_for_payment(order=order, user=user)
             active_payment = await payment_repository.get_active_by_order_id(session=session, order_id=order.id)
             if active_payment is not None:
+                if (
+                    settings.app.environment.lower() == "development"
+                    and active_payment.status == "unpaid"
+                    and (active_payment.payment_url or "").startswith("https://payment.example.com/")
+                ):
+                    active_payment = await payment_repository.update_status(
+                        session=session,
+                        payment=active_payment,
+                        status="paid",
+                        paid_at=datetime.now(),
+                    )
+                    await order_repository.update_payment_status(
+                        session=session,
+                        order=order,
+                        payment_status="paid",
+                    )
+                    if order.status == "pending_payment":
+                        await order_repository.update_status(
+                            session=session,
+                            order=order,
+                            status="new",
+                        )
+                    await commiter.commit()
+                    await order_cache_service.invalidate_order(
+                        redis_service=redis_service,
+                        user_id=user.id,
+                        order_id=order.id,
+                    )
                 return self._build_response(order=order, payment=active_payment)
 
             payment = await payment_repository.create(
