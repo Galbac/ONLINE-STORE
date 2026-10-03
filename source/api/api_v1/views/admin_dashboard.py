@@ -88,6 +88,7 @@ from source.repositories.order import OrderRepository
 from source.repositories.order_item import OrderItemRepository
 from source.repositories.order_status_history import OrderStatusHistoryRepository
 from source.repositories.notification import NotificationRepository
+from source.repositories.push_subscription import PushSubscriptionRepository
 from source.repositories.payment import PaymentRepository
 from source.repositories.pickup_point import PickupPointRepository
 from source.repositories.product import ProductRepository
@@ -233,6 +234,7 @@ from source.services.product_cache import ProductCacheService
 from source.services.order_cache import OrderCacheService
 from source.services.order_status import OrderStatusService
 from source.services.notifications import EmailService, NotificationService, TelegramNotificationService
+from source.services.web_push import WebPushService
 from source.services.one_c import OneCIntegrationService
 from source.services.payment import PaymentService
 from source.services.password import PasswordService
@@ -2946,6 +2948,8 @@ async def confirm_admin_order(
     stock_service: FromDishka[StockService] = None,
     notification_service: FromDishka[NotificationService] = None,
     notification_repository: FromDishka[NotificationRepository] = None,
+    push_subscription_repository: FromDishka[PushSubscriptionRepository] = None,
+    web_push_service: FromDishka[WebPushService] = None,
     email_service: FromDishka[EmailService] = None,
     telegram_service: FromDishka[TelegramNotificationService] = None,
     order_cache_service: FromDishka[OrderCacheService] = None,
@@ -2969,6 +2973,8 @@ async def confirm_admin_order(
             stock_service=stock_service,
             notification_service=notification_service,
             notification_repository=notification_repository,
+            push_subscription_repository=push_subscription_repository,
+            web_push_service=web_push_service,
             email_service=email_service,
             telegram_service=telegram_service,
             order_cache_service=order_cache_service,
@@ -3024,6 +3030,8 @@ async def cancel_admin_order(
     one_c_integration_service: FromDishka[OneCIntegrationService] = None,
     notification_service: FromDishka[NotificationService] = None,
     notification_repository: FromDishka[NotificationRepository] = None,
+    push_subscription_repository: FromDishka[PushSubscriptionRepository] = None,
+    web_push_service: FromDishka[WebPushService] = None,
     email_service: FromDishka[EmailService] = None,
     telegram_service: FromDishka[TelegramNotificationService] = None,
     order_cache_service: FromDishka[OrderCacheService] = None,
@@ -3054,6 +3062,8 @@ async def cancel_admin_order(
             one_c_integration_service=one_c_integration_service,
             notification_service=notification_service,
             notification_repository=notification_repository,
+            push_subscription_repository=push_subscription_repository,
+            web_push_service=web_push_service,
             email_service=email_service,
             telegram_service=telegram_service,
             order_cache_service=order_cache_service,
@@ -3150,6 +3160,8 @@ async def update_admin_order_status(
     order_status_service: FromDishka[OrderStatusService] = None,
     notification_service: FromDishka[NotificationService] = None,
     notification_repository: FromDishka[NotificationRepository] = None,
+    push_subscription_repository: FromDishka[PushSubscriptionRepository] = None,
+    web_push_service: FromDishka[WebPushService] = None,
     email_service: FromDishka[EmailService] = None,
     telegram_service: FromDishka[TelegramNotificationService] = None,
     order_cache_service: FromDishka[OrderCacheService] = None,
@@ -3171,6 +3183,8 @@ async def update_admin_order_status(
             order_status_service=order_status_service,
             notification_service=notification_service,
             notification_repository=notification_repository,
+            push_subscription_repository=push_subscription_repository,
+            web_push_service=web_push_service,
             email_service=email_service,
             telegram_service=telegram_service,
             order_cache_service=order_cache_service,

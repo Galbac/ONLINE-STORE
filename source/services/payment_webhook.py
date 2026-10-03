@@ -24,6 +24,8 @@ class PaymentWebhookService:
         one_c_integration_service,
         settings_repository=None,
         notification_repository=None,
+        web_push_service=None,
+        push_subscription_repository=None,
     ) -> PaymentWebhookResponse:
         robokassa_pwd_2 = getattr(settings.payments, "robokassa_password_2", None)
         if settings_repository is not None and session is not None:
@@ -145,6 +147,8 @@ class PaymentWebhookService:
                 order=order,
                 session=session,
                 notification_repository=notification_repository,
+                web_push_service=web_push_service,
+                push_subscription_repository=push_subscription_repository,
             )
             await commiter.commit()
         elif event.event_type in {"payment.failed", "payment.canceled"} and notification_repository is not None:
@@ -156,6 +160,15 @@ class PaymentWebhookService:
                 message="Платёж не прошёл или был отменён. Откройте заказ, чтобы проверить статус и выбрать способ оплаты.",
             )
             await commiter.commit()
+            if web_push_service is not None and push_subscription_repository is not None:
+                await web_push_service.send_to_user(
+                    session=session,
+                    push_subscription_repository=push_subscription_repository,
+                    user_id=order.user_id,
+                    title=f"Не удалось оплатить заказ {order.order_number}",
+                    body="Платёж не прошёл или был отменён. Откройте заказ, чтобы проверить статус.",
+                    url=f"/profile/orders/{order.id}",
+                )
         elif event.event_type == "refund.succeeded" and notification_repository is not None:
             await notification_repository.create(
                 session=session,
@@ -165,4 +178,13 @@ class PaymentWebhookService:
                 message="Платёжная система подтвердила возврат средств.",
             )
             await commiter.commit()
+            if web_push_service is not None and push_subscription_repository is not None:
+                await web_push_service.send_to_user(
+                    session=session,
+                    push_subscription_repository=push_subscription_repository,
+                    user_id=order.user_id,
+                    title=f"Возврат по заказу {order.order_number} выполнен",
+                    body="Платёжная система подтвердила возврат средств.",
+                    url=f"/profile/orders/{order.id}",
+                )
         return PaymentWebhookResponse(message="Webhook processed")

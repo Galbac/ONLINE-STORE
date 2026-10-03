@@ -16,6 +16,7 @@ from source.repositories.loyalty import LoyaltyRepository
 from source.repositories.order import OrderRepository
 from source.repositories.order_status_history import OrderStatusHistoryRepository
 from source.repositories.notification import NotificationRepository
+from source.repositories.push_subscription import PushSubscriptionRepository
 from source.schemas.pydantic.order import (
     AdminOrderListItemResponse,
     AdminOrderListResponse,
@@ -23,6 +24,7 @@ from source.schemas.pydantic.order import (
 )
 from source.services.loyalty import LoyaltyService
 from source.services.notifications import TelegramNotificationService
+from source.services.web_push import WebPushService
 
 router = APIRouter(prefix="/admin", tags=["admin-operations"])
 
@@ -59,6 +61,8 @@ async def start_order_assembly(
     order_repository: FromDishka[OrderRepository] = None,
     order_status_history_repository: FromDishka[OrderStatusHistoryRepository] = None,
     notification_repository: FromDishka[NotificationRepository] = None,
+    push_subscription_repository: FromDishka[PushSubscriptionRepository] = None,
+    web_push_service: FromDishka[WebPushService] = None,
     commiter: FromDishka[Commiter] = None,
 ) -> AdminOrderStatusResponse:
     order = await order_repository.get_by_id(session=session, order_id=order_id)
@@ -77,8 +81,11 @@ async def start_order_assembly(
         comment="Сборщик начал комплектовать заказ",
         changed_by=current_user.id,
     )
-    await notification_repository.create(session=session, user_id=order.user_id, type="order_status", title=f"Заказ {order.order_number}: сборка началась", message="Собираем ваш заказ.")
+    if notification_repository is not None:
+        await notification_repository.create(session=session, user_id=order.user_id, type="order_status", title=f"Заказ {order.order_number}: сборка началась", message="Собираем ваш заказ.")
     await commiter.commit()
+    if web_push_service is not None and push_subscription_repository is not None:
+        await web_push_service.send_to_user(session=session, push_subscription_repository=push_subscription_repository, user_id=order.user_id, title=f"Заказ {order.order_number}: сборка началась", body="Собираем ваш заказ.", url=f"/profile/orders/{order.id}")
     return AdminOrderStatusResponse(
         id=order.id,
         order_number=order.order_number,
@@ -96,6 +103,8 @@ async def complete_order_assembly(
     order_repository: FromDishka[OrderRepository] = None,
     order_status_history_repository: FromDishka[OrderStatusHistoryRepository] = None,
     notification_repository: FromDishka[NotificationRepository] = None,
+    push_subscription_repository: FromDishka[PushSubscriptionRepository] = None,
+    web_push_service: FromDishka[WebPushService] = None,
     commiter: FromDishka[Commiter] = None,
 ) -> AdminOrderStatusResponse:
     order = await order_repository.get_by_id(session=session, order_id=order_id)
@@ -116,8 +125,11 @@ async def complete_order_assembly(
     )
     title = "Заказ готов к самовывозу" if order.delivery_type == "pickup" else "Заказ собран"
     message = f"Заказ {order.order_number} собран." if order.delivery_type != "pickup" else f"Заказ {order.order_number} собран и ждёт вас в пункте выдачи."
-    await notification_repository.create(session=session, user_id=order.user_id, type="order_status", title=title, message=message)
+    if notification_repository is not None:
+        await notification_repository.create(session=session, user_id=order.user_id, type="order_status", title=title, message=message)
     await commiter.commit()
+    if web_push_service is not None and push_subscription_repository is not None:
+        await web_push_service.send_to_user(session=session, push_subscription_repository=push_subscription_repository, user_id=order.user_id, title=title, body=message, url=f"/profile/orders/{order.id}")
     return AdminOrderStatusResponse(
         id=order.id,
         order_number=order.order_number,
@@ -162,6 +174,8 @@ async def take_order_delivery(
     order_status_history_repository: FromDishka[OrderStatusHistoryRepository] = None,
     telegram_service: FromDishka[TelegramNotificationService] = None,
     notification_repository: FromDishka[NotificationRepository] = None,
+    push_subscription_repository: FromDishka[PushSubscriptionRepository] = None,
+    web_push_service: FromDishka[WebPushService] = None,
     commiter: FromDishka[Commiter] = None,
 ) -> AdminOrderStatusResponse:
     order = await order_repository.get_by_id(session=session, order_id=order_id)
@@ -180,8 +194,11 @@ async def take_order_delivery(
         comment=f"Курьер {current_user.name} забрал заказ в доставку",
         changed_by=current_user.id,
     )
-    await notification_repository.create(session=session, user_id=order.user_id, type="delivery", title=f"Курьер в пути с заказом {order.order_number}", message=f"Курьер {current_user.name} выехал к вам.")
+    if notification_repository is not None:
+        await notification_repository.create(session=session, user_id=order.user_id, type="delivery", title=f"Курьер в пути с заказом {order.order_number}", message=f"Курьер {current_user.name} выехал к вам.")
     await commiter.commit()
+    if web_push_service is not None and push_subscription_repository is not None:
+        await web_push_service.send_to_user(session=session, push_subscription_repository=push_subscription_repository, user_id=order.user_id, title=f"Курьер в пути с заказом {order.order_number}", body=f"Курьер {current_user.name} выехал к вам.", url=f"/profile/orders/{order.id}")
 
     if telegram_service is not None:
         user = await session.get(User, order.user_id)
@@ -214,6 +231,8 @@ async def mark_order_delivered(
     loyalty_service: FromDishka[LoyaltyService] = None,
     telegram_service: FromDishka[TelegramNotificationService] = None,
     notification_repository: FromDishka[NotificationRepository] = None,
+    push_subscription_repository: FromDishka[PushSubscriptionRepository] = None,
+    web_push_service: FromDishka[WebPushService] = None,
     commiter: FromDishka[Commiter] = None,
 ) -> AdminOrderStatusResponse:
     order = await order_repository.get_by_id(session=session, order_id=order_id)
@@ -245,9 +264,12 @@ async def mark_order_delivered(
             description=f"Кэшбэк 5% за выполненный заказ #{order.order_number}",
             order_id=order.id,
         )
-    await notification_repository.create(session=session, user_id=order.user_id, type="delivery", title=f"Заказ {order.order_number} доставлен", message=f"Заказ доставлен. Начислено бонусов: {cashback_amount}.")
+    if notification_repository is not None:
+        await notification_repository.create(session=session, user_id=order.user_id, type="delivery", title=f"Заказ {order.order_number} доставлен", message=f"Заказ доставлен. Начислено бонусов: {cashback_amount}.")
 
     await commiter.commit()
+    if web_push_service is not None and push_subscription_repository is not None:
+        await web_push_service.send_to_user(session=session, push_subscription_repository=push_subscription_repository, user_id=order.user_id, title=f"Заказ {order.order_number} доставлен", body=f"Заказ доставлен. Начислено бонусов: {cashback_amount}.", url=f"/profile/orders/{order.id}")
 
     if telegram_service is not None:
         user = await session.get(User, order.user_id)

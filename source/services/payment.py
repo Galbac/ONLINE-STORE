@@ -714,6 +714,8 @@ class PaymentService:
         email_service,
         telegram_service,
         notification_repository=None,
+        web_push_service=None,
+        push_subscription_repository=None,
     ) -> PaymentRefundResponse:
         payment = await payment_repository.get_by_id(session=session, payment_id=payment_id)
         if payment is None:
@@ -786,6 +788,8 @@ class PaymentService:
             order=order,
             session=session,
             notification_repository=notification_repository,
+            web_push_service=web_push_service,
+            push_subscription_repository=push_subscription_repository,
         )
         if notification_repository is not None:
             await commiter.commit()

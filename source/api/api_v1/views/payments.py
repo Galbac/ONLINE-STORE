@@ -31,6 +31,7 @@ from source.errors.auth import (
 from source.repositories.order import OrderRepository
 from source.repositories.payment import PaymentRepository
 from source.repositories.notification import NotificationRepository
+from source.repositories.push_subscription import PushSubscriptionRepository
 from source.repositories.payment_webhook_log import PaymentWebhookLogRepository
 from source.repositories.refund import RefundRepository
 from source.repositories.settings import SettingsRepository
@@ -47,6 +48,7 @@ from source.schemas.pydantic.payment import (
     PaymentWebhookResponse,
 )
 from source.services.notifications import EmailService, NotificationService, TelegramNotificationService
+from source.services.web_push import WebPushService
 from source.services.one_c import OneCIntegrationService
 from source.services.order import OrderService
 from source.services.order_cache import OrderCacheService
@@ -261,6 +263,8 @@ async def refund_payment(
     email_service: FromDishka[EmailService] = None,
     telegram_service: FromDishka[TelegramNotificationService] = None,
     notification_repository: FromDishka[NotificationRepository] = None,
+    push_subscription_repository: FromDishka[PushSubscriptionRepository] = None,
+    web_push_service: FromDishka[WebPushService] = None,
 ) -> PaymentRefundResponse:
     if payment_id <= 0:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Неверный payment_id")
@@ -283,6 +287,8 @@ async def refund_payment(
             email_service=email_service,
             telegram_service=telegram_service,
             notification_repository=notification_repository,
+            push_subscription_repository=push_subscription_repository,
+            web_push_service=web_push_service,
         )
     except PaymentNotFoundError as error:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Платёж не найден") from error
@@ -318,6 +324,8 @@ async def process_payment_webhook(
     one_c_integration_service: FromDishka[OneCIntegrationService] = None,
     settings_repository: FromDishka[SettingsRepository] = None,
     notification_repository: FromDishka[NotificationRepository] = None,
+    push_subscription_repository: FromDishka[PushSubscriptionRepository] = None,
+    web_push_service: FromDishka[WebPushService] = None,
 ) -> PaymentWebhookResponse:
     raw_body = await request.body()
     try:
@@ -340,6 +348,8 @@ async def process_payment_webhook(
             one_c_integration_service=one_c_integration_service,
             settings_repository=settings_repository,
             notification_repository=notification_repository,
+            push_subscription_repository=push_subscription_repository,
+            web_push_service=web_push_service,
         )
     except InvalidPaymentWebhookSignatureError as error:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Неверная подпись webhook") from error

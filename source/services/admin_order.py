@@ -265,7 +265,9 @@ class AdminOrderService:
         order_status_history_repository,
         order_status_service,
         notification_service,
-        notification_repository,
+        notification_repository=None,
+        web_push_service=None,
+        push_subscription_repository=None,
         email_service,
         telegram_service,
         order_cache_service,
@@ -297,12 +299,17 @@ class AdminOrderService:
                 changed_by=user.id,
             )
             if old_status != order.status:
+                push_kwargs = (
+                    {"web_push_service": web_push_service, "push_subscription_repository": push_subscription_repository}
+                    if web_push_service is not None and push_subscription_repository is not None else {}
+                )
                 await notification_service.notify_order_status_changed(
                     session=session,
                     order=order,
                     notification_repository=notification_repository,
                     email_service=email_service,
                     telegram_service=telegram_service,
+                    **push_kwargs,
                 )
             await commiter.commit()
         except Exception:
@@ -411,6 +418,8 @@ class AdminOrderService:
         stock_service,
         notification_service,
         notification_repository,
+        web_push_service=None,
+        push_subscription_repository=None,
         email_service,
         telegram_service,
         order_cache_service,
@@ -452,12 +461,17 @@ class AdminOrderService:
                 comment=data.comment,
                 changed_by=user.id,
             )
+            push_kwargs = (
+                {"web_push_service": web_push_service, "push_subscription_repository": push_subscription_repository}
+                if web_push_service is not None and push_subscription_repository is not None else {}
+            )
             await notification_service.notify_order_confirmed(
                 session=session,
                 order=order,
                 notification_repository=notification_repository,
                 email_service=email_service,
                 telegram_service=telegram_service,
+                **push_kwargs,
             )
             await commiter.commit()
         except Exception:
@@ -502,7 +516,9 @@ class AdminOrderService:
         payment_service,
         one_c_integration_service,
         notification_service,
-        notification_repository,
+        notification_repository=None,
+        web_push_service=None,
+        push_subscription_repository=None,
         email_service,
         telegram_service,
         order_cache_service,
@@ -581,12 +597,27 @@ class AdminOrderService:
                     "release_stock": data.release_stock,
                 },
             )
+            if notification_repository is not None:
+                await notification_repository.create(
+                    session=session,
+                    user_id=order.user_id,
+                    type="order_status",
+                    title=f"Заказ {order.order_number} отменён",
+                    message=(f"Причина: {order.cancel_reason}" if order.cancel_reason else "Заказ отменён. Откройте заказ, чтобы посмотреть детали оплаты и возврата."),
+                )
+            push_kwargs = (
+                {
+                    "session": session,
+                    "web_push_service": web_push_service,
+                    "push_subscription_repository": push_subscription_repository,
+                }
+                if web_push_service is not None and push_subscription_repository is not None else {}
+            )
             await notification_service.notify_order_cancelled(
                 email_service=email_service,
                 telegram_service=telegram_service,
                 order=order,
-                session=session,
-                notification_repository=notification_repository,
+                **push_kwargs,
             )
             await commiter.commit()
         except Exception:

@@ -110,10 +110,14 @@ class WebPushService:
         if not settings.web_push.enabled:
             return 0
 
-        subscriptions = await push_subscription_repository.get_active_by_user_id(
-            session=session,
-            user_id=user_id,
-        )
+        try:
+            subscriptions = await push_subscription_repository.get_active_by_user_id(
+                session=session,
+                user_id=user_id,
+            )
+        except Exception as ex:
+            logger.exception("Failed to load Web Push subscriptions for user %s: %s", user_id, ex)
+            return 0
         if not subscriptions:
             return 0
 

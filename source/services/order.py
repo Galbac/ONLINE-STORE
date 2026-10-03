@@ -294,6 +294,8 @@ class OrderService:
         email_service,
         telegram_service,
         notification_repository=None,
+        web_push_service=None,
+        push_subscription_repository=None,
     ) -> OrderCancelResponse:
         if not user.is_active or user.is_deleted:
             raise InactiveUserError
@@ -362,6 +364,8 @@ class OrderService:
             order=order,
             session=session,
             notification_repository=notification_repository,
+            web_push_service=web_push_service,
+            push_subscription_repository=push_subscription_repository,
         )
         if notification_repository is not None:
             await commiter.commit()
@@ -580,6 +584,8 @@ class OrderService:
         email_service,
         telegram_service,
         notification_repository=None,
+        web_push_service=None,
+        push_subscription_repository=None,
         delivery_cache_service=None,
         delivery_time_slot_service=None,
         delivery_time_slot_repository=None,
@@ -859,6 +865,8 @@ class OrderService:
                 order=order,
                 session=session,
                 notification_repository=notification_repository,
+                web_push_service=web_push_service,
+                push_subscription_repository=push_subscription_repository,
             )
             if notification_repository is not None:
                 await commiter.commit()

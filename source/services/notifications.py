@@ -573,7 +573,7 @@ class NotificationService:
             target_url = f"/profile/orders/{order_id}" if order_id else "/profile/orders"
 
             status_str = str(getattr(order, "status", "")).lower()
-            if "deliver" in status_str and "ing" in status_str:
+            if status_str in {"in_delivery", "delivering"}:
                 push_title = "Курьер уже в пути к вам! 🚴"
                 push_body = f"Курьер везет заказ {order.order_number}. Примерное время прибытия: 20-30 мин."
             elif "deliv" in status_str and "ed" in status_str:

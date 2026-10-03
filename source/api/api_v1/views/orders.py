@@ -41,6 +41,7 @@ from source.repositories.order_item import OrderItemRepository
 from source.repositories.order_status_history import OrderStatusHistoryRepository
 from source.repositories.payment import PaymentRepository
 from source.repositories.notification import NotificationRepository
+from source.repositories.push_subscription import PushSubscriptionRepository
 from source.repositories.pickup_point import PickupPointRepository
 from source.repositories.product import ProductRepository
 from source.repositories.promo_code import PromoCodeRepository, PromoCodeUsageRepository
@@ -74,6 +75,7 @@ from source.services.profile_cache import ProfileCacheService
 from source.services.promo_code import PromoCodeService
 from source.services.redis import RedisService
 from source.services.stock import StockService
+from source.services.web_push import WebPushService
 from source.config.settings import settings
 
 router = APIRouter(tags=["orders"])
@@ -312,6 +314,8 @@ async def cancel_order(
     email_service: FromDishka[EmailService] = None,
     telegram_service: FromDishka[TelegramNotificationService] = None,
     notification_repository: FromDishka[NotificationRepository] = None,
+    push_subscription_repository: FromDishka[PushSubscriptionRepository] = None,
+    web_push_service: FromDishka[WebPushService] = None,
 ) -> OrderCancelResponse:
     if order_id <= 0:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Неверный order_id")
@@ -340,6 +344,8 @@ async def cancel_order(
             email_service=email_service,
             telegram_service=telegram_service,
             notification_repository=notification_repository,
+            push_subscription_repository=push_subscription_repository,
+            web_push_service=web_push_service,
         )
     except InactiveUserError as error:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Пользователь заблокирован или удалён") from error
@@ -396,6 +402,8 @@ async def create_order(
     email_service: FromDishka[EmailService] = None,
     telegram_service: FromDishka[TelegramNotificationService] = None,
     notification_repository: FromDishka[NotificationRepository] = None,
+    push_subscription_repository: FromDishka[PushSubscriptionRepository] = None,
+    web_push_service: FromDishka[WebPushService] = None,
     loyalty_repository: FromDishka[LoyaltyRepository] = None,
     loyalty_service: FromDishka[LoyaltyService] = None,
 ) -> OrderCreateResponse:
@@ -478,6 +486,8 @@ async def create_order(
             email_service=email_service,
             telegram_service=telegram_service,
             notification_repository=notification_repository,
+            push_subscription_repository=push_subscription_repository,
+            web_push_service=web_push_service,
             loyalty_service=loyalty_service,
             loyalty_repository=loyalty_repository,
             user_ip=client_ip,
