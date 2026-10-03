@@ -385,6 +385,7 @@ class OrderService:
         pickup_point_repository,
         payment_repository,
         order_cache_service,
+        product_repository=None,
     ) -> OrderDetailResponse:
         if not user.is_active or user.is_deleted:
             raise InactiveUserError
@@ -404,6 +405,12 @@ class OrderService:
             raise OrderAccessDeniedError
 
         order_items = await order_item_repository.get_by_order_id(session=session, order_id=order.id)
+        products_map = {}
+        if product_repository is not None and order_items:
+            product_ids = [item.product_id for item in order_items]
+            products = await product_repository.get_by_ids(session=session, product_ids=product_ids)
+            products_map = {p.id: p for p in products}
+
         address = None
         pickup_point = None
         if order.delivery_type == "delivery" and order.address_id is not None:
@@ -457,6 +464,7 @@ class OrderService:
                     product_id=item.product_id,
                     product_name=item.product_name,
                     product_slug=item.product_slug,
+                    preview_image_url=getattr(products_map.get(item.product_id), "preview_image_url", None),
                     quantity=item.quantity,
                     unit=item.unit,
                     product_type=item.product_type,

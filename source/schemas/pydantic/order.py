@@ -53,6 +53,7 @@ class OrderItemResponse(BaseModel):
     product_id: int
     product_name: str
     product_slug: str
+    preview_image_url: str | None = None
     price: Decimal
     old_price: Decimal | None = None
     quantity: Decimal

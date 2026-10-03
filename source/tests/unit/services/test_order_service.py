@@ -615,6 +615,7 @@ async def execute_get_order_detail(
     order=None,
     order_cache_service=None,
     order_repository=None,
+    product_repository=None,
 ):
     return await OrderService().get_order_detail(
         session=None,
@@ -638,6 +639,7 @@ async def execute_get_order_detail(
             SimpleNamespace(id=9, amount=Decimal("375.00"), status="paid", payment_url=None),
         ),
         order_cache_service=order_cache_service or FakeOrderCacheService(),
+        product_repository=product_repository,
     )
 
 
@@ -1032,6 +1034,16 @@ async def test_get_order_detail_items_are_snapshot_and_service_fields_hidden() -
     assert "sync_error" not in dumped
     assert "internal_comment" not in dumped
     assert "manager_id" not in dumped
+
+
+@pytest.mark.asyncio
+async def test_get_order_detail_includes_preview_image_url() -> None:
+    class FakeProductRepo:
+        async def get_by_ids(self, *, session, product_ids):
+            return [SimpleNamespace(id=55, preview_image_url="https://images.unsplash.com/test.jpg")]
+
+    response = await execute_get_order_detail(product_repository=FakeProductRepo())
+    assert response.items[0].preview_image_url == "https://images.unsplash.com/test.jpg"
 
 
 @pytest.mark.asyncio

@@ -275,6 +275,7 @@ async def get_order_detail(
     pickup_point_repository: FromDishka[PickupPointRepository] = None,
     payment_repository: FromDishka[PaymentRepository] = None,
     order_cache_service: FromDishka[OrderCacheService] = None,
+    product_repository: FromDishka[ProductRepository] = None,
 ) -> OrderDetailResponse:
     if order_id <= 0:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Неверный order_id")
@@ -290,6 +291,7 @@ async def get_order_detail(
             pickup_point_repository=pickup_point_repository,
             payment_repository=payment_repository,
             order_cache_service=order_cache_service,
+            product_repository=product_repository,
         )
     except InactiveUserError as error:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Пользователь заблокирован или удалён") from error

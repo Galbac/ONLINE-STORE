@@ -78,9 +78,14 @@ def get_payment_status_label(status: str | None) -> str | None:
         return None
     labels = {
         "unpaid": "Не оплачен",
+        "pending": "Ожидает оплаты",
+        "pending_payment": "Ожидает оплаты",
         "paid": "Оплачен",
         "refunded": "Возвращён",
         "refund_pending": "Возврат обрабатывается",
+        "partial_refunded": "Частичный возврат",
+        "cancelled": "Отменён",
+        "failed": "Ошибка оплаты",
     }
     return labels.get(status, status)
 
