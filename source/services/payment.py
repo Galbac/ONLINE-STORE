@@ -713,6 +713,7 @@ class PaymentService:
         notification_service,
         email_service,
         telegram_service,
+        notification_repository=None,
     ) -> PaymentRefundResponse:
         payment = await payment_repository.get_by_id(session=session, payment_id=payment_id)
         if payment is None:
@@ -783,7 +784,11 @@ class PaymentService:
             email_service=email_service,
             telegram_service=telegram_service,
             order=order,
+            session=session,
+            notification_repository=notification_repository,
         )
+        if notification_repository is not None:
+            await commiter.commit()
         return PaymentRefundResponse(
             message="Возврат создан",
             refund=RefundResponse(

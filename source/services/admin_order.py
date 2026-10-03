@@ -296,7 +296,7 @@ class AdminOrderService:
                 comment=data.comment,
                 changed_by=user.id,
             )
-            if data.notify_customer:
+            if old_status != order.status:
                 await notification_service.notify_order_status_changed(
                     session=session,
                     order=order,
@@ -452,14 +452,13 @@ class AdminOrderService:
                 comment=data.comment,
                 changed_by=user.id,
             )
-            if data.notify_customer:
-                await notification_service.notify_order_confirmed(
-                    session=session,
-                    order=order,
-                    notification_repository=notification_repository,
-                    email_service=email_service,
-                    telegram_service=telegram_service,
-                )
+            await notification_service.notify_order_confirmed(
+                session=session,
+                order=order,
+                notification_repository=notification_repository,
+                email_service=email_service,
+                telegram_service=telegram_service,
+            )
             await commiter.commit()
         except Exception:
             await commiter.rollback()
@@ -503,6 +502,7 @@ class AdminOrderService:
         payment_service,
         one_c_integration_service,
         notification_service,
+        notification_repository,
         email_service,
         telegram_service,
         order_cache_service,
@@ -581,12 +581,13 @@ class AdminOrderService:
                     "release_stock": data.release_stock,
                 },
             )
-            if data.notify_customer:
-                await notification_service.notify_order_cancelled(
-                    email_service=email_service,
-                    telegram_service=telegram_service,
-                    order=order,
-                )
+            await notification_service.notify_order_cancelled(
+                email_service=email_service,
+                telegram_service=telegram_service,
+                order=order,
+                session=session,
+                notification_repository=notification_repository,
+            )
             await commiter.commit()
         except Exception:
             await commiter.rollback()

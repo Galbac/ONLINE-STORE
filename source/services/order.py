@@ -293,6 +293,7 @@ class OrderService:
         notification_service,
         email_service,
         telegram_service,
+        notification_repository=None,
     ) -> OrderCancelResponse:
         if not user.is_active or user.is_deleted:
             raise InactiveUserError
@@ -359,7 +360,11 @@ class OrderService:
             email_service=email_service,
             telegram_service=telegram_service,
             order=order,
+            session=session,
+            notification_repository=notification_repository,
         )
+        if notification_repository is not None:
+            await commiter.commit()
         return OrderCancelResponse(
             message="Заказ отменён",
             order=OrderShortStatusResponse(
@@ -574,6 +579,7 @@ class OrderService:
         notification_service,
         email_service,
         telegram_service,
+        notification_repository=None,
         delivery_cache_service=None,
         delivery_time_slot_service=None,
         delivery_time_slot_repository=None,
@@ -851,7 +857,11 @@ class OrderService:
                 email_service=email_service,
                 telegram_service=telegram_service,
                 order=order,
+                session=session,
+                notification_repository=notification_repository,
             )
+            if notification_repository is not None:
+                await commiter.commit()
         except Exception as exc:
             logger.warning("Failed to dispatch order notification: %s", exc)
 

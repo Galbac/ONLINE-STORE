@@ -24,6 +24,7 @@ from source.schemas.pydantic.notifications import (
     TestTelegramRequest,
 )
 from source.utils.query_hash import build_query_hash
+from source.utils.order import get_order_status_label
 
 
 class EmailService:
@@ -301,6 +302,12 @@ class TelegramNotificationService:
 
 
 class NotificationService:
+    async def _send_email_safely(self, send, **kwargs) -> None:
+        try:
+            await send(**kwargs)
+        except Exception as exc:
+            logger.warning("Failed to send customer notification email: %s", exc)
+
     async def get_user_notifications(
         self,
         *,
@@ -474,9 +481,16 @@ class NotificationService:
         session=None,
         web_push_service=None,
         push_subscription_repository=None,
+        notification_repository=None,
     ) -> None:
+        if session is not None and notification_repository is not None:
+            await notification_repository.create(
+                session=session, user_id=order.user_id, type="order_status",
+                title=f"Заказ {order.order_number} оформлен",
+                message=f"Заказ принят. Сумма: {order.final_price} ₽.",
+            )
         if order.customer_email:
-            await email_service.send_order_created_email(email=order.customer_email, order_number=order.order_number)
+            await self._send_email_safely(email_service.send_order_created_email, email=order.customer_email, order_number=order.order_number)
         await telegram_service.notify_admin_order_created(order_number=order.order_number, user_id=order.user_id)
         if web_push_service is not None and push_subscription_repository is not None and session is not None and getattr(order, "user_id", None):
             order_id = getattr(order, "id", None)
@@ -499,9 +513,16 @@ class NotificationService:
         session=None,
         web_push_service=None,
         push_subscription_repository=None,
+        notification_repository=None,
     ) -> None:
+        if session is not None and notification_repository is not None:
+            await notification_repository.create(
+                session=session, user_id=order.user_id, type="order_status",
+                title=f"Заказ {order.order_number} отменён",
+                message=(f"Причина: {order.cancel_reason}" if getattr(order, "cancel_reason", None) else "Заказ отменён. Откройте заказ, чтобы посмотреть детали оплаты и возврата."),
+            )
         if order.customer_email:
-            await email_service.send_order_cancelled_email(email=order.customer_email, order_number=order.order_number)
+            await self._send_email_safely(email_service.send_order_cancelled_email, email=order.customer_email, order_number=order.order_number)
         await telegram_service.notify_admin_order_cancelled(order_number=order.order_number, user_id=order.user_id)
         if web_push_service is not None and push_subscription_repository is not None and session is not None and getattr(order, "user_id", None):
             order_id = getattr(order, "id", None)
@@ -527,7 +548,8 @@ class NotificationService:
         push_subscription_repository=None,
     ) -> None:
         title = f"Статус заказа {order.order_number} изменён"
-        message = f"Новый статус заказа {order.order_number}: {order.status}"
+        status_label = get_order_status_label(order.status)
+        message = f"Новый статус заказа {order.order_number}: {status_label}"
         await notification_repository.create(
             session=session,
             user_id=order.user_id,
@@ -536,10 +558,10 @@ class NotificationService:
             message=message,
         )
         if order.customer_email:
-            await email_service.send_order_status_changed_email(
+            await self._send_email_safely(email_service.send_order_status_changed_email,
                 email=order.customer_email,
                 order_number=order.order_number,
-                status=order.status,
+                status=status_label,
             )
         await telegram_service.notify_order_status_changed(
             order_number=order.order_number,
@@ -552,7 +574,7 @@ class NotificationService:
 
             status_str = str(getattr(order, "status", "")).lower()
             if "deliver" in status_str and "ing" in status_str:
-                push_title = f"Курьер уже в пути к вам! 🚴"
+                push_title = "Курьер уже в пути к вам! 🚴"
                 push_body = f"Курьер везет заказ {order.order_number}. Примерное время прибытия: 20-30 мин."
             elif "deliv" in status_str and "ed" in status_str:
                 push_title = f"Заказ {order.order_number} доставлен! 🍏"
@@ -597,7 +619,7 @@ class NotificationService:
             message=message,
         )
         if order.customer_email:
-            await email_service.send_order_confirmed_email(
+            await self._send_email_safely(email_service.send_order_confirmed_email,
                 email=order.customer_email,
                 order_number=order.order_number,
             )
@@ -623,9 +645,16 @@ class NotificationService:
         session=None,
         web_push_service=None,
         push_subscription_repository=None,
+        notification_repository=None,
     ) -> None:
+        if session is not None and notification_repository is not None:
+            await notification_repository.create(
+                session=session, user_id=order.user_id, type="payment",
+                title=f"Оплата заказа {order.order_number} прошла",
+                message=f"Получена оплата {order.final_price} ₽.",
+            )
         if order.customer_email:
-            await email_service.send_payment_success_email(email=order.customer_email, order_number=order.order_number)
+            await self._send_email_safely(email_service.send_payment_success_email, email=order.customer_email, order_number=order.order_number)
         await telegram_service.notify_admin_payment_success(order_number=order.order_number, user_id=order.user_id)
         if web_push_service is not None and push_subscription_repository is not None and session is not None and getattr(order, "user_id", None):
             order_id = getattr(order, "id", None)
@@ -649,9 +678,16 @@ class NotificationService:
         session=None,
         web_push_service=None,
         push_subscription_repository=None,
+        notification_repository=None,
     ) -> None:
+        if session is not None and notification_repository is not None:
+            await notification_repository.create(
+                session=session, user_id=order.user_id, type="payment",
+                title=f"Возврат по заказу {order.order_number} оформлен",
+                message="Средства поступят в соответствии со сроками вашего банка.",
+            )
         if order.customer_email:
-            await email_service.send_refund_created_email(email=order.customer_email, order_number=order.order_number)
+            await self._send_email_safely(email_service.send_refund_created_email, email=order.customer_email, order_number=order.order_number)
         await telegram_service.notify_admin_refund_created(order_number=order.order_number, user_id=order.user_id)
         if web_push_service is not None and push_subscription_repository is not None and session is not None and getattr(order, "user_id", None):
             order_id = getattr(order, "id", None)

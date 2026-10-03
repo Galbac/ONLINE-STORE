@@ -30,6 +30,7 @@ from source.errors.auth import (
 )
 from source.repositories.order import OrderRepository
 from source.repositories.payment import PaymentRepository
+from source.repositories.notification import NotificationRepository
 from source.repositories.payment_webhook_log import PaymentWebhookLogRepository
 from source.repositories.refund import RefundRepository
 from source.repositories.settings import SettingsRepository
@@ -259,6 +260,7 @@ async def refund_payment(
     notification_service: FromDishka[NotificationService] = None,
     email_service: FromDishka[EmailService] = None,
     telegram_service: FromDishka[TelegramNotificationService] = None,
+    notification_repository: FromDishka[NotificationRepository] = None,
 ) -> PaymentRefundResponse:
     if payment_id <= 0:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Неверный payment_id")
@@ -280,6 +282,7 @@ async def refund_payment(
             notification_service=notification_service,
             email_service=email_service,
             telegram_service=telegram_service,
+            notification_repository=notification_repository,
         )
     except PaymentNotFoundError as error:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Платёж не найден") from error
@@ -314,6 +317,7 @@ async def process_payment_webhook(
     telegram_service: FromDishka[TelegramNotificationService] = None,
     one_c_integration_service: FromDishka[OneCIntegrationService] = None,
     settings_repository: FromDishka[SettingsRepository] = None,
+    notification_repository: FromDishka[NotificationRepository] = None,
 ) -> PaymentWebhookResponse:
     raw_body = await request.body()
     try:
@@ -335,6 +339,7 @@ async def process_payment_webhook(
             telegram_service=telegram_service,
             one_c_integration_service=one_c_integration_service,
             settings_repository=settings_repository,
+            notification_repository=notification_repository,
         )
     except InvalidPaymentWebhookSignatureError as error:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Неверная подпись webhook") from error

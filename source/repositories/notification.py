@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import desc, func, select
+from sqlalchemy import desc, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from source.config.settings import settings
@@ -64,13 +64,21 @@ class NotificationRepository:
             await session.refresh(notification)
         return notification
 
+    async def mark_all_as_read(self, *, session: AsyncSession, user_id: int) -> int:
+        result = await session.execute(
+            update(Notification)
+            .where(Notification.user_id == user_id, Notification.is_read.is_(False))
+            .values(is_read=True, read_at=datetime.now(settings.tz))
+        )
+        return int(result.rowcount or 0)
+
     def _apply_filters(self, statement, *, query: NotificationQueryParams | None):
         if query is None:
             return statement
         if query.unread_only:
             statement = statement.where(Notification.is_read.is_(False))
         if query.type is not None:
-            statement = statement.where(Notification.type == query.type)
+            statement = statement.where(Notification.type.startswith(query.type))
         return statement
 
     def _build_response(self, notification: Notification) -> NotificationResponse:

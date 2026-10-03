@@ -40,6 +40,7 @@ from source.repositories.order import OrderRepository
 from source.repositories.order_item import OrderItemRepository
 from source.repositories.order_status_history import OrderStatusHistoryRepository
 from source.repositories.payment import PaymentRepository
+from source.repositories.notification import NotificationRepository
 from source.repositories.pickup_point import PickupPointRepository
 from source.repositories.product import ProductRepository
 from source.repositories.promo_code import PromoCodeRepository, PromoCodeUsageRepository
@@ -310,6 +311,7 @@ async def cancel_order(
     notification_service: FromDishka[NotificationService] = None,
     email_service: FromDishka[EmailService] = None,
     telegram_service: FromDishka[TelegramNotificationService] = None,
+    notification_repository: FromDishka[NotificationRepository] = None,
 ) -> OrderCancelResponse:
     if order_id <= 0:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Неверный order_id")
@@ -337,6 +339,7 @@ async def cancel_order(
             notification_service=notification_service,
             email_service=email_service,
             telegram_service=telegram_service,
+            notification_repository=notification_repository,
         )
     except InactiveUserError as error:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Пользователь заблокирован или удалён") from error
@@ -392,6 +395,7 @@ async def create_order(
     notification_service: FromDishka[NotificationService] = None,
     email_service: FromDishka[EmailService] = None,
     telegram_service: FromDishka[TelegramNotificationService] = None,
+    notification_repository: FromDishka[NotificationRepository] = None,
     loyalty_repository: FromDishka[LoyaltyRepository] = None,
     loyalty_service: FromDishka[LoyaltyService] = None,
 ) -> OrderCreateResponse:
@@ -473,6 +477,7 @@ async def create_order(
             notification_service=notification_service,
             email_service=email_service,
             telegram_service=telegram_service,
+            notification_repository=notification_repository,
             loyalty_service=loyalty_service,
             loyalty_repository=loyalty_repository,
             user_ip=client_ip,

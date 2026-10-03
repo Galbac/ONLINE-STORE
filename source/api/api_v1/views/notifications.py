@@ -41,6 +41,37 @@ from source.services.redis import RedisService
 router = APIRouter(tags=["notifications"])
 
 
+@router.patch("/notifications/read-all", status_code=status.HTTP_200_OK)
+@inject
+async def mark_all_notifications_as_read(
+    current_user: User = Depends(get_current_user),
+    session: FromDishka[AsyncSession] = None,
+    commiter: FromDishka[Commiter] = None,
+    notification_repository: FromDishka[NotificationRepository] = None,
+    redis_service: FromDishka[RedisService] = None,
+    notification_cache_service: FromDishka[NotificationCacheService] = None,
+) -> dict[str, int]:
+    if not current_user.is_active or current_user.is_deleted:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Пользователь заблокирован")
+    updated_count = await notification_repository.mark_all_as_read(session=session, user_id=current_user.id)
+    await commiter.commit()
+    await notification_cache_service.invalidate_user(redis_service=redis_service, user_id=current_user.id)
+    return {"updated_count": updated_count}
+
+
+@router.get("/notifications/unread-count", status_code=status.HTTP_200_OK)
+@inject
+async def get_unread_notification_count(
+    current_user: User = Depends(get_current_user),
+    session: FromDishka[AsyncSession] = None,
+    notification_repository: FromDishka[NotificationRepository] = None,
+) -> dict[str, int]:
+    if not current_user.is_active or current_user.is_deleted:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Пользователь заблокирован")
+    count = await notification_repository.count_unread_by_user_id(session=session, user_id=current_user.id)
+    return {"unread_count": count}
+
+
 @router.get(
     "/admin/notifications/settings",
     response_model=AdminNotificationSettingsResponse,

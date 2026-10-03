@@ -23,6 +23,7 @@ class PaymentWebhookService:
         telegram_service,
         one_c_integration_service,
         settings_repository=None,
+        notification_repository=None,
     ) -> PaymentWebhookResponse:
         robokassa_pwd_2 = getattr(settings.payments, "robokassa_password_2", None)
         if settings_repository is not None and session is not None:
@@ -142,5 +143,26 @@ class PaymentWebhookService:
                 email_service=email_service,
                 telegram_service=telegram_service,
                 order=order,
+                session=session,
+                notification_repository=notification_repository,
             )
+            await commiter.commit()
+        elif event.event_type in {"payment.failed", "payment.canceled"} and notification_repository is not None:
+            await notification_repository.create(
+                session=session,
+                user_id=order.user_id,
+                type="payment",
+                title=f"Не удалось оплатить заказ {order.order_number}",
+                message="Платёж не прошёл или был отменён. Откройте заказ, чтобы проверить статус и выбрать способ оплаты.",
+            )
+            await commiter.commit()
+        elif event.event_type == "refund.succeeded" and notification_repository is not None:
+            await notification_repository.create(
+                session=session,
+                user_id=order.user_id,
+                type="payment",
+                title=f"Возврат по заказу {order.order_number} выполнен",
+                message="Платёжная система подтвердила возврат средств.",
+            )
+            await commiter.commit()
         return PaymentWebhookResponse(message="Webhook processed")
