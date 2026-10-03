@@ -1,6 +1,6 @@
 from datetime import datetime
 from decimal import Decimal
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class ReceiptItemResponse(BaseModel):
@@ -17,10 +17,12 @@ class ReceiptItemResponse(BaseModel):
 class OrderReceiptResponse(BaseModel):
     order_id: int
     order_number: str
-    receipt_url: str
-    fiscal_number: str
-    total_amount: Decimal
-    issued_at: datetime
-    items: list[ReceiptItemResponse] = []
+    available: bool
+    message: str
+    receipt_url: str | None = None
+    fiscal_number: str | None = None
+    total_amount: Decimal | None = None
+    issued_at: datetime | None = None
+    items: list[ReceiptItemResponse] = Field(default_factory=list)
 
     model_config = ConfigDict(from_attributes=True)

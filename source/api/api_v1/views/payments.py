@@ -32,6 +32,7 @@ from source.repositories.order import OrderRepository
 from source.repositories.payment import PaymentRepository
 from source.repositories.payment_webhook_log import PaymentWebhookLogRepository
 from source.repositories.refund import RefundRepository
+from source.repositories.settings import SettingsRepository
 from source.schemas.pydantic.payment import (
     PaymentConfirmRequest,
     PaymentConfirmResponse,
@@ -72,6 +73,7 @@ async def create_payment(
     payment_service: FromDishka[PaymentService] = None,
     payment_provider_service: FromDishka[PaymentProviderService] = None,
     order_cache_service: FromDishka[OrderCacheService] = None,
+    settings_repository: FromDishka[SettingsRepository] = None,
 ) -> PaymentCreateResponse:
     order = await order_repository.get_by_id(session=session, order_id=body.order_id)
     if order is None:
@@ -89,6 +91,7 @@ async def create_payment(
             order_service=order_service,
             payment_provider_service=payment_provider_service,
             order_cache_service=order_cache_service,
+            settings_repository=settings_repository,
         )
     except InactiveUserError as error:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Пользователь заблокирован или удалён") from error
@@ -310,6 +313,7 @@ async def process_payment_webhook(
     email_service: FromDishka[EmailService] = None,
     telegram_service: FromDishka[TelegramNotificationService] = None,
     one_c_integration_service: FromDishka[OneCIntegrationService] = None,
+    settings_repository: FromDishka[SettingsRepository] = None,
 ) -> PaymentWebhookResponse:
     raw_body = await request.body()
     try:
@@ -330,6 +334,7 @@ async def process_payment_webhook(
             email_service=email_service,
             telegram_service=telegram_service,
             one_c_integration_service=one_c_integration_service,
+            settings_repository=settings_repository,
         )
     except InvalidPaymentWebhookSignatureError as error:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Неверная подпись webhook") from error

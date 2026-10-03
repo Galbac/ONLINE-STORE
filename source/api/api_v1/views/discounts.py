@@ -48,6 +48,7 @@ async def get_discount_products(
     limit: int = Query(default=24, ge=1, le=100),
     category_id: int | None = Query(default=None, ge=1),
     in_stock: bool = True,
+    store_id: int | None = Query(default=None, ge=1),
     sort: str = Query(default="discount_desc", pattern="^(discount_desc|price_asc|price_desc|newest)$"),
     session: FromDishka[AsyncSession] = None,
     redis_service: FromDishka[RedisService] = None,
@@ -56,7 +57,15 @@ async def get_discount_products(
     product_repository: FromDishka[ProductRepository] = None,
 ) -> DiscountProductsResponse:
     try:
-        query = DiscountProductsQueryParams(page=page, limit=limit, category_id=category_id, in_stock=in_stock, sort=sort)
+        resolved_store_id = store_id if isinstance(store_id, int) else None
+        query = DiscountProductsQueryParams(
+            page=page,
+            limit=limit,
+            category_id=category_id,
+            in_stock=in_stock,
+            store_id=resolved_store_id,
+            sort=sort,
+        )
         return await discount_service.get_discounted_products(
             session=session,
             redis_service=redis_service,

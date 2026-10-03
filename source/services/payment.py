@@ -4,6 +4,7 @@ from datetime import datetime
 import hashlib
 import hmac
 import json
+import urllib.parse
 
 from source.config.settings import settings
 from source.errors.auth import (
@@ -76,15 +77,67 @@ class PaymentProviderService:
         return_url: str,
         webhook_url: str,
         customer_email: str | None = None,
+        provider: str | None = None,
+        robokassa_login: str | None = None,
+        robokassa_password_1: str | None = None,
+        robokassa_is_test: bool = False,
+        yookassa_shop_id: str | None = None,
+        yookassa_secret_key: str | None = None,
+        payment_id: int | None = None,
     ) -> ProviderPayment:
-        provider = settings.payments.provider
-        if provider != "yookassa":
+        selected_provider = (provider or settings.payments.provider or "yookassa").lower()
+        if selected_provider not in ("yookassa", "robokassa"):
             raise PaymentProviderCreateError
-        if not settings.payments.provider_shop_id or not settings.payments.provider_secret_key:
+
+        if selected_provider == "robokassa":
+            merchant_login = robokassa_login or settings.payments.robokassa_merchant_login
+            password_1 = robokassa_password_1 or settings.payments.robokassa_password_1
+            if not merchant_login or not password_1:
+                raise PaymentProviderCreateError
+
+            out_sum = f"{amount:.2f}"
+            inv_id = int(order_number) if str(order_number).isdigit() else 0
+
+            shp_params: dict[str, str] = {"Shp_order_number": str(order_number)}
+            if payment_id is not None:
+                shp_params["Shp_payment_id"] = str(payment_id)
+
+            sorted_shp = sorted(shp_params.items(), key=lambda x: x[0])
+            shp_signature_part = ":".join(f"{k}={v}" for k, v in sorted_shp)
+            signature_source = f"{merchant_login}:{out_sum}:{inv_id}:{password_1}"
+            if shp_signature_part:
+                signature_source = f"{signature_source}:{shp_signature_part}"
+            signature_value = hashlib.md5(signature_source.encode("utf-8")).hexdigest()
+
+            query_params: dict[str, str] = {
+                "MerchantLogin": merchant_login,
+                "OutSum": out_sum,
+                "InvId": str(inv_id),
+                "Description": description,
+                "SignatureValue": signature_value,
+            }
+            if robokassa_is_test or settings.payments.robokassa_is_test:
+                query_params["IsTest"] = "1"
+            if customer_email:
+                query_params["Email"] = customer_email
+            for k, v in sorted_shp:
+                query_params[k] = v
+
+            payment_url = f"https://auth.robokassa.ru/Merchant/Index.aspx?{urllib.parse.urlencode(query_params)}"
+            return ProviderPayment(
+                provider_payment_id=f"robokassa-{order_number}",
+                payment_url=payment_url,
+                status="pending",
+            )
+
+        # YooKassa flow
+        shop_id = yookassa_shop_id or settings.payments.provider_shop_id
+        secret_key = yookassa_secret_key or settings.payments.provider_secret_key
+        if not shop_id or not secret_key:
             raise PaymentProviderCreateError
 
         return ProviderPayment(
-            provider_payment_id=f"{provider}-{order_number}",
+            provider_payment_id=f"yookassa-{order_number}",
             payment_url=f"https://payment.example.com/pay/{order_number}",
             status="pending",
         )
@@ -125,9 +178,41 @@ class PaymentProviderService:
             raise PaymentProviderRefundError
         return ProviderRefund(provider_refund_id=f"refund-{provider_payment_id}", status="succeeded")
 
-    def verify_webhook_signature(self, *, raw_body: bytes, signature: str | None) -> bool:
+    def verify_webhook_signature(
+        self,
+        *,
+        raw_body: bytes,
+        signature: str | None,
+        robokassa_password_2: str | None = None,
+    ) -> bool:
         if not settings.payments.webhook_verify_signature:
             return True
+
+        try:
+            raw_str = raw_body.decode("utf-8")
+        except UnicodeDecodeError:
+            raw_str = ""
+
+        # Robokassa ResultURL signature check
+        if "OutSum=" in raw_str or "SignatureValue=" in raw_str:
+            params = urllib.parse.parse_qs(raw_str)
+            out_sum = params.get("OutSum", [""])[0]
+            inv_id = params.get("InvId", [""])[0]
+            sig_received = params.get("SignatureValue", [""])[0]
+            pwd2 = robokassa_password_2 or settings.payments.robokassa_password_2
+            if not pwd2 or not sig_received:
+                return False
+
+            shp_params = {k: v[0] for k, v in params.items() if k.startswith("Shp_")}
+            sorted_shp = sorted(shp_params.items(), key=lambda x: x[0])
+            shp_part = ":".join(f"{k}={v}" for k, v in sorted_shp)
+            sign_str = f"{out_sum}:{inv_id}:{pwd2}"
+            if shp_part:
+                sign_str = f"{sign_str}:{shp_part}"
+            expected_sig = hashlib.md5(sign_str.encode("utf-8")).hexdigest()
+            return expected_sig.lower() == sig_received.lower()
+
+        # YooKassa signature check
         if not signature or not settings.payments.provider_webhook_secret:
             return False
         expected_signature = hmac.new(
@@ -139,8 +224,45 @@ class PaymentProviderService:
 
     def parse_webhook_event(self, *, raw_body: bytes) -> ProviderWebhookEvent:
         try:
-            payload = json.loads(raw_body.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            raw_str = raw_body.decode("utf-8")
+        except UnicodeDecodeError as error:
+            raise InvalidPaymentWebhookPayloadError from error
+
+        # Robokassa ResultURL format
+        if "OutSum=" in raw_str or "SignatureValue=" in raw_str:
+            params = urllib.parse.parse_qs(raw_str)
+            inv_id = params.get("InvId", [None])[0]
+            out_sum = params.get("OutSum", [None])[0]
+            sig = params.get("SignatureValue", [""])[0]
+            shp_payment_id = params.get("Shp_payment_id", [None])[0]
+            shp_order_num = params.get("Shp_order_number", [None])[0]
+
+            if not out_sum or not inv_id:
+                raise InvalidPaymentWebhookPayloadError
+
+            parsed_payment_id = None
+            if shp_payment_id is not None:
+                try:
+                    parsed_payment_id = int(shp_payment_id)
+                except (ValueError, TypeError):
+                    pass
+
+            provider_payment_id = f"robokassa-{shp_order_num or inv_id}"
+            event_id = f"robokassa:{provider_payment_id}:{sig or out_sum}"
+
+            return ProviderWebhookEvent(
+                provider_event_id=str(event_id),
+                event_type="payment.succeeded",
+                provider_payment_id=provider_payment_id,
+                payment_id=parsed_payment_id,
+                status="succeeded",
+                payload={"InvId": inv_id, "OutSum": out_sum, "SignatureValue": sig, "raw": raw_str},
+            )
+
+        # YooKassa JSON format
+        try:
+            payload = json.loads(raw_str)
+        except json.JSONDecodeError as error:
             raise InvalidPaymentWebhookPayloadError from error
 
         event_type = payload.get("event")
@@ -186,7 +308,31 @@ class PaymentService:
         order_service=None,
         payment_provider_service: PaymentProviderService | None = None,
         order_cache_service=None,
+        settings_repository=None,
     ):
+        provider = settings.payments.provider
+        robokassa_login = getattr(settings.payments, "robokassa_merchant_login", None)
+        robokassa_pwd1 = getattr(settings.payments, "robokassa_password_1", None)
+        robokassa_is_test = getattr(settings.payments, "robokassa_is_test", False)
+        yookassa_shop_id = getattr(settings.payments, "provider_shop_id", None)
+        yookassa_secret_key = getattr(settings.payments, "provider_secret_key", None)
+
+        if settings_repository is not None and session is not None:
+            store_settings, _ = await settings_repository.get_or_create_default(session=session)
+            if store_settings is not None:
+                if getattr(store_settings, "payment_provider", None):
+                    provider = store_settings.payment_provider
+                if getattr(store_settings, "robokassa_merchant_login", None):
+                    robokassa_login = store_settings.robokassa_merchant_login
+                if getattr(store_settings, "robokassa_password_1", None):
+                    robokassa_pwd1 = store_settings.robokassa_password_1
+                if hasattr(store_settings, "robokassa_is_test"):
+                    robokassa_is_test = bool(store_settings.robokassa_is_test)
+                if getattr(store_settings, "yookassa_shop_id", None):
+                    yookassa_shop_id = store_settings.yookassa_shop_id
+                if getattr(store_settings, "yookassa_secret_key", None):
+                    yookassa_secret_key = store_settings.yookassa_secret_key
+
         # Старый сценарий используется при создании заказа.
         if commiter is None:
             payment_url = f"https://payment.example.com/pay/{order.id}"
@@ -196,7 +342,7 @@ class PaymentService:
                 amount=order.final_price,
                 currency=settings.payments.currency,
                 status="unpaid",
-                provider=settings.payments.provider,
+                provider=provider,
                 payment_url=payment_url,
             )
             return payment_url
@@ -214,7 +360,7 @@ class PaymentService:
                 amount=order.final_price,
                 currency=settings.payments.currency,
                 status="pending",
-                provider=settings.payments.provider,
+                provider=provider,
                 payment_url=None,
             )
             provider_payment = await payment_provider_service.create_payment(
@@ -225,6 +371,13 @@ class PaymentService:
                 return_url=settings.payments.return_url,
                 webhook_url=settings.payments.webhook_url,
                 customer_email=order.customer_email,
+                provider=provider,
+                robokassa_login=robokassa_login,
+                robokassa_password_1=robokassa_pwd1,
+                robokassa_is_test=robokassa_is_test,
+                yookassa_shop_id=yookassa_shop_id,
+                yookassa_secret_key=yookassa_secret_key,
+                payment_id=payment.id,
             )
             payment = await payment_repository.update_provider_data(
                 session=session,

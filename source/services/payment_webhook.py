@@ -22,8 +22,19 @@ class PaymentWebhookService:
         email_service,
         telegram_service,
         one_c_integration_service,
+        settings_repository=None,
     ) -> PaymentWebhookResponse:
-        if not payment_provider_service.verify_webhook_signature(raw_body=raw_body, signature=signature):
+        robokassa_pwd_2 = getattr(settings.payments, "robokassa_password_2", None)
+        if settings_repository is not None and session is not None:
+            store_settings, _ = await settings_repository.get_or_create_default(session=session)
+            if store_settings is not None and getattr(store_settings, "robokassa_password_2", None):
+                robokassa_pwd_2 = store_settings.robokassa_password_2
+
+        if not payment_provider_service.verify_webhook_signature(
+            raw_body=raw_body,
+            signature=signature,
+            robokassa_password_2=robokassa_pwd_2,
+        ):
             from source.errors.auth import InvalidPaymentWebhookSignatureError
 
             raise InvalidPaymentWebhookSignatureError

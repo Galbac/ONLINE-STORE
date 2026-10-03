@@ -66,6 +66,13 @@ class AdminSettingsResponse(BaseModel):
     privacy_policy_url: str | None = None
     user_agreement_url: str | None = None
     personal_data_consent_url: str | None = None
+    payment_provider: str = "yookassa"
+    robokassa_merchant_login: str | None = None
+    robokassa_password_1: str | None = None
+    robokassa_password_2: str | None = None
+    robokassa_is_test: bool = False
+    yookassa_shop_id: str | None = None
+    yookassa_secret_key: str | None = None
     updated_at: datetime | None = None
 
 
@@ -87,6 +94,13 @@ class AdminSettingsUpdateRequest(BaseModel):
     privacy_policy_url: str | None = Field(default=None, max_length=500)
     user_agreement_url: str | None = Field(default=None, max_length=500)
     personal_data_consent_url: str | None = Field(default=None, max_length=500)
+    payment_provider: str | None = Field(default=None, max_length=32)
+    robokassa_merchant_login: str | None = Field(default=None, max_length=255)
+    robokassa_password_1: str | None = Field(default=None, max_length=255)
+    robokassa_password_2: str | None = Field(default=None, max_length=255)
+    robokassa_is_test: bool | None = None
+    yookassa_shop_id: str | None = Field(default=None, max_length=255)
+    yookassa_secret_key: str | None = Field(default=None, max_length=255)
 
     @model_validator(mode="after")
     def normalize_and_validate(self) -> "AdminSettingsUpdateRequest":
@@ -112,11 +126,20 @@ class AdminSettingsUpdateRequest(BaseModel):
             "privacy_policy_url",
             "user_agreement_url",
             "personal_data_consent_url",
+            "robokassa_merchant_login",
+            "robokassa_password_1",
+            "robokassa_password_2",
+            "yookassa_shop_id",
+            "yookassa_secret_key",
         ):
             value = getattr(self, field)
             if value is not None:
                 value = value.strip()
                 setattr(self, field, value or None)
+        if self.payment_provider is not None:
+            self.payment_provider = self.payment_provider.strip().lower()
+            if self.payment_provider not in ("yookassa", "robokassa"):
+                raise ValueError("payment_provider должен быть 'yookassa' или 'robokassa'")
         if self.shop_name is not None and not self.shop_name:
             raise ValueError("shop_name обязателен")
         if self.email is not None:

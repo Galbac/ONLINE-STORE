@@ -102,6 +102,13 @@ class AdminSettingsService:
             "privacy_policy_url",
             "user_agreement_url",
             "personal_data_consent_url",
+            "payment_provider",
+            "robokassa_merchant_login",
+            "robokassa_password_1",
+            "robokassa_password_2",
+            "robokassa_is_test",
+            "yookassa_shop_id",
+            "yookassa_secret_key",
         }
         delivery_fields = {
             "default_city",
@@ -230,5 +237,12 @@ class AdminSettingsService:
             privacy_policy_url=getattr(store_settings, "privacy_policy_url", "/privacy"),
             user_agreement_url=getattr(store_settings, "user_agreement_url", "/offer"),
             personal_data_consent_url=getattr(store_settings, "personal_data_consent_url", "/personal-data-consent"),
+            payment_provider=getattr(store_settings, "payment_provider", "yookassa") or "yookassa",
+            robokassa_merchant_login=getattr(store_settings, "robokassa_merchant_login", None),
+            robokassa_password_1=getattr(store_settings, "robokassa_password_1", None),
+            robokassa_password_2=getattr(store_settings, "robokassa_password_2", None),
+            robokassa_is_test=bool(getattr(store_settings, "robokassa_is_test", False)),
+            yookassa_shop_id=getattr(store_settings, "yookassa_shop_id", None),
+            yookassa_secret_key=getattr(store_settings, "yookassa_secret_key", None),
             updated_at=max(updated_at_values) if updated_at_values else None,
         )

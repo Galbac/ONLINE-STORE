@@ -220,5 +220,7 @@ async def test_order_receipt_permissions():
         order_repository=order_repo,
     )
     assert receipt.order_number == "ORD-123"
-    assert "receipt.ofd.ru" in receipt.receipt_url
-    assert receipt.total_amount == Decimal("1250.00")
+    assert receipt.available is False
+    assert receipt.receipt_url is None
+    assert receipt.fiscal_number is None
+    assert "нет данных о фискальном чеке" in receipt.message

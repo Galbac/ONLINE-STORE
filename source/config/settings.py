@@ -399,6 +399,10 @@ class PaymentsSettings(BaseSettings):
     capture_mode: str = Field(default="automatic", alias="PAYMENT_CAPTURE_MODE")
     provider_webhook_secret: str = Field(default="", alias="PAYMENT_PROVIDER_WEBHOOK_SECRET")
     webhook_verify_signature: bool = Field(default=True, alias="PAYMENT_WEBHOOK_VERIFY_SIGNATURE")
+    robokassa_merchant_login: str = Field(default="", alias="ROBOKASSA_MERCHANT_LOGIN")
+    robokassa_password_1: str = Field(default="", alias="ROBOKASSA_PASSWORD_1")
+    robokassa_password_2: str = Field(default="", alias="ROBOKASSA_PASSWORD_2")
+    robokassa_is_test: bool = Field(default=False, alias="ROBOKASSA_IS_TEST")
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

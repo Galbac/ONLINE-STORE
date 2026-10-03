@@ -20,6 +20,7 @@ from source.schemas.pydantic.product import (
     ProductDiscountedQueryParams,
     ProductDiscountedResponse,
     ProductDiscountedSort,
+    ProductFacetsResponse,
     ProductListQueryParams,
     ProductListResponse,
     ProductNewQueryParams,
@@ -49,6 +50,39 @@ router = APIRouter(tags=["products"])
 
 
 @router.get(
+    "/products/facets",
+    response_model=ProductFacetsResponse,
+    status_code=status.HTTP_200_OK,
+)
+@inject
+async def get_product_facets(
+    category_id: int | None = Query(default=None, ge=1),
+    store_id: int | None = Query(default=None, ge=1),
+    session: FromDishka[AsyncSession] = None,
+    redis_service: FromDishka[RedisService] = None,
+    product_service: FromDishka[ProductService] = None,
+    product_cache_service: FromDishka[ProductCacheService] = None,
+    product_repository: FromDishka[ProductRepository] = None,
+    category_repository: FromDishka[CategoryRepository] = None,
+) -> ProductFacetsResponse:
+    try:
+        return await product_service.get_facets(
+            session=session,
+            redis_service=redis_service,
+            product_cache_service=product_cache_service,
+            product_repository=product_repository,
+            category_repository=category_repository,
+            category_id=category_id,
+            store_id=store_id,
+        )
+    except CategoryNotFoundError as error:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Категория не найдена",
+        ) from error
+
+
+@router.get(
     "/products/new",
     response_model=ProductNewResponse,
     status_code=status.HTTP_200_OK,
@@ -64,6 +98,7 @@ async def get_new_products(
     category_id: int | None = Query(default=None, ge=1),
     in_stock: bool = True,
     days: int = Query(default=settings.products.new_default_days, ge=1),
+    store_id: int | None = Query(default=None, ge=1),
     session: FromDishka[AsyncSession] = None,
     redis_service: FromDishka[RedisService] = None,
     product_service: FromDishka[ProductService] = None,
@@ -83,6 +118,7 @@ async def get_new_products(
                 category_id=category_id,
                 in_stock=in_stock,
                 days=days,
+                store_id=store_id,
             ),
         )
     except CategoryNotFoundError as error:
@@ -154,6 +190,7 @@ async def get_popular_products(
     category_id: int | None = Query(default=None, ge=1),
     period_days: int = Query(default=30, ge=1),
     in_stock: bool = True,
+    store_id: int | None = Query(default=None, ge=1),
     session: FromDishka[AsyncSession] = None,
     redis_service: FromDishka[RedisService] = None,
     product_service: FromDishka[ProductService] = None,
@@ -173,6 +210,7 @@ async def get_popular_products(
                 category_id=category_id,
                 period_days=period_days,
                 in_stock=in_stock,
+                store_id=store_id,
             ),
         )
     except CategoryNotFoundError as error:
@@ -208,6 +246,7 @@ async def search_products(
     product_type: ProductType | None = None,
     tag: str | None = None,
     article: str | None = Query(default=None, max_length=100),
+    store_id: int | None = Query(default=None, ge=1),
     sort: ProductSearchSort = "relevance",
     session: FromDishka[AsyncSession] = None,
     redis_service: FromDishka[RedisService] = None,
@@ -237,6 +276,7 @@ async def search_products(
                 product_type=product_type,
                 tag=tag,
                 article=article,
+                store_id=store_id,
                 sort=sort,
             ),
         )
@@ -511,6 +551,7 @@ async def get_products(
     product_type: ProductType | None = None,
     tag: str | None = None,
     article: str | None = Query(default=None, max_length=100),
+    store_id: int | None = Query(default=None, ge=1),
     sort: ProductSort | None = None,
     session: FromDishka[AsyncSession] = None,
     redis_service: FromDishka[RedisService] = None,
@@ -538,6 +579,7 @@ async def get_products(
                 product_type=product_type,
                 tag=tag,
                 article=article,
+                store_id=store_id,
                 sort=sort,
             ),
         )

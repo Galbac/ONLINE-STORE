@@ -1,13 +1,15 @@
 import re
 from datetime import datetime
+from decimal import Decimal
 
-from sqlalchemy import case, desc, func, or_, select
+from sqlalchemy import case, desc, exists, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from source.config.settings import settings
 from source.db.models.category import Category
 from source.db.models.discount import Discount
 from source.db.models.product import Product
+from source.db.models.product_stock import ProductStock
 from source.schemas.pydantic.admin_product import (
     AdminProductCategoryResponse,
     AdminProductListItemResponse,
@@ -17,6 +19,7 @@ from source.schemas.pydantic.product import (
     ProductCategoryShortResponse,
     ProductDetailResponse,
     ProductDiscountedQueryParams,
+    ProductFacetsResponse,
     ProductListQueryParams,
     ProductNewQueryParams,
     ProductPopularQueryParams,
@@ -258,6 +261,54 @@ class ProductRepository:
     ) -> list[Product]:
         return await self.bulk_update(session=session, products=products)
 
+    async def get_facets(
+        self,
+        *,
+        session: AsyncSession,
+        category_ids: set[int] | None = None,
+        store_id: int | None = None,
+    ) -> ProductFacetsResponse:
+        statement = select(
+            func.count(case(((Product.old_price.is_not(None)) & (Product.old_price > Product.price), 1))).label("discount_count"),
+            func.count(case((Product.is_halal.is_(True), 1))).label("halal_count"),
+            func.coalesce(func.min(Product.price), Decimal("0.00")).label("min_price"),
+            func.coalesce(func.max(Product.price), Decimal("0.00")).label("max_price"),
+            func.count(Product.id).label("total_count"),
+        ).where(
+            Product.is_active.is_(True),
+            Product.is_deleted.is_(False),
+            Product.is_available.is_(True),
+        )
+        if category_ids is not None:
+            statement = statement.where(Product.category_id.in_(category_ids))
+
+        if store_id is not None:
+            store_has_stock = exists(
+                select(ProductStock.id).where(
+                    ProductStock.product_id == Product.id,
+                    ProductStock.pickup_point_id == store_id,
+                    ProductStock.stock_quantity > 0,
+                ),
+            )
+            statement = statement.where(store_has_stock)
+
+        result = (await session.execute(statement)).one()
+        discount_count = int(result.discount_count or 0)
+        halal_count = int(result.halal_count or 0)
+        total_count = int(result.total_count or 0)
+        min_price = Decimal(str(result.min_price or "0.00"))
+        max_price = Decimal(str(result.max_price or "0.00"))
+
+        return ProductFacetsResponse(
+            has_discounts=discount_count > 0,
+            discount_count=discount_count,
+            has_halal=halal_count > 0,
+            halal_count=halal_count,
+            min_price=min_price,
+            max_price=max_price,
+            total_count=total_count,
+        )
+
     def _base_statement(self, *, query: ProductListQueryParams, category_ids: set[int] | None):
         statement = (
             select(Product, Category)
@@ -269,7 +320,16 @@ class ProductRepository:
         )
         if category_ids is not None:
             statement = statement.where(Product.category_id.in_(category_ids))
-        if query.in_stock is True:
+        if query.store_id is not None and query.in_stock is not None:
+            store_has_stock = exists(
+                select(ProductStock.id).where(
+                    ProductStock.product_id == Product.id,
+                    ProductStock.pickup_point_id == query.store_id,
+                    ProductStock.stock_quantity > 0,
+                ),
+            )
+            statement = statement.where(store_has_stock if query.in_stock else ~store_has_stock)
+        elif query.in_stock is True:
             statement = statement.where(
                 Product.is_available.is_(True),
                 Product.stock_quantity > 0,
@@ -295,11 +355,19 @@ class ProductRepository:
             statement = statement.where(Product.product_type == query.product_type)
         if query.tag is not None:
             tag_val = query.tag.strip()
-            statement = statement.where(
-                Product.name.ilike(f"%{tag_val}%")
-                | Product.description.ilike(f"%{tag_val}%")
-                | Product.search_keywords.ilike(f"%{tag_val}%")
-            )
+            if tag_val.lower() in ("halal", "халяль"):
+                statement = statement.where(
+                    (Product.is_halal.is_(True))
+                    | Product.name.ilike(f"%{tag_val}%")
+                    | Product.description.ilike(f"%{tag_val}%")
+                    | Product.search_keywords.ilike(f"%{tag_val}%")
+                )
+            else:
+                statement = statement.where(
+                    Product.name.ilike(f"%{tag_val}%")
+                    | Product.description.ilike(f"%{tag_val}%")
+                    | Product.search_keywords.ilike(f"%{tag_val}%")
+                )
         if query.article is not None:
             article_val = query.article.strip()
             clean_val = re.sub(r"^(арт|art)\.?\s*[:\-]?\s*", "", article_val, flags=re.IGNORECASE).strip()
@@ -361,7 +429,16 @@ class ProductRepository:
             if clean_art.isdigit():
                 art_filters.append(Product.id == int(clean_art))
             statement = statement.where(or_(*art_filters))
-        if query.in_stock is True:
+        if query.store_id is not None and query.in_stock is not None:
+            store_has_stock = exists(
+                select(ProductStock.id).where(
+                    ProductStock.product_id == Product.id,
+                    ProductStock.pickup_point_id == query.store_id,
+                    ProductStock.stock_quantity > 0,
+                ),
+            )
+            statement = statement.where(store_has_stock if query.in_stock else ~store_has_stock)
+        elif query.in_stock is True:
             statement = statement.where(
                 Product.is_available.is_(True),
                 Product.stock_quantity > 0,
@@ -387,11 +464,19 @@ class ProductRepository:
             statement = statement.where(Product.product_type == query.product_type)
         if query.tag is not None:
             tag_val = query.tag.strip()
-            statement = statement.where(
-                Product.name.ilike(f"%{tag_val}%")
-                | Product.description.ilike(f"%{tag_val}%")
-                | Product.search_keywords.ilike(f"%{tag_val}%")
-            )
+            if tag_val.lower() in ("halal", "халяль"):
+                statement = statement.where(
+                    (Product.is_halal.is_(True))
+                    | Product.name.ilike(f"%{tag_val}%")
+                    | Product.description.ilike(f"%{tag_val}%")
+                    | Product.search_keywords.ilike(f"%{tag_val}%")
+                )
+            else:
+                statement = statement.where(
+                    Product.name.ilike(f"%{tag_val}%")
+                    | Product.description.ilike(f"%{tag_val}%")
+                    | Product.search_keywords.ilike(f"%{tag_val}%")
+                )
         return statement
 
     def _apply_search_sort(self, statement, *, query: ProductSearchQueryParams):
@@ -436,7 +521,17 @@ class ProductRepository:
         )
         if category_ids is not None:
             statement = statement.where(Product.category_id.in_(category_ids))
-        if query.in_stock:
+        if query.store_id is not None and query.in_stock:
+            statement = statement.where(
+                exists(
+                    select(ProductStock.id).where(
+                        ProductStock.product_id == Product.id,
+                        ProductStock.pickup_point_id == query.store_id,
+                        ProductStock.stock_quantity > 0,
+                    ),
+                ),
+            )
+        elif query.in_stock:
             statement = statement.where(
                 Product.is_available.is_(True),
                 Product.stock_quantity > 0,
@@ -481,7 +576,17 @@ class ProductRepository:
         )
         if category_ids is not None:
             statement = statement.where(Product.category_id.in_(category_ids))
-        if query.in_stock:
+        if query.store_id is not None and query.in_stock:
+            statement = statement.where(
+                exists(
+                    select(ProductStock.id).where(
+                        ProductStock.product_id == Product.id,
+                        ProductStock.pickup_point_id == query.store_id,
+                        ProductStock.stock_quantity > 0,
+                    ),
+                ),
+            )
+        elif query.in_stock:
             statement = statement.where(
                 Product.is_available.is_(True),
                 Product.stock_quantity > 0,
@@ -669,7 +774,17 @@ class ProductRepository:
         )
         if query.category_id is not None:
             statement = statement.where(Product.category_id == query.category_id)
-        if query.in_stock:
+        if query.store_id is not None and query.in_stock:
+            statement = statement.where(
+                exists(
+                    select(ProductStock.id).where(
+                        ProductStock.product_id == Product.id,
+                        ProductStock.pickup_point_id == query.store_id,
+                        ProductStock.stock_quantity > 0,
+                    ),
+                ),
+            )
+        elif query.in_stock:
             statement = statement.where(Product.is_available.is_(True), Product.stock_quantity > 0)
         return statement
 

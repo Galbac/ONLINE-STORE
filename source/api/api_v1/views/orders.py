@@ -56,7 +56,7 @@ from source.schemas.pydantic.order import (
     RepeatOrderResponse,
 )
 from source.schemas.pydantic.order_tracking import OrderTrackingResponse
-from source.schemas.pydantic.receipt import OrderReceiptResponse, ReceiptItemResponse
+from source.schemas.pydantic.receipt import OrderReceiptResponse
 from source.services.order_tracking import OrderTrackingService
 from source.services.cart import CartCalculatorService, CartService
 from source.services.cart_cache import CartCacheService
@@ -177,8 +177,6 @@ async def get_order_receipt(
     current_user: User = Depends(get_current_user),
     session: FromDishka[AsyncSession] = None,
     order_repository: FromDishka[OrderRepository] = None,
-    order_item_repository: FromDishka[OrderItemRepository] = None,
-    payment_service: FromDishka[PaymentService] = None,
 ) -> OrderReceiptResponse:
     if order_id <= 0:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Неверный order_id")
@@ -188,26 +186,11 @@ async def get_order_receipt(
     if order.user_id != current_user.id and current_user.role == "customer":
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Заказ не найден")
 
-    receipt_url = f"https://receipt.ofd.ru/check/{order.order_number}"
-    fiscal_num = f"FP-{order.id * 8831 % 900000 + 100000}"
-
-    receipt_items = []
-    if order_item_repository is not None and payment_service is not None:
-        try:
-            order_items = await order_item_repository.get_by_order_id(session=session, order_id=order.id)
-            raw_items = payment_service.build_fiscal_receipt_items(order=order, order_items=order_items)
-            receipt_items = [ReceiptItemResponse.model_validate(it) for it in raw_items]
-        except Exception:
-            receipt_items = []
-
     return OrderReceiptResponse(
         order_id=order.id,
         order_number=order.order_number,
-        receipt_url=receipt_url,
-        fiscal_number=fiscal_num,
-        total_amount=order.final_price,
-        issued_at=order.updated_date,
-        items=receipt_items,
+        available=False,
+        message="Для этого заказа нет данных о фискальном чеке. Если заказ оплачен, обратитесь в поддержку магазина.",
     )
 
 

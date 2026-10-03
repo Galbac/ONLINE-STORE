@@ -58,3 +58,41 @@ def test_product_search_query_params_invalid_prices() -> None:
             max_price=Decimal("100"),
         )
 
+
+def unwrap(fn):
+    return getattr(fn, "__dishka_orig_func__", fn)
+
+
+@pytest.mark.asyncio
+async def test_get_product_facets_view_success() -> None:
+    from decimal import Decimal
+    from unittest.mock import AsyncMock
+    from source.api.api_v1.views.products import get_product_facets
+    from source.schemas.pydantic.product import ProductFacetsResponse
+
+    expected_facets = ProductFacetsResponse(
+        has_discounts=True,
+        discount_count=3,
+        has_halal=False,
+        halal_count=0,
+        min_price=Decimal("50.00"),
+        max_price=Decimal("400.00"),
+        total_count=15,
+    )
+    product_service_mock = AsyncMock()
+    product_service_mock.get_facets.return_value = expected_facets
+
+    response = await unwrap(get_product_facets)(
+        category_id=67,
+        store_id=None,
+        session=AsyncMock(),
+        redis_service=AsyncMock(),
+        product_service=product_service_mock,
+        product_cache_service=AsyncMock(),
+        product_repository=AsyncMock(),
+        category_repository=AsyncMock(),
+    )
+
+    assert response == expected_facets
+    product_service_mock.get_facets.assert_awaited_once()
+

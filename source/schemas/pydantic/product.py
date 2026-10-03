@@ -24,6 +24,7 @@ class ProductListQueryParams(BaseModel):
     product_type: ProductType | None = None
     tag: str | None = None
     article: str | None = Field(default=None, max_length=100)
+    store_id: int | None = Field(default=None, ge=1)
     sort: ProductSort | None = None
 
     @model_validator(mode="after")
@@ -54,6 +55,7 @@ class ProductSearchQueryParams(BaseModel):
     product_type: ProductType | None = None
     tag: str | None = None
     article: str | None = Field(default=None, max_length=100)
+    store_id: int | None = Field(default=None, ge=1)
     sort: ProductSearchSort = "relevance"
 
     @model_validator(mode="after")
@@ -75,6 +77,7 @@ class ProductPopularQueryParams(BaseModel):
     category_id: int | None = Field(default=None, ge=1)
     period_days: int = Field(default=30, ge=1)
     in_stock: bool = True
+    store_id: int | None = Field(default=None, ge=1)
 
 
 class ProductDiscountedQueryParams(BaseModel):
@@ -94,6 +97,7 @@ class ProductNewQueryParams(BaseModel):
     category_id: int | None = Field(default=None, ge=1)
     in_stock: bool = True
     days: int = Field(default=30, ge=1)
+    store_id: int | None = Field(default=None, ge=1)
 
 
 class ProductSimilarQueryParams(BaseModel):
@@ -125,6 +129,8 @@ class ProductShortResponse(BaseModel):
     stock_display: str
     category: ProductCategoryShortResponse | None = None
     created_at: datetime | None = None
+    store_stock_quantity: Decimal | None = None
+    store_is_available: bool | None = None
 
 
 class ProductImageResponse(BaseModel):
@@ -175,6 +181,16 @@ class ProductDetailResponse(BaseModel):
     similar: list[ProductShortResponse] | None = None
     seo: ProductSeoResponse | None = None
     stores_stock: list[StoreStockResponse] = Field(default_factory=list)
+
+
+class ProductFacetsResponse(BaseModel):
+    has_discounts: bool
+    discount_count: int
+    has_halal: bool
+    halal_count: int
+    min_price: Decimal
+    max_price: Decimal
+    total_count: int
 
 
 class ProductListResponse(BaseModel):

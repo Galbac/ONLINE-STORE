@@ -1,6 +1,7 @@
 from source.schemas.pydantic.product import (
     ProductDetailResponse,
     ProductDiscountedResponse,
+    ProductFacetsResponse,
     ProductListResponse,
     ProductNewResponse,
     ProductPopularResponse,
@@ -11,6 +12,36 @@ from source.services.redis import RedisService
 
 
 class ProductCacheService:
+    def _facets_key(self, query_hash: str) -> str:
+        return f"products:facets:{query_hash}"
+
+    async def get_facets(
+        self,
+        *,
+        redis_service: RedisService,
+        query_hash: str,
+    ) -> ProductFacetsResponse | None:
+        cached_facets = await redis_service.get(self._facets_key(query_hash))
+        if cached_facets is None:
+            return None
+        if isinstance(cached_facets, bytes):
+            cached_facets = cached_facets.decode("utf-8")
+        return ProductFacetsResponse.model_validate_json(cached_facets)
+
+    async def set_facets(
+        self,
+        *,
+        redis_service: RedisService,
+        query_hash: str,
+        response: ProductFacetsResponse,
+        ttl_seconds: int = 60,
+    ) -> None:
+        await redis_service.set(
+            self._facets_key(query_hash),
+            response.model_dump_json(),
+            ttl_seconds=ttl_seconds,
+        )
+
     def _list_key(self, query_hash: str) -> str:
         return f"products:list:{query_hash}"
 

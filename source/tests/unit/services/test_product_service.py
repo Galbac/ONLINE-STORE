@@ -17,6 +17,7 @@ from source.schemas.pydantic.product import (
     ProductDetailResponse,
     ProductDiscountedQueryParams,
     ProductDiscountedResponse,
+    ProductFacetsResponse,
     ProductImageResponse,
     ProductListQueryParams,
     ProductListResponse,
@@ -243,6 +244,24 @@ class FakeProductRepository:
         category_ids: set[int] | None = None,
     ):
         return len(self._filter_discounted_products(query=query, category_ids=category_ids))
+
+    async def get_facets(
+        self,
+        *,
+        session,
+        category_ids: set[int] | None = None,
+        store_id: int | None = None,
+    ):
+        self.category_ids = category_ids
+        return ProductFacetsResponse(
+            has_discounts=True,
+            discount_count=5,
+            has_halal=False,
+            halal_count=0,
+            min_price=Decimal("100.00"),
+            max_price=Decimal("500.00"),
+            total_count=10,
+        )
 
     async def get_new_active(
         self,
@@ -2269,3 +2288,58 @@ async def test_search_products_by_article_and_article_prefix() -> None:
     assert len(response.items) == 1
     assert response.items[0].id == 2
     assert response.items[0].article == "ART-002"
+
+
+@pytest.mark.asyncio
+async def test_get_product_facets_success() -> None:
+    repository = FakeProductRepository()
+    category_repository = FakeCategoryRepository(
+        categories=[
+            build_category(category_id=1, name="Фрукты", slug="frukty"),
+            build_category(category_id=11, name="Яблоки", slug="yabloki", parent_id=1),
+        ],
+    )
+    redis_service = FakeRedisService()
+    service = ProductService()
+    facets = await service.get_facets(
+        session=None,
+        redis_service=redis_service,
+        product_cache_service=ProductCacheService(),
+        product_repository=repository,
+        category_repository=category_repository,
+        category_id=1,
+    )
+
+    assert facets.has_discounts is True
+    assert facets.discount_count == 5
+    assert facets.has_halal is False
+    assert facets.halal_count == 0
+    assert facets.min_price == Decimal("100.00")
+    assert facets.max_price == Decimal("500.00")
+    assert repository.category_ids == {1, 11}
+
+
+@pytest.mark.asyncio
+async def test_get_product_facets_cached_in_redis() -> None:
+    repository = FakeProductRepository()
+    category_repository = FakeCategoryRepository(
+        categories=[
+            build_category(category_id=100, name="Мясо", slug="myaso"),
+        ],
+    )
+    redis_service = FakeRedisService()
+    service = ProductService()
+    cache_service = ProductCacheService()
+
+    await service.get_facets(
+        session=None,
+        redis_service=redis_service,
+        product_cache_service=cache_service,
+        product_repository=repository,
+        category_repository=category_repository,
+        category_id=100,
+    )
+
+    query_hash = build_query_hash({"category_id": 100, "store_id": None})
+    cache_key = f"products:facets:{query_hash}"
+    assert cache_key in redis_service.values

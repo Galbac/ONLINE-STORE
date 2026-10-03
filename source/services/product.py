@@ -17,6 +17,7 @@ from source.schemas.pydantic.product import (
     ProductDetailResponse,
     ProductDiscountedQueryParams,
     ProductDiscountedResponse,
+    ProductFacetsResponse,
     ProductListQueryParams,
     ProductListResponse,
     ProductNewQueryParams,
@@ -25,6 +26,7 @@ from source.schemas.pydantic.product import (
     ProductPopularResponse,
     ProductSearchQueryParams,
     ProductSearchResponse,
+    ProductShortResponse,
     ProductSimilarQueryParams,
     ProductSimilarResponse,
     StoreStockResponse,
@@ -32,6 +34,7 @@ from source.schemas.pydantic.product import (
 from source.services.product_cache import ProductCacheService
 from source.services.redis import RedisService
 from source.utils.query_hash import build_query_hash
+from source.utils.product import build_stock_display
 from source.utils.search import normalize_search_query
 from source.utils.slug import normalize_slug
 
@@ -122,6 +125,47 @@ class ProductService:
         )
         return response
 
+    async def get_facets(
+        self,
+        *,
+        session: AsyncSession,
+        redis_service: RedisService,
+        product_cache_service: ProductCacheService,
+        product_repository: ProductRepository,
+        category_repository: CategoryRepository,
+        category_id: int | None = None,
+        store_id: int | None = None,
+    ) -> ProductFacetsResponse:
+        query_dict = {"category_id": category_id, "store_id": store_id}
+        query_hash = build_query_hash(query_dict)
+        cached_facets = await product_cache_service.get_facets(
+            redis_service=redis_service,
+            query_hash=query_hash,
+        )
+        if cached_facets is not None:
+            return cached_facets
+
+        category_ids = None
+        if category_id is not None:
+            category_ids = await self._resolve_category_ids_by_id(
+                session=session,
+                category_repository=category_repository,
+                category_id=category_id,
+            )
+
+        response = await product_repository.get_facets(
+            session=session,
+            category_ids=category_ids,
+            store_id=store_id,
+        )
+        await product_cache_service.set_facets(
+            redis_service=redis_service,
+            query_hash=query_hash,
+            response=response,
+            ttl_seconds=settings.products.list_cache_ttl_seconds,
+        )
+        return response
+
     async def get_products(
         self,
         *,
@@ -154,6 +198,11 @@ class ProductService:
             session=session,
             query=normalized_query,
             category_ids=category_ids,
+        )
+        items = await self._attach_store_stock(
+            session=session,
+            items=items,
+            store_id=normalized_query.store_id,
         )
         total = await product_repository.count_active(
             session=session,
@@ -203,6 +252,11 @@ class ProductService:
             query=normalized_query,
             category_ids=category_ids,
         )
+        items = await self._attach_store_stock(
+            session=session,
+            items=items,
+            store_id=normalized_query.store_id,
+        )
         total = await product_repository.count_search_active(
             session=session,
             query=normalized_query,
@@ -222,6 +276,44 @@ class ProductService:
             ttl_seconds=settings.products.search_cache_ttl_seconds,
         )
         return response
+
+    async def _attach_store_stock(
+        self,
+        *,
+        session: AsyncSession,
+        items: list[ProductShortResponse],
+        store_id: int | None,
+    ) -> list[ProductShortResponse]:
+        if store_id is None or not items:
+            return items
+
+        product_ids = [item.id for item in items]
+        result = await session.execute(
+            select(ProductStock.product_id, ProductStock.stock_quantity)
+            .where(
+                ProductStock.product_id.in_(product_ids),
+                ProductStock.pickup_point_id == store_id,
+            ),
+        )
+        quantities = {product_id: quantity for product_id, quantity in result.all()}
+        enriched_items = []
+        for item in items:
+            quantity = quantities.get(item.id, 0)
+            is_available = quantity > 0
+            enriched_items.append(
+                item.model_copy(
+                    update={
+                        "store_stock_quantity": quantity,
+                        "store_is_available": is_available,
+                        "is_available": is_available,
+                        "stock_display": build_stock_display(
+                            is_available=is_available,
+                            stock_quantity=quantity,
+                        ),
+                    },
+                ),
+            )
+        return enriched_items
 
     async def get_popular_products(
         self,
@@ -250,6 +342,11 @@ class ProductService:
             session=session,
             query=query,
             category_ids=category_ids,
+        )
+        items = await self._attach_store_stock(
+            session=session,
+            items=items,
+            store_id=query.store_id,
         )
         response = ProductPopularResponse(items=items, total=len(items))
         await product_cache_service.set_popular(
@@ -336,6 +433,11 @@ class ProductService:
             query=query,
             created_from=created_from,
             category_ids=category_ids,
+        )
+        items = await self._attach_store_stock(
+            session=session,
+            items=items,
+            store_id=query.store_id,
         )
         response = ProductNewResponse(items=items, total=len(items))
         await product_cache_service.set_new(

@@ -59,6 +59,7 @@ class DiscountProductsQueryParams(BaseModel):
     limit: int = Field(default=24, ge=1, le=100)
     category_id: int | None = Field(default=None, ge=1)
     in_stock: bool = True
+    store_id: int | None = Field(default=None, ge=1)
     sort: DiscountProductsSort = "discount_desc"
 
     @property
