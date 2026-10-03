@@ -5,6 +5,7 @@ from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Path, Q
 from fastapi.responses import HTMLResponse
 from pydantic import ValidationError
 from source.utils.validation import format_pydantic_validation_error
+from source.utils.order import get_order_status_label
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from source.api.dependencies import get_current_user, require_permission, verify_access_token
@@ -2984,7 +2985,15 @@ async def confirm_admin_order(
     except OrderNotFoundError as error:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Заказ не найден") from error
     except OrderConfirmNotAllowedError as error:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Заказ нельзя подтвердить в текущем статусе") from error
+        current_status = get_order_status_label(error.current_status or "неизвестен")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"Заказ нельзя подтвердить: текущий статус — «{current_status}». "
+                "Подтверждение доступно для заказов со статусом «Новый» "
+                "или «Ожидает подтверждения»."
+            ),
+        ) from error
     except (OrderItemsNotFoundError, OrderUnavailableItemsError) as error:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Проблемы с остатками") from error
 

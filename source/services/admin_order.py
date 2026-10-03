@@ -422,7 +422,7 @@ class AdminOrderService:
         if order is None:
             raise OrderNotFoundError
         if order.status not in {"new", "awaiting_confirmation"}:
-            raise OrderConfirmNotAllowedError
+            raise OrderConfirmNotAllowedError(order.status)
 
         order_items = await order_item_repository.get_by_order_id(session=session, order_id=order.id)
         await stock_service.validate_order_reserve(

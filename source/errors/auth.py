@@ -364,7 +364,9 @@ class OrderUpdateNotAllowedError(Exception):
 
 
 class OrderConfirmNotAllowedError(Exception):
-    pass
+    def __init__(self, current_status: str | None = None) -> None:
+        super().__init__(current_status)
+        self.current_status = current_status
 
 
 class PaymentProviderCreateError(Exception):
@@ -469,4 +471,3 @@ class PhoneOtpInvalidError(Exception):
 
 class PhoneOtpExpiredError(Exception):
     pass
-
