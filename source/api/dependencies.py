@@ -22,6 +22,10 @@ async def select_store_context(
     session: FromDishka[AsyncSession] = None,
 ) -> None:
     selected_id = store_id if store_id is not None else x_store_id
+    if selected_id is None:
+        selected_id = await session.scalar(select(PickupPoint.id).where(
+            PickupPoint.is_active.is_(True), PickupPoint.is_deleted.is_(False),
+        ).order_by(PickupPoint.sort_order, PickupPoint.id).limit(1))
     if selected_id is not None:
         store = await session.scalar(select(PickupPoint).where(
             PickupPoint.id == selected_id,

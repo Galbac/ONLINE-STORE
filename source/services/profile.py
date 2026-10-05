@@ -3,6 +3,7 @@ from decimal import Decimal
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from source.config.settings import settings
+from source.services.store_catalog import StoreCatalogService
 from source.errors.auth import (
     AddressAccessDeniedError,
     AddressActiveOrderExistsError,
@@ -102,6 +103,10 @@ class ProfileService:
         added_items_count = 0
         for order_item in order_items:
             product = await product_repository.get_by_id(session=session, product_id=order_item.product_id)
+            if product is not None:
+                product = (await StoreCatalogService().scope_products(
+                    session=session, products=[product], store_id=cart.store_id,
+                ))[0]
             product_name = order_item.product_name
             if product is None:
                 warnings.append(
@@ -114,7 +119,7 @@ class ProfileService:
                 continue
 
             product_name = product.name
-            if not product.is_active or not product.is_available:
+            if not product.is_active or product.is_deleted or not product.is_available:
                 warnings.append(
                     RepeatOrderWarningResponse(
                         product_id=product.id,

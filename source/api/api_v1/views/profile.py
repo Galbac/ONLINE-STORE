@@ -4,7 +4,7 @@ from dishka.integrations.fastapi import FromDishka, inject
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from source.api.dependencies import get_current_user
+from source.api.dependencies import get_current_user, select_store_context
 from source.common.commiter import Commiter
 from source.db.models.user import User
 from source.errors.auth import (
@@ -46,7 +46,7 @@ from source.services.profile import ProfileService
 from source.services.profile_cache import ProfileCacheService
 from source.services.redis import RedisService
 
-router = APIRouter(tags=["profile"])
+router = APIRouter(tags=["profile"], dependencies=[Depends(select_store_context)])
 
 
 @router.post(

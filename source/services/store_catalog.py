@@ -47,10 +47,15 @@ class StoreCatalogService:
         stocks = await self.get_stocks(
             session=session, product_ids=[item.id for item in items], store_id=store_id,
         )
+        active_ids = set((await session.scalars(select(Product.id).where(
+            Product.id.in_([item.id for item in items]),
+            Product.is_active.is_(True), Product.is_deleted.is_(False),
+        ))).all())
         scoped = []
         for item in items:
             stock = stocks.get(item.id)
             quantity = stock.stock_quantity if stock else Decimal("0")
+            available = quantity > 0 and item.id in active_ids
             price = stock.price if stock is not None and stock.price is not None else item.price
             old_price = stock.old_price if stock is not None and stock.price is not None else item.old_price
             scoped.append(item.model_copy(update={
@@ -59,8 +64,8 @@ class StoreCatalogService:
                 "discount_percent": calculate_discount_percent(price=price, old_price=old_price),
                 "stock_quantity": quantity,
                 "store_stock_quantity": quantity,
-                "store_is_available": quantity > 0,
-                "is_available": quantity > 0,
-                "stock_display": build_detailed_stock_display(is_available=quantity > 0, stock_quantity=quantity, unit=item.unit) if isinstance(item, ProductDetailResponse) else build_stock_display(is_available=quantity > 0, stock_quantity=quantity),
+                "store_is_available": available,
+                "is_available": available,
+                "stock_display": build_detailed_stock_display(is_available=available, stock_quantity=quantity, unit=item.unit) if isinstance(item, ProductDetailResponse) else build_stock_display(is_available=available, stock_quantity=quantity),
             }))
         return scoped

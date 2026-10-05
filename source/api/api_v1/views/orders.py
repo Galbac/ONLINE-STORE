@@ -69,6 +69,7 @@ from source.services.delivery_cache import DeliveryCacheService
 from source.services.loyalty import LoyaltyService
 from source.services.notifications import EmailService, NotificationService, TelegramNotificationService
 from source.services.one_c import OneCIntegrationService
+from source.services.store_catalog import StoreCatalogService
 from source.services.order import OrderService
 from source.services.order_cache import OrderCacheService
 from source.services.payment import PaymentService
@@ -435,9 +436,12 @@ async def create_order(
                 session=session,
                 product_ids=[item.product_id for item in cart_items],
             )
+            products = await StoreCatalogService().scope_products(
+                session=session, products=products, store_id=cart.store_id,
+            )
             products_by_id = {p.id: p for p in products}
             items_total = sum(
-                (products_by_id[item.product_id].price * item.quantity for item in cart_items if item.product_id in products_by_id),
+                (products_by_id[item.product_id].price * item.quantity for item in cart_items if item.product_id in products_by_id and products_by_id[item.product_id].is_available and products_by_id[item.product_id].is_active and not products_by_id[item.product_id].is_deleted),
                 Decimal("0"),
             )
             if items_total < Decimal("1000.00"):

@@ -1,4 +1,5 @@
 from sqlalchemy import func, select
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from source.db.models.category import Category
@@ -21,6 +22,7 @@ class FavoriteRepository:
             select(Favorite).where(
                 Favorite.user_id == user_id,
                 Favorite.product_id == product_id,
+                Favorite.store_id == session.info.get("store_id"),
             ),
         )
         return result.scalar_one_or_none()
@@ -36,6 +38,7 @@ class FavoriteRepository:
             select(Favorite.id).where(
                 Favorite.user_id == user_id,
                 Favorite.product_id == product_id,
+                Favorite.store_id == session.info.get("store_id"),
             ),
         )
         return result.scalar_one_or_none() is not None
@@ -47,10 +50,10 @@ class FavoriteRepository:
         user_id: int,
         product_id: int,
     ) -> Favorite:
-        favorite = Favorite(user_id=user_id, product_id=product_id)
-        session.add(favorite)
-        await session.flush()
-        return favorite
+        await session.execute(insert(Favorite).values(
+            user_id=user_id, product_id=product_id, store_id=session.info.get("store_id"),
+        ).on_conflict_do_nothing(index_elements=[Favorite.user_id, Favorite.product_id, Favorite.store_id]))
+        return await self.get_by_user_and_product(session=session, user_id=user_id, product_id=product_id)
 
     async def delete(
         self,
@@ -69,7 +72,7 @@ class FavoriteRepository:
         query: FavoritesQueryParams,
     ) -> list[FavoriteProductResponse]:
         statement = (
-            self._base_statement(user_id=user_id)
+            self._base_statement(user_id=user_id, store_id=session.info.get("store_id"))
             .order_by(Favorite.created_date.desc())
             .limit(query.limit)
             .offset(query.offset)
@@ -86,19 +89,18 @@ class FavoriteRepository:
         session: AsyncSession,
         user_id: int,
     ) -> int:
-        subquery = self._base_statement(user_id=user_id).subquery()
+        subquery = self._base_statement(user_id=user_id, store_id=session.info.get("store_id")).subquery()
         result = await session.execute(select(func.count()).select_from(subquery))
         return int(result.scalar_one())
 
-    def _base_statement(self, *, user_id: int):
+    def _base_statement(self, *, user_id: int, store_id: int | None):
         return (
             select(Product, Category)
             .join(Favorite, Favorite.product_id == Product.id)
             .outerjoin(Category, Product.category_id == Category.id)
             .where(
                 Favorite.user_id == user_id,
-                Product.is_active.is_(True),
-                Product.is_deleted.is_(False),
+                Favorite.store_id == store_id,
             )
         )
 
@@ -116,8 +118,8 @@ class FavoriteRepository:
             discount_percent=calculate_discount_percent(price=product.price, old_price=product.old_price),
             unit=product.unit,
             product_type=product.product_type,
-            is_available=product.is_available,
-            stock_display=build_stock_display(is_available=product.is_available, stock_quantity=product.stock_quantity),
+            is_available=product.is_available and product.is_active and not product.is_deleted,
+            stock_display=build_stock_display(is_available=product.is_available and product.is_active and not product.is_deleted, stock_quantity=product.stock_quantity),
             category=product_category,
             created_at=product.created_date,
         )

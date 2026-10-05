@@ -90,7 +90,7 @@ class FavoriteService:
         if not user.is_active or user.is_deleted:
             raise InactiveUserError
 
-        query_hash = build_query_hash(query.model_dump())
+        query_hash = build_query_hash({**query.model_dump(), "store_id": session.info.get("store_id")})
         cached = await favorite_cache_service.get(redis_service=redis_service, user_id=user.id, query_hash=query_hash)
         if cached is not None:
             items = await StoreCatalogService().scope_responses(

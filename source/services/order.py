@@ -664,11 +664,21 @@ class OrderService:
             raise OrderPickupPointNotFoundError
         if not fulfillment_point.is_active:
             raise OrderPickupPointInactiveError
+        if cart.store_id != fulfilling_store_id:
+            raise OrderPriceChangedError
         original_products_by_id = products_by_id
         scoped_products = await StoreCatalogService().scope_products(
             session=session, products=products, store_id=fulfilling_store_id, for_update=True,
         )
         products_by_id = {product.id: product for product in scoped_products}
+        # Sold-out lines stay in the cart and never enter the paid order.
+        cart_items = [item for item in cart_items if (
+            (product := products_by_id.get(item.product_id)) is not None
+            and product.is_active and not product.is_deleted
+            and product.is_available and product.stock_quantity > 0
+        )]
+        if not cart_items:
+            raise CartEmptyError
         unavailable_items = stock_service.validate_order_items(cart_items=cart_items, products_by_id=products_by_id)
         if unavailable_items:
             raise OrderUnavailableItemsError(unavailable_items)
@@ -861,7 +871,8 @@ class OrderService:
                     user_id=user.id,
                     order_id=order.id,
                 )
-            await cart_item_repository.delete_by_cart_id(session=session, cart_id=cart.id)
+            for purchased_item in cart_items:
+                await cart_item_repository.delete(session=session, cart_item=purchased_item)
             await cart_repository.clear_promo_code(session=session, cart=cart)
             await one_c_integration_service.mark_order_pending_sync(order=order)
             payment_url = None

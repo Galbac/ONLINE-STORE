@@ -345,6 +345,8 @@ class ProductCacheService:
         await redis_service.delete_by_pattern("products:similar:*")
 
     async def invalidate_by_stock_changes(self, *, redis_service: RedisService, products: list) -> None:
+        await redis_service.delete_by_pattern("cart:*")
+        await redis_service.delete_by_pattern("favorites:*")
         await redis_service.delete_by_pattern("discounts:products:*")
         if not products:
             await self.invalidate_all(redis_service=redis_service)

@@ -31,7 +31,6 @@ from source.services.cart_cache import CartCacheService
 from source.services.redis import RedisService
 from source.services.stock import StockService
 from source.services.promo_code import PromoCodeService
-from source.utils.cart import calculate_cart_totals
 
 
 class CartCalculatorService:
@@ -80,7 +79,7 @@ class CartCalculatorService:
             else:
                 is_available = product.is_active and not product.is_deleted and product.is_available and product.stock_quantity > 0
                 if not is_available:
-                    stock_warning = "Товар сейчас недоступен"
+                    stock_warning = "Нет в наличии в выбранном магазине. Не включён в сумму заказа"
                     warnings.append(CartWarningResponse(product_id=product.id, message=stock_warning))
                 elif product.stock_quantity < cart_item.quantity:
                     stock_warning = "Недостаточно товара на складе"
@@ -111,10 +110,13 @@ class CartCalculatorService:
                     stock_warning=stock_warning,
                 )
 
+            if not item.is_available:
+                item = item.model_copy(update={"total_price": Decimal("0"), "final_price": Decimal("0"), "discount_amount": Decimal("0")})
             items.append(item)
-            subtotal += item.total_price
-            discount_amount += item.discount_amount
-            total_quantity += item.quantity
+            if item.is_available:
+                subtotal += item.total_price
+                discount_amount += item.discount_amount
+                total_quantity += item.quantity
 
         final_price = subtotal - discount_amount - promo_discount_amount
         if final_price < 0:
@@ -299,7 +301,7 @@ class CartService:
         cart = await cart_repository.get_by_id(session=session, cart_id=cart_item.cart_id)
         if cart is None:
             raise CartItemNotFoundError
-        if cart.user_id != user.id:
+        if cart.user_id != user.id or cart.store_id != session.info.get("store_id"):
             raise CartItemAccessDeniedError
 
         await cart_item_repository.delete(session=session, cart_item=cart_item)
@@ -342,7 +344,7 @@ class CartService:
         cart = await cart_repository.get_by_id(session=session, cart_id=cart_item.cart_id)
         if cart is None:
             raise CartItemNotFoundError
-        if cart.user_id != user.id:
+        if cart.user_id != user.id or cart.store_id != session.info.get("store_id"):
             raise CartItemAccessDeniedError
 
         product = await product_repository.get_by_id(session=session, product_id=cart_item.product_id)
@@ -465,11 +467,9 @@ class CartService:
         if cached_cart is not None:
             return cached_cart
 
-        cart = await self.get_or_create_cart(
-            session=session,
-            cart_repository=cart_repository,
-            user_id=user.id,
-        )
+        cart = await cart_repository.get_by_user_id(session=session, user_id=user.id)
+        if cart is None:
+            return cart_calculator_service.calculate(cart_id=0, cart_items=[], products_by_id={})
         response = await self.recalculate_current_cart(
             session=session,
             cart_item_repository=cart_item_repository,
@@ -495,8 +495,6 @@ class CartService:
         user_id: int,
     ) -> Cart:
         cart = await cart_repository.get_or_create_by_user_id(session=session, user_id=user_id)
-        if session.info.get("store_id") is not None:
-            cart.store_id = session.info["store_id"]
         return cart
 
     async def apply_promo_code(
@@ -642,24 +640,15 @@ class CartService:
         cart: Cart,
     ) -> CartResponse:
         items = await cart_item_repository.get_by_cart_id(session=session, cart_id=cart.id)
-        total_price, discount_amount, final_price = calculate_cart_totals(items)
+        products = await ProductRepository().get_by_ids(session=session, product_ids=[item.product_id for item in items])
+        products = await StoreCatalogService().scope_products(session=session, products=products, store_id=cart.store_id)
+        calculated = CartCalculatorService().calculate(cart_id=cart.id, cart_items=items, products_by_id={product.id: product for product in products})
         return CartResponse(
             id=cart.id,
-            items=[
-                CartItemResponse(
-                    id=item.id,
-                    product_id=item.product_id,
-                    name=item.name,
-                    quantity=item.quantity,
-                    unit=item.unit,
-                    price=item.price,
-                    total_price=item.total_price,
-                )
-                for item in items
-            ],
-            total_price=total_price,
-            discount_amount=discount_amount,
-            final_price=final_price,
+            items=[CartItemResponse.model_validate(item.model_dump()) for item in calculated.items],
+            total_price=calculated.subtotal,
+            discount_amount=calculated.discount_amount,
+            final_price=calculated.final_price,
         )
 
     async def recalculate_current_cart(
@@ -672,8 +661,6 @@ class CartService:
         cart_calculator_service: CartCalculatorService,
         cart: Cart,
     ) -> DetailedCartResponse:
-        if session.info.get("store_id") is not None:
-            cart.store_id = session.info["store_id"]
         cart_items = await cart_item_repository.get_by_cart_id(session=session, cart_id=cart.id)
         products = await product_repository.get_by_ids(
             session=session,
