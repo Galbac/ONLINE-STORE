@@ -941,7 +941,10 @@ class PaymentService:
                 reason=reason,
                 provider_refund_id=provider_refund.provider_refund_id,
             )
-            is_full_refund = refund_amount == available_amount
+            succeeded_amount = await refund_repository.sum_succeeded_by_payment_id(
+                session=session, payment_id=payment.id,
+            )
+            is_full_refund = succeeded_amount >= payment.amount
             refund_status = (
                 ("refunded" if is_full_refund else "partial_refunded")
                 if provider_refund.status == "succeeded"

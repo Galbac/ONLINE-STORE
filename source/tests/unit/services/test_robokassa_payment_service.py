@@ -1,12 +1,10 @@
 from decimal import Decimal
 import hashlib
-import json
 import urllib.parse
 import pytest
 
-from source.config.settings import settings
 from source.errors.auth import PaymentProviderCreateError
-from source.services.payment import PaymentProviderService, PaymentService, ProviderPayment
+from source.services.payment import PaymentProviderService, ProviderPayment
 
 
 @pytest.mark.asyncio
@@ -38,7 +36,7 @@ async def test_robokassa_create_payment_success():
 
     assert qs["MerchantLogin"] == ["demo_merchant"]
     assert qs["OutSum"] == ["1500.50"]
-    assert qs["InvId"] == ["0"]
+    assert qs["InvId"] == ["777"]
     assert qs["Description"] == ["Оплата заказа ORD-000999"]
     assert qs["IsTest"] == ["1"]
     assert qs["Email"] == ["user@example.com"]
@@ -47,7 +45,7 @@ async def test_robokassa_create_payment_success():
 
     # Проверяем контрольную сумму MD5
     # Формат: MerchantLogin:OutSum:InvId:Password#1:Shp_order_number=...:Shp_payment_id=...
-    expected_src = "demo_merchant:1500.50:0:secret_pass_1:Shp_order_number=ORD-000999:Shp_payment_id=777"
+    expected_src = "demo_merchant:1500.50:777:secret_pass_1:Shp_order_number=ORD-000999:Shp_payment_id=777"
     expected_sign = hashlib.md5(expected_src.encode("utf-8")).hexdigest()
     assert qs["SignatureValue"] == [expected_sign]
 

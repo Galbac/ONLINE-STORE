@@ -51,6 +51,7 @@ async def test_subscribe_push_success():
         created_date=now,
         updated_date=now,
     )
+    mock_repo.get_by_endpoint.return_value = None
     mock_repo.save_or_update.return_value = mock_subscription
 
     payload = PushSubscriptionCreate(
@@ -96,8 +97,10 @@ async def test_unsubscribe_push_success():
     mock_commiter = AsyncMock()
     mock_repo = AsyncMock()
 
+    mock_repo.get_by_endpoint.return_value = SimpleNamespace(user_id=1)
     res = await _unwrap(unsubscribe_push)(
         body={"endpoint": "https://push.example.com/sub/abc"},
+        current_user=SimpleNamespace(id=1),
         session=mock_session,
         commiter=mock_commiter,
         push_subscription_repository=mock_repo,

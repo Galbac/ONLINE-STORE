@@ -1,6 +1,7 @@
 from datetime import datetime
 from decimal import Decimal
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 import hashlib
 import hmac
 import json
@@ -13,7 +14,6 @@ from source.errors.auth import (
     PaymentAlreadyConfirmedError,
     PaymentAlreadyPaidError,
     PaymentAccessDeniedError,
-    PaymentCancellationStatusNotAllowedError,
     PaymentConfirmationNotSupportedError,
     PaymentNotFoundError,
     PaymentProviderCancelError,
@@ -140,14 +140,14 @@ class FakeProviderService(PaymentProviderService):
             status="pending",
         )
 
-    async def get_payment_status(self, *, provider_payment_id: str):
+    async def get_payment_status(self, *, provider_payment_id: str, session=None):
         self.calls.append({"provider_payment_id": provider_payment_id})
         return ProviderPaymentStatus(
             status=self.status,
             paid_at=datetime(2026, 5, 12, 10, 5, 0) if self.status == "paid" else None,
         )
 
-    async def confirm_payment(self, *, provider_payment_id: str, amount=None):
+    async def confirm_payment(self, *, provider_payment_id: str, amount=None, session=None, currency=None):
         self.calls.append({"provider_payment_id": provider_payment_id, "amount": amount})
         if not self.confirm_supported:
             raise PaymentConfirmationNotSupportedError
@@ -156,13 +156,13 @@ class FakeProviderService(PaymentProviderService):
             paid_at=datetime(2026, 5, 12, 10, 10, 0) if self.status in {"paid", "succeeded"} else None,
         )
 
-    async def cancel_payment(self, *, provider_payment_id: str, reason=None):
+    async def cancel_payment(self, *, provider_payment_id: str, reason=None, session=None):
         self.calls.append({"provider_payment_id": provider_payment_id, "reason": reason})
         if self.cancel_fail:
             raise PaymentProviderCancelError
         return ProviderPaymentStatus(status="cancelled")
 
-    async def refund_payment(self, *, provider_payment_id: str, amount, reason=None):
+    async def refund_payment(self, *, provider_payment_id: str, amount, reason=None, session=None, currency=None, operation_key=None):
         if self.refund_fail:
             from source.errors.auth import PaymentProviderRefundError
 
@@ -420,6 +420,9 @@ class FakeRefundRepository:
     async def sum_refunded_by_payment_id(self, *, session, payment_id: int):
         return self.refunded
 
+    async def sum_succeeded_by_payment_id(self, *, session, payment_id: int):
+        return self.refunded + (self.created.amount if self.created and self.created.status == "succeeded" else Decimal("0"))
+
     async def create(self, *, session, payment_id: int, amount, currency: str, status: str, reason: str | None, provider_refund_id: str | None):
         self.created = SimpleNamespace(
             id=301,
@@ -474,7 +477,8 @@ def build_webhook_body(*, event="payment.succeeded", event_id="evt-1", provider_
             "event": event,
             "object": {
                 "id": provider_payment_id,
-                "status": "succeeded",
+                "status": "canceled" if event == "payment.canceled" else "succeeded",
+                "amount": {"value": "2650.00", "currency": "RUB"},
                 "metadata": {"payment_id": "500"},
             },
         },
@@ -495,13 +499,15 @@ async def execute_webhook(*, body=None, payment="default", order=None, log_repos
     one_c_service = FakeOneCIntegrationService()
     commiter = FakeCommiter()
     signature = hmac.new(b"secret", body, hashlib.sha256).hexdigest()
+    provider = PaymentProviderService()
+    provider.request_yookassa = AsyncMock(return_value=json.loads(body)["object"])
     response = await PaymentWebhookService().process_webhook(
         raw_body=body,
         signature=signature,
-        session=None,
+        session=AsyncMock(),
         commiter=commiter,
         redis_service=None,
-        payment_provider_service=PaymentProviderService(),
+        payment_provider_service=provider,
         payment_repository=payment_repository,
         payment_webhook_log_repository=log_repository,
         order_repository=order_repository,
@@ -719,7 +725,7 @@ async def test_webhook_rejects_invalid_signature(monkeypatch):
 
     with pytest.raises(InvalidPaymentWebhookSignatureError):
         await PaymentWebhookService().process_webhook(
-            raw_body=build_webhook_body(),
+            raw_body=b"OutSum=2650.00&InvId=500&SignatureValue=bad&Shp_order_number=ORD-000101&Shp_payment_id=500",
             signature="bad",
             session=None,
             commiter=FakeCommiter(),
@@ -753,14 +759,12 @@ async def test_webhook_is_idempotent(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_webhook_logs_missing_payment(monkeypatch):
+async def test_webhook_retries_until_payment_is_committed(monkeypatch):
     monkeypatch.setattr("source.services.payment.settings.payments.provider_webhook_secret", "secret")
     monkeypatch.setattr("source.services.payment.settings.payments.webhook_verify_signature", True)
 
-    result = await execute_webhook(payment=None)
-
-    assert result.response.message == "Webhook processed"
-    assert result.log_repository.logs[0].processing_status == "payment_not_found"
+    with pytest.raises(RuntimeError, match="retry webhook"):
+        await execute_webhook(payment=None)
 
 
 @pytest.mark.asyncio

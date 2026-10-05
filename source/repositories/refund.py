@@ -31,11 +31,24 @@ class RefundRepository:
         await session.refresh(refund)
         return refund
 
-    async def sum_refunded_by_payment_id(self, *, session: AsyncSession, payment_id: int) -> Decimal:
+    async def sum_refunded_by_payment_id(
+        self, *, session: AsyncSession, payment_id: int
+    ) -> Decimal:
         result = await session.execute(
             select(func.coalesce(func.sum(Refund.amount), 0)).where(
                 Refund.payment_id == payment_id,
                 Refund.status.in_(("pending", "succeeded")),
+            ),
+        )
+        return Decimal(result.scalar_one())
+
+    async def sum_succeeded_by_payment_id(
+        self, *, session: AsyncSession, payment_id: int
+    ) -> Decimal:
+        result = await session.execute(
+            select(func.coalesce(func.sum(Refund.amount), 0)).where(
+                Refund.payment_id == payment_id,
+                Refund.status == "succeeded",
             ),
         )
         return Decimal(result.scalar_one())
