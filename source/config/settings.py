@@ -140,7 +140,7 @@ class AuthSettings(BaseSettings):
         alias="JWT_ACCESS_TOKEN_EXPIRE_MINUTES",
     )
     refresh_token_expire_minutes: int = Field(
-        default=60 * 24 * 30,
+        default=60 * 24 * 365,
         alias="JWT_REFRESH_TOKEN_EXPIRE_MINUTES",
     )
     refresh_rotation_enabled: bool = Field(default=True, alias="JWT_REFRESH_ROTATION_ENABLED")
