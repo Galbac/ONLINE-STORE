@@ -1,7 +1,7 @@
 from decimal import Decimal
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, Numeric, String, Text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, Numeric, String, Text, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from source.db.models.base import Base
@@ -10,6 +10,10 @@ from source.db.models.mixins.id_int_pk import IdBigIntPkMixin
 
 
 class PickupPoint(IdBigIntPkMixin, CreateUpdateMixin, Base):
+    __table_args__ = (
+        Index("uq_active_pickup_point_1c", "external_1c_id", unique=True,
+              postgresql_where=text("external_1c_id IS NOT NULL AND is_deleted = false")),
+    )
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     city: Mapped[str] = mapped_column(String(100), default="", server_default="", index=True, nullable=False)
     address: Mapped[str] = mapped_column(String(500), default="", server_default="", nullable=False)

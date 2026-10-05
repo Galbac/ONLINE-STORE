@@ -39,6 +39,7 @@ class ProductListQueryParams(BaseModel):
 
 
 class ProductDetailQueryParams(BaseModel):
+    store_id: int | None = Field(default=None, ge=1)
     with_similar: bool = False
     with_breadcrumbs: bool = True
 
@@ -81,6 +82,7 @@ class ProductPopularQueryParams(BaseModel):
 
 
 class ProductDiscountedQueryParams(BaseModel):
+    store_id: int | None = Field(default=None, ge=1)
     page: int = Field(default=1, ge=1)
     limit: int = Field(default=24, ge=1, le=100)
     category_id: int | None = Field(default=None, ge=1)
@@ -101,6 +103,7 @@ class ProductNewQueryParams(BaseModel):
 
 
 class ProductSimilarQueryParams(BaseModel):
+    store_id: int | None = Field(default=None, ge=1)
     limit: int = Field(default=8, ge=1, le=50)
     in_stock: bool = True
 
@@ -151,6 +154,8 @@ class ProductSeoResponse(BaseModel):
 
 
 class StoreStockResponse(BaseModel):
+    price: Decimal | None = None
+    old_price: Decimal | None = None
     store_id: int
     store_name: str
     address: str

@@ -206,6 +206,13 @@ class AdminDeliveryService:
     ) -> AdminPickupPointResponse:
         self._check_create_permission(user=user, permission_service=permission_service)
 
+        if data.external_1c_id is not None:
+            mapped_point = await pickup_point_repository.get_by_external_1c_id(
+                session=session, external_1c_id=data.external_1c_id,
+            )
+            if mapped_point is not None:
+                raise PickupPointAlreadyExistsError
+
         existing_pickup_point = await pickup_point_repository.get_by_city_and_address(
             session=session,
             city=data.city,
@@ -269,6 +276,13 @@ class AdminDeliveryService:
         pickup_point = await pickup_point_repository.get_by_id(session=session, pickup_point_id=point_id)
         if pickup_point is None or pickup_point.is_deleted:
             raise PickupPointAdminNotFoundError
+
+        if update_fields.get("external_1c_id") is not None:
+            mapped_point = await pickup_point_repository.get_by_external_1c_id(
+                session=session, external_1c_id=update_fields["external_1c_id"],
+            )
+            if mapped_point is not None and mapped_point.id != point_id:
+                raise PickupPointAlreadyExistsError
 
         next_city = update_fields.get("city", pickup_point.city)
         next_address = update_fields.get("address", pickup_point.address)
@@ -757,6 +771,7 @@ class AdminDeliveryService:
 
     def _build_pickup_point_response(self, *, pickup_point) -> AdminPickupPointResponse:
         return AdminPickupPointResponse(
+            external_1c_id=pickup_point.external_1c_id,
             id=pickup_point.id,
             name=pickup_point.name,
             city=pickup_point.city,

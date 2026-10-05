@@ -1,9 +1,11 @@
 from decimal import Decimal
 
 from dishka.integrations.fastapi import FromDishka, inject
-from fastapi import APIRouter, HTTPException, Path, Query, status
+from fastapi import Depends, APIRouter, HTTPException, Path, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from source.services.store_catalog import StoreCatalogService
+from source.api.dependencies import select_store_context
 from source.config.settings import settings
 from source.errors.category import CategoryNotFoundError
 from source.errors.product import ProductNotFoundError
@@ -46,7 +48,7 @@ from source.services.redis import RedisService
 from source.utils.search import normalize_search_query
 from source.utils.slug import normalize_slug, validate_slug
 
-router = APIRouter(tags=["products"])
+router = APIRouter(tags=["products"], dependencies=[Depends(select_store_context)])
 
 
 @router.get(
@@ -73,7 +75,7 @@ async def get_product_facets(
             product_repository=product_repository,
             category_repository=category_repository,
             category_id=category_id,
-            store_id=store_id,
+            store_id=store_id or session.info.get("store_id"),
         )
     except CategoryNotFoundError as error:
         raise HTTPException(
@@ -118,7 +120,7 @@ async def get_new_products(
                 category_id=category_id,
                 in_stock=in_stock,
                 days=days,
-                store_id=store_id,
+                store_id=store_id or session.info.get("store_id"),
             ),
         )
     except CategoryNotFoundError as error:
@@ -145,6 +147,7 @@ async def get_discounted_products(
     category_id: int | None = Query(default=None, ge=1),
     in_stock: bool = True,
     sort: ProductDiscountedSort = "discount_desc",
+    store_id: int | None = Query(default=None, ge=1),
     session: FromDishka[AsyncSession] = None,
     redis_service: FromDishka[RedisService] = None,
     product_service: FromDishka[ProductService] = None,
@@ -160,6 +163,7 @@ async def get_discounted_products(
             product_repository=product_repository,
             category_repository=category_repository,
             query=ProductDiscountedQueryParams(
+                store_id=store_id or session.info.get("store_id"),
                 page=page,
                 limit=limit,
                 category_id=category_id,
@@ -210,7 +214,7 @@ async def get_popular_products(
                 category_id=category_id,
                 period_days=period_days,
                 in_stock=in_stock,
-                store_id=store_id,
+                store_id=store_id or session.info.get("store_id"),
             ),
         )
     except CategoryNotFoundError as error:
@@ -276,7 +280,7 @@ async def search_products(
                 product_type=product_type,
                 tag=tag,
                 article=article,
-                store_id=store_id,
+                store_id=store_id or session.info.get("store_id"),
                 sort=sort,
             ),
         )
@@ -406,6 +410,7 @@ async def get_similar_products(
     product_id: int = Path(ge=1),
     limit: int = Query(default=settings.products.similar_default_limit, ge=1, le=50),
     in_stock: bool = True,
+    store_id: int | None = Query(default=None, ge=1),
     session: FromDishka[AsyncSession] = None,
     redis_service: FromDishka[RedisService] = None,
     product_service: FromDishka[ProductService] = None,
@@ -420,6 +425,7 @@ async def get_similar_products(
             product_repository=product_repository,
             product_id=product_id,
             query=ProductSimilarQueryParams(
+                store_id=store_id or session.info.get("store_id"),
                 limit=limit,
                 in_stock=in_stock,
             ),
@@ -447,6 +453,7 @@ async def get_product_by_slug(
     slug: str = Path(min_length=2, max_length=200),
     with_similar: bool = False,
     with_breadcrumbs: bool = True,
+    store_id: int | None = Query(default=None, ge=1),
     session: FromDishka[AsyncSession] = None,
     redis_service: FromDishka[RedisService] = None,
     product_service: FromDishka[ProductService] = None,
@@ -472,6 +479,7 @@ async def get_product_by_slug(
             category_repository=category_repository,
             slug=normalized_slug,
             query=ProductDetailQueryParams(
+                store_id=store_id or session.info.get("store_id"),
                 with_similar=with_similar,
                 with_breadcrumbs=with_breadcrumbs,
             ),
@@ -499,6 +507,7 @@ async def get_product_by_id(
     product_id: int = Path(ge=1),
     with_similar: bool = False,
     with_breadcrumbs: bool = True,
+    store_id: int | None = Query(default=None, ge=1),
     session: FromDishka[AsyncSession] = None,
     redis_service: FromDishka[RedisService] = None,
     product_service: FromDishka[ProductService] = None,
@@ -517,6 +526,7 @@ async def get_product_by_id(
             category_repository=category_repository,
             product_id=product_id,
             query=ProductDetailQueryParams(
+                store_id=store_id or session.info.get("store_id"),
                 with_similar=with_similar,
                 with_breadcrumbs=with_breadcrumbs,
             ),
@@ -579,7 +589,7 @@ async def get_products(
                 product_type=product_type,
                 tag=tag,
                 article=article,
-                store_id=store_id,
+                store_id=store_id or session.info.get("store_id"),
                 sort=sort,
             ),
         )
@@ -638,12 +648,15 @@ async def get_product_recommendations(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Товар не найден")
 
     limit_count = limit.default if hasattr(limit, "default") else limit
-    similar_params = ProductSimilarQueryParams(limit=int(limit_count))
-    items = await product_repository.get_similar_active(
+    similar_params = ProductSimilarQueryParams(limit=int(limit_count), store_id=session.info.get("store_id"))
+    items = await product_repository.get_similar_by_category(
         session=session,
         product_id=product_id,
         category_id=product.category_id,
         query=similar_params,
+    )
+    items = await StoreCatalogService().scope_responses(
+        session=session, items=items, store_id=session.info.get("store_id"),
     )
     return ProductRecommendationResponse(
         product_id=product_id,

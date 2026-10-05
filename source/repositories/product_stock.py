@@ -9,6 +9,17 @@ from source.db.models.product_stock import ProductStock
 
 
 class ProductStockRepository:
+    async def upsert_price(self, *, session, product_id, pickup_point_id, price, old_price):
+        now = datetime.now(timezone.utc)
+        statement = insert(ProductStock).values(
+            product_id=product_id, pickup_point_id=pickup_point_id,
+            price=price, old_price=old_price, price_updated_at=now,
+        ).on_conflict_do_update(
+            constraint="uq_product_pickup_point_stock",
+            set_={"price": price, "old_price": old_price, "price_updated_at": now},
+        )
+        await session.execute(statement)
+
     async def get_by_product_and_point(
         self,
         *,

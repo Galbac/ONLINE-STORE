@@ -3,19 +3,20 @@ from source.schemas.pydantic.cart import CartResponse, CartSummaryResponse
 
 
 class CartCacheService:
-    def _cart_key(self, user_id: int) -> str:
-        return f"cart:{user_id}"
+    def _cart_key(self, user_id: int, store_id: int | None = None) -> str:
+        return f"cart:{user_id}" if store_id is None else f"cart:{user_id}:store:{store_id}"
 
-    def _summary_key(self, user_id: int) -> str:
-        return f"cart:summary:{user_id}"
+    def _summary_key(self, user_id: int, store_id: int | None = None) -> str:
+        return f"cart:summary:{user_id}" if store_id is None else f"cart:summary:{user_id}:store:{store_id}"
 
     async def get_cart(
         self,
         *,
         redis_service: RedisService,
         user_id: int,
+        store_id: int | None = None,
     ) -> CartResponse | None:
-        cached_cart = await redis_service.get(self._cart_key(user_id))
+        cached_cart = await redis_service.get(self._cart_key(user_id, store_id))
         if cached_cart is None:
             return None
         if isinstance(cached_cart, bytes):
@@ -27,11 +28,12 @@ class CartCacheService:
         *,
         redis_service: RedisService,
         user_id: int,
+        store_id: int | None = None,
         response: CartResponse,
         ttl_seconds: int,
     ) -> None:
         await redis_service.set(
-            self._cart_key(user_id),
+            self._cart_key(user_id, store_id),
             response.model_dump_json(),
             ttl_seconds=ttl_seconds,
         )
@@ -43,6 +45,7 @@ class CartCacheService:
         user_id: int,
     ) -> None:
         await redis_service.delete(self._cart_key(user_id))
+        await redis_service.delete_by_pattern(f"cart:{user_id}:store:*")
         await self.invalidate_summary(redis_service=redis_service, user_id=user_id)
 
     async def get_summary(
@@ -50,8 +53,9 @@ class CartCacheService:
         *,
         redis_service: RedisService,
         user_id: int,
+        store_id: int | None = None,
     ) -> CartSummaryResponse | None:
-        cached_summary = await redis_service.get(self._summary_key(user_id))
+        cached_summary = await redis_service.get(self._summary_key(user_id, store_id))
         if cached_summary is None:
             return None
         if isinstance(cached_summary, bytes):
@@ -63,11 +67,12 @@ class CartCacheService:
         *,
         redis_service: RedisService,
         user_id: int,
+        store_id: int | None = None,
         response: CartSummaryResponse,
         ttl_seconds: int,
     ) -> None:
         await redis_service.set(
-            self._summary_key(user_id),
+            self._summary_key(user_id, store_id),
             response.model_dump_json(),
             ttl_seconds=ttl_seconds,
         )
@@ -79,6 +84,7 @@ class CartCacheService:
         user_id: int,
     ) -> None:
         await redis_service.delete(self._summary_key(user_id))
+        await redis_service.delete_by_pattern(f"cart:summary:{user_id}:store:*")
 
     async def invalidate_all_summaries(self, *, redis_service: RedisService) -> None:
         await redis_service.delete_by_pattern("cart:summary:*")

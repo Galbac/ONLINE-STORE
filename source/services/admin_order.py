@@ -542,6 +542,7 @@ class AdminOrderService:
             products = await product_repository.get_by_ids(
                 session=session,
                 product_ids=[item.product_id for item in order_items],
+                for_update=True,
             )
             products_by_id = {product.id: product for product in products}
 
@@ -555,6 +556,7 @@ class AdminOrderService:
             order.cancelled_by_user_id = user.id
             if data.release_stock:
                 released_products = await stock_service.release_reserved_items(
+                    store_id=getattr(order, "fulfilling_store_id", None),
                     product_repository=product_repository,
                     session=session,
                     products_by_id=products_by_id,

@@ -3,6 +3,7 @@ from decimal import Decimal
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from source.services.store_catalog import StoreCatalogService
 from source.db.models.cart import Cart
 from source.db.models.product import Product
 from source.config.settings import settings
@@ -175,7 +176,7 @@ class CartService:
         if not user.is_active or user.is_deleted:
             raise InactiveUserError
 
-        cached_summary = await cart_cache_service.get_summary(redis_service=redis_service, user_id=user.id)
+        cached_summary = await cart_cache_service.get_summary(redis_service=redis_service, user_id=user.id, store_id=session.info.get("store_id"))
         if cached_summary is not None:
             return cached_summary
 
@@ -189,6 +190,7 @@ class CartService:
             user_id=user.id,
         )
         await cart_cache_service.set_summary(
+            store_id=session.info.get("store_id"),
             redis_service=redis_service,
             user_id=user.id,
             response=response,
@@ -346,6 +348,9 @@ class CartService:
         product = await product_repository.get_by_id(session=session, product_id=cart_item.product_id)
         if product is None or not product.is_active or product.is_deleted:
             raise CartProductNotFoundError
+        product = (await StoreCatalogService().scope_products(
+            session=session, products=[product], store_id=session.info.get("store_id") or getattr(cart, "store_id", None),
+        ))[0]
         if not product.is_available:
             raise CartProductUnavailableError
 
@@ -388,21 +393,24 @@ class CartService:
         if not user.is_active or user.is_deleted:
             raise InactiveUserError
 
-        product = await product_repository.get_by_id(session=session, product_id=product_id)
-        if product is None:
-            raise CartProductNotFoundError
-        if not product.is_active or product.is_deleted:
-            raise CartProductNotFoundError
-        if not product.is_available:
-            raise CartProductUnavailableError
-
-        stock_service.validate_quantity(product=product, quantity=quantity)
-
         cart = await self.get_or_create_cart(
             session=session,
             cart_repository=cart_repository,
             user_id=user.id,
         )
+        product = await product_repository.get_by_id(session=session, product_id=product_id)
+        if product is None:
+            raise CartProductNotFoundError
+        if not product.is_active or product.is_deleted:
+            raise CartProductNotFoundError
+        product = (await StoreCatalogService().scope_products(
+            session=session, products=[product], store_id=session.info.get("store_id") or getattr(cart, "store_id", None),
+        ))[0]
+        if not product.is_available:
+            raise CartProductUnavailableError
+
+        stock_service.validate_quantity(product=product, quantity=quantity)
+
         cart_item = await cart_item_repository.get_by_cart_and_product_id(
             session=session,
             cart_id=cart.id,
@@ -453,7 +461,7 @@ class CartService:
         if not user.is_active or user.is_deleted:
             raise InactiveUserError
 
-        cached_cart = await cart_cache_service.get_cart(redis_service=redis_service, user_id=user.id)
+        cached_cart = await cart_cache_service.get_cart(redis_service=redis_service, user_id=user.id, store_id=session.info.get("store_id"))
         if cached_cart is not None:
             return cached_cart
 
@@ -471,6 +479,7 @@ class CartService:
             cart=cart,
         )
         await cart_cache_service.set_cart(
+            store_id=session.info.get("store_id"),
             redis_service=redis_service,
             user_id=user.id,
             response=response,
@@ -485,7 +494,10 @@ class CartService:
         cart_repository: CartRepository,
         user_id: int,
     ) -> Cart:
-        return await cart_repository.get_or_create_by_user_id(session=session, user_id=user_id)
+        cart = await cart_repository.get_or_create_by_user_id(session=session, user_id=user_id)
+        if session.info.get("store_id") is not None:
+            cart.store_id = session.info["store_id"]
+        return cart
 
     async def apply_promo_code(
         self,
@@ -522,6 +534,10 @@ class CartService:
         products = await product_repository.get_by_ids(
             session=session,
             product_ids=[cart_item.product_id for cart_item in cart_items],
+        )
+        products = await StoreCatalogService().scope_products(
+            session=session, products=products,
+            store_id=session.info.get("store_id") or getattr(cart, "store_id", None),
         )
         products_by_id = {product.id: product for product in products}
         base_response = cart_calculator_service.calculate(
@@ -656,10 +672,16 @@ class CartService:
         cart_calculator_service: CartCalculatorService,
         cart: Cart,
     ) -> DetailedCartResponse:
+        if session.info.get("store_id") is not None:
+            cart.store_id = session.info["store_id"]
         cart_items = await cart_item_repository.get_by_cart_id(session=session, cart_id=cart.id)
         products = await product_repository.get_by_ids(
             session=session,
             product_ids=[cart_item.product_id for cart_item in cart_items],
+        )
+        products = await StoreCatalogService().scope_products(
+            session=session, products=products,
+            store_id=session.info.get("store_id") or getattr(cart, "store_id", None),
         )
         promo_code = None
         promo_discount_amount = Decimal("0")

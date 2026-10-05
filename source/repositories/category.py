@@ -1,6 +1,7 @@
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import exists, and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from source.db.models.product_stock import ProductStock
 from source.db.models.category import Category
 from source.db.models.product import Product
 from source.schemas.pydantic.category import (
@@ -14,6 +15,16 @@ from source.schemas.pydantic.admin_category import AdminCategoryCreateRequest, A
 
 
 class CategoryRepository:
+    def _available_products(self, store_id):
+        common = (Product.is_active.is_(True), Product.is_deleted.is_(False))
+        if store_id is None:
+            return (*common, Product.is_available.is_(True), Product.stock_quantity > 0)
+        return (*common, exists(select(ProductStock.id).where(
+            ProductStock.product_id == Product.id,
+            ProductStock.pickup_point_id == store_id,
+            ProductStock.stock_quantity > 0,
+        )))
+
     async def exists_by_image_file_id(self, *, session: AsyncSession, file_id: int) -> bool:
         result = await session.execute(select(Category.id).where(Category.image_file_id == file_id))
         return result.scalar_one_or_none() is not None
@@ -111,10 +122,7 @@ class CategoryRepository:
                 Product,
                 and_(
                     Product.category_id == Category.id,
-                    Product.is_active.is_(True),
-                    Product.is_deleted.is_(False),
-                    Product.is_available.is_(True),
-                    Product.stock_quantity > 0,
+                    *self._available_products(query.store_id),
                 ),
             )
             .where(
@@ -347,10 +355,7 @@ class CategoryRepository:
                 Product,
                 and_(
                     Product.category_id == Category.id,
-                    Product.is_active.is_(True),
-                    Product.is_deleted.is_(False),
-                    Product.is_available.is_(True),
-                    Product.stock_quantity > 0,
+                    *self._available_products(session.info.get("store_id")),
                 ),
             )
             .where(
@@ -431,10 +436,7 @@ class CategoryRepository:
                 Product,
                 and_(
                     Product.category_id == Category.id,
-                    Product.is_active.is_(True),
-                    Product.is_deleted.is_(False),
-                    Product.is_available.is_(True),
-                    Product.stock_quantity > 0,
+                    *self._available_products(session.info.get("store_id")),
                 ),
             )
             .where(

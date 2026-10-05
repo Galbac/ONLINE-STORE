@@ -3,6 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from source.api.dependencies import select_store_context
 from source.api.dependencies import get_current_user
 from source.db.models.user import User
 from source.common.commiter import Commiter
@@ -15,7 +16,7 @@ from source.services.favorite import FavoriteService
 from source.services.favorite_cache import FavoriteCacheService
 from source.services.redis import RedisService
 
-router = APIRouter(tags=["favorites"])
+router = APIRouter(tags=["favorites"], dependencies=[Depends(select_store_context)])
 
 
 @router.delete(

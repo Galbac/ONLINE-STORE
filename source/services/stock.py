@@ -1,4 +1,5 @@
 from decimal import Decimal
+from datetime import datetime
 
 from source.config.settings import settings
 from source.db.models.product import Product
@@ -11,6 +12,7 @@ from source.errors.auth import (
     OrderUnavailableItemsError,
 )
 from source.utils.cart import is_quantity_valid_for_step
+from source.services.store_catalog import StoreCatalogService
 
 
 class StockService:
@@ -88,12 +90,39 @@ class StockService:
                 )
         return unavailable_items
 
-    async def reserve_items(self, *, products_by_id: dict[int, Product], cart_items: list) -> None:
+    async def reserve_items(self, *, products_by_id: dict[int, Product], cart_items: list, session=None, store_id=None) -> None:
+        if store_id is not None:
+            stocks = await StoreCatalogService().get_stocks(
+                session=session, product_ids=list(products_by_id), store_id=store_id, for_update=True,
+            )
+            for item in cart_items:
+                stock = stocks.get(item.product_id)
+                if stock is None or stock.stock_quantity < item.quantity:
+                    raise OrderUnavailableItemsError([{
+                        "product_id": item.product_id, "name": item.name,
+                        "reason": "Недостаточно остатка в выбранном магазине",
+                        "requested_quantity": item.quantity,
+                        "available_quantity": stock.stock_quantity if stock else Decimal("0"),
+                    }])
+                stock.stock_quantity -= item.quantity
+                stock.reserved_quantity += item.quantity
+                stock.stock_updated_at = datetime.now(settings.tz)
         for item in cart_items:
             product = products_by_id[item.product_id]
-            product.stock_quantity -= item.quantity
+            product.stock_quantity = max(Decimal("0"), product.stock_quantity - item.quantity) if store_id is not None else product.stock_quantity - item.quantity
 
-    async def release_reserved_items(self, *, product_repository, session, products_by_id: dict[int, Product], order_items: list):
+    async def release_reserved_items(self, *, product_repository, session, products_by_id: dict[int, Product], order_items: list, store_id=None):
+        if store_id is not None:
+            stocks = await StoreCatalogService().get_stocks(
+                session=session, product_ids=list(products_by_id), store_id=store_id, for_update=True,
+            )
+            for item in order_items:
+                stock = stocks.get(item.product_id)
+                if stock is None:
+                    raise ValueError("Остаток магазина для отменяемого заказа не найден")
+                stock.stock_quantity += item.quantity
+                stock.reserved_quantity = max(Decimal("0"), stock.reserved_quantity - item.quantity)
+                stock.stock_updated_at = datetime.now(settings.tz)
         return await product_repository.release_stock(
             session=session,
             products_by_id=products_by_id,

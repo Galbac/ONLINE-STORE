@@ -8,6 +8,12 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, unquote, urlparse
 from urllib.request import Request, urlopen
 
+from sqlalchemy.ext.asyncio import AsyncSession
+from source.db.models.product_stock import ProductStock
+from sqlalchemy import select, func
+from source.repositories.product_stock import ProductStockRepository
+from source.repositories.pickup_point import PickupPointRepository
+
 from source.config.settings import settings
 from source.errors.auth import AdminAuthAccessDeniedError, InactiveUserError, OneCIntegrationDisabledError, OneCSyncAlreadyRunningError, OneCSyncError
 from source.schemas.pydantic.one_c import (
@@ -364,7 +370,7 @@ class OneCOrderService:
         )
         pickup_points = await pickup_point_repository.get_by_ids(
             session=session,
-            pickup_point_ids=[order.pickup_point_id for order in orders if order.pickup_point_id is not None],
+            pickup_point_ids=list({getattr(order, "fulfilling_store_id", None) or order.pickup_point_id for order in orders} - {None}),
         )
         delivery_time_slots = await delivery_time_slot_repository.get_by_ids(
             session=session,
@@ -390,7 +396,7 @@ class OneCOrderService:
                 order_items=items_by_order_id.get(order.id, []),
                 products_by_id=products_by_id,
                 address=addresses_by_id.get(order.address_id),
-                pickup_point=pickup_points_by_id.get(order.pickup_point_id),
+                pickup_point=pickup_points_by_id.get(getattr(order, "fulfilling_store_id", None) or order.pickup_point_id),
                 payment=payments_by_order_id.get(order.id),
                 delivery_time_slot=slots_by_id.get(order.delivery_time_slot_id),
             )
@@ -880,6 +886,10 @@ class ProductPriceSyncService:
             session=session,
             external_1c_ids=product_external_ids,
         )
+        if isinstance(session, AsyncSession) and products:
+            await product_repository.get_by_ids(
+                session=session, product_ids=[product.id for product in products], for_update=True,
+            )
         products_by_external_id = {
             product.external_1c_id: product
             for product in products
@@ -890,7 +900,8 @@ class ProductPriceSyncService:
         skipped = 0
         updated_products = []
         history_payloads: list[dict] = []
-        seen_external_ids: set[str] = set()
+        seen_external_ids: set[tuple[str, str | None]] = set()
+        updated_store_products: set[int] = set()
 
         for item in data.items:
             item_errors = self._validate_item(item=item)
@@ -898,7 +909,8 @@ class ProductPriceSyncService:
                 skipped += 1
                 errors.extend(item_errors)
                 continue
-            if item.product_external_1c_id in seen_external_ids:
+            batch_key = (item.product_external_1c_id, item.warehouse_external_1c_id)
+            if batch_key in seen_external_ids:
                 skipped += 1
                 errors.append(
                     OneCImportItemErrorResponse(
@@ -908,7 +920,7 @@ class ProductPriceSyncService:
                     ),
                 )
                 continue
-            seen_external_ids.add(item.product_external_1c_id)
+            seen_external_ids.add(batch_key)
 
             product = products_by_external_id.get(item.product_external_1c_id)
             if product is None:
@@ -920,6 +932,31 @@ class ProductPriceSyncService:
                         field="product_external_1c_id",
                     ),
                 )
+                continue
+
+            if item.warehouse_external_1c_id is not None:
+                point = await PickupPointRepository().get_by_external_1c_id(
+                    session=session, external_1c_id=item.warehouse_external_1c_id,
+                )
+                if point is None or not point.is_active or point.is_deleted:
+                    skipped += 1
+                    errors.append(OneCImportItemErrorResponse(
+                        product_external_1c_id=item.product_external_1c_id,
+                        message="Магазин не найден или недоступен", field="warehouse_external_1c_id",
+                    ))
+                    continue
+                if item.currency != product.currency:
+                    skipped += 1
+                    errors.append(OneCImportItemErrorResponse(
+                        product_external_1c_id=item.product_external_1c_id,
+                        message="Валюта цены филиала должна совпадать с валютой товара", field="currency",
+                    ))
+                    continue
+                await ProductStockRepository().upsert_price(
+                    session=session, product_id=product.id, pickup_point_id=point.id,
+                    price=item.price, old_price=item.old_price,
+                )
+                updated_store_products.add(product.id)
                 continue
 
             previous_price = product.price
@@ -947,7 +984,7 @@ class ProductPriceSyncService:
             await product_price_history_repository.bulk_create(session=session, items=history_payloads)
 
         return OneCImportResultResponse(
-            updated=len({product.id for product in updated_products if product.id is not None}),
+            updated=len({product.id for product in updated_products if product.id is not None} | updated_store_products),
             skipped=skipped,
             errors=errors,
         )
@@ -970,6 +1007,11 @@ class ProductPriceSyncService:
                     field="old_price",
                 ),
             )
+        if item.old_price is not None and item.old_price < item.price:
+            errors.append(OneCImportItemErrorResponse(
+                product_external_1c_id=item.product_external_1c_id,
+                message="Старая цена должна быть не меньше текущей", field="old_price",
+            ))
         if item.currency not in settings.admin_delivery.supported_currencies:
             errors.append(
                 OneCImportItemErrorResponse(
@@ -999,6 +1041,10 @@ class ProductStockSyncService:
             session=session,
             external_1c_ids=product_external_ids,
         )
+        if isinstance(session, AsyncSession) and products:
+            await product_repository.get_by_ids(
+                session=session, product_ids=[product.id for product in products], for_update=True,
+            )
         products_by_external_id = {
             product.external_1c_id: product
             for product in products
@@ -1042,6 +1088,52 @@ class ProductStockSyncService:
                 )
                 continue
 
+            if item.warehouse_external_1c_id:
+                point_repository = pickup_point_repository or PickupPointRepository()
+                stock_repository = product_stock_repository or ProductStockRepository()
+                pickup_point = await point_repository.get_by_external_1c_id(
+                    session=session, external_1c_id=item.warehouse_external_1c_id,
+                )
+                if pickup_point is None or not pickup_point.is_active or pickup_point.is_deleted:
+                    skipped += 1
+                    errors.append(OneCImportItemErrorResponse(
+                        product_external_1c_id=item.product_external_1c_id,
+                        message="Магазин не найден или недоступен", field="warehouse_external_1c_id",
+                    ))
+                    continue
+                previous_store_stock = await stock_repository.get_by_product_and_point(
+                    session=session, product_id=product.id, pickup_point_id=pickup_point.id,
+                )
+                previous_quantity = previous_store_stock.stock_quantity if previous_store_stock else Decimal("0")
+                if previous_quantity != item.stock_quantity:
+                    movement_payloads.append({
+                        "product_id": product.id, "user_id": None, "operation": "set",
+                        "quantity": item.stock_quantity, "previous_stock_quantity": previous_quantity,
+                        "new_stock_quantity": item.stock_quantity, "old_quantity": previous_quantity,
+                        "new_quantity": item.stock_quantity, "low_stock_threshold": product.low_stock_threshold,
+                        "source": "1c", "warehouse_external_1c_id": item.warehouse_external_1c_id,
+                        "created_at": now, "reason": "1C warehouse stock import",
+                    })
+                await stock_repository.upsert_stock(
+                    session=session, product_id=product.id, pickup_point_id=pickup_point.id,
+                    stock_quantity=item.stock_quantity,
+                    reserved_quantity=item.reserved_quantity if item.reserved_quantity is not None else 0,
+                    low_stock_threshold=product.low_stock_threshold,
+                )
+                # Global fields remain an aggregate for integrations using the legacy contract.
+                await session.flush()
+                total_stock = await session.scalar(select(func.coalesce(func.sum(ProductStock.stock_quantity), 0)).where(
+                    ProductStock.product_id == product.id,
+                ))
+                product.reserved_quantity = await session.scalar(select(func.coalesce(func.sum(ProductStock.reserved_quantity), 0)).where(
+                    ProductStock.product_id == product.id,
+                ))
+                product.stock_quantity = total_stock
+                product.is_available = total_stock > 0
+                product.stock_updated_at = now
+                updated_products.append(product)
+                continue
+
             previous_stock_quantity = product.stock_quantity
             if previous_stock_quantity != item.stock_quantity:
                 movement_payloads.append(
@@ -1061,21 +1153,6 @@ class ProductStockSyncService:
                         "reason": "1C stock import",
                     },
                 )
-
-            if item.warehouse_external_1c_id and pickup_point_repository and product_stock_repository:
-                pickup_point = await pickup_point_repository.get_by_external_1c_id(
-                    session=session,
-                    external_1c_id=item.warehouse_external_1c_id,
-                )
-                if pickup_point is not None:
-                    await product_stock_repository.upsert_stock(
-                        session=session,
-                        product_id=product.id,
-                        pickup_point_id=pickup_point.id,
-                        stock_quantity=item.stock_quantity,
-                        reserved_quantity=item.reserved_quantity if item.reserved_quantity is not None else 0,
-                        low_stock_threshold=product.low_stock_threshold,
-                    )
 
             product.stock_quantity = item.stock_quantity
             product.reserved_quantity = item.reserved_quantity if item.reserved_quantity is not None else 0
@@ -2319,7 +2396,7 @@ class AdminOneCIntegrationService:
             )
             pickup_points = await pickup_point_repository.get_by_ids(
                 session=session,
-                pickup_point_ids=[order.pickup_point_id for order in orders if order.pickup_point_id is not None],
+                pickup_point_ids=list({getattr(order, "fulfilling_store_id", None) or order.pickup_point_id for order in orders} - {None}),
             )
             delivery_time_slots = await delivery_time_slot_repository.get_by_ids(
                 session=session,
@@ -2346,7 +2423,7 @@ class AdminOneCIntegrationService:
                     order_items=items_by_order_id.get(order.id, []),
                     products_by_id=products_by_id,
                     address=addresses_by_id.get(order.address_id),
-                    pickup_point=pickup_points_by_id.get(order.pickup_point_id),
+                    pickup_point=pickup_points_by_id.get(getattr(order, "fulfilling_store_id", None) or order.pickup_point_id),
                     payment=payments_by_order_id.get(order.id),
                     delivery_time_slot=slots_by_id.get(order.delivery_time_slot_id),
                 )

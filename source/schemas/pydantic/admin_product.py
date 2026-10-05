@@ -13,6 +13,31 @@ AdminProductSort = Literal["newest", "name_asc", "price_asc", "stock_asc"]
 ProductStockOperation = Literal["set", "increase", "decrease"]
 
 
+class AdminProductStoreUpdateRequest(BaseModel):
+    stock_quantity: Decimal | None = Field(default=None, ge=0, max_digits=12, decimal_places=3)
+    price: Decimal | None = Field(default=None, ge=0, max_digits=12, decimal_places=2)
+    old_price: Decimal | None = Field(default=None, ge=0, max_digits=12, decimal_places=2)
+
+    @model_validator(mode="after")
+    def validate_update(self) -> "AdminProductStoreUpdateRequest":
+        if not self.model_fields_set:
+            raise ValueError("Укажите цену или остаток")
+        if "stock_quantity" in self.model_fields_set and self.stock_quantity is None:
+            raise ValueError("Остаток не может быть пустым")
+        return self
+
+
+class AdminProductStoreResponse(BaseModel):
+    store_id: int
+    store_name: str
+    address: str
+    stock_quantity: Decimal
+    reserved_quantity: Decimal
+    price: Decimal
+    old_price: Decimal | None
+    uses_base_price: bool
+
+
 class AdminProductListQueryParams(BaseModel):
     page: int = Field(default=1, ge=1)
     limit: int = Field(default=50, ge=1, le=100)

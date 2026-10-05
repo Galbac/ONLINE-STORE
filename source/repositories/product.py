@@ -38,6 +38,29 @@ from source.utils.product import build_detailed_stock_display, build_stock_displ
 
 
 class ProductRepository:
+    def _store_prices(self, store_id: int | None):
+        if store_id is None:
+            return Product.price, Product.old_price
+        stock_price = select(ProductStock.price).where(
+            ProductStock.product_id == Product.id,
+            ProductStock.pickup_point_id == store_id,
+        ).correlate(Product).scalar_subquery()
+        stock_old_price = select(ProductStock.old_price).where(
+            ProductStock.product_id == Product.id,
+            ProductStock.pickup_point_id == store_id,
+        ).correlate(Product).scalar_subquery()
+        return func.coalesce(stock_price, Product.price), case(
+            (stock_price.is_not(None), stock_old_price), else_=Product.old_price,
+        )
+
+    def _store_assortment(self, statement, store_id: int | None):
+        if store_id is None:
+            return statement
+        return statement.where(exists(select(ProductStock.id).where(
+            ProductStock.product_id == Product.id,
+            ProductStock.pickup_point_id == store_id,
+        )))
+
     def _admin_statement(self, *, query: AdminProductListQueryParams):
         statement = (
             select(Product, Category)
@@ -268,17 +291,19 @@ class ProductRepository:
         category_ids: set[int] | None = None,
         store_id: int | None = None,
     ) -> ProductFacetsResponse:
+        price, old_price = self._store_prices(store_id)
         statement = select(
-            func.count(case(((Product.old_price.is_not(None)) & (Product.old_price > Product.price), 1))).label("discount_count"),
+            func.count(case(((old_price.is_not(None)) & (old_price > price), 1))).label("discount_count"),
             func.count(case((Product.is_halal.is_(True), 1))).label("halal_count"),
-            func.coalesce(func.min(Product.price), Decimal("0.00")).label("min_price"),
-            func.coalesce(func.max(Product.price), Decimal("0.00")).label("max_price"),
+            func.coalesce(func.min(price), Decimal("0.00")).label("min_price"),
+            func.coalesce(func.max(price), Decimal("0.00")).label("max_price"),
             func.count(Product.id).label("total_count"),
         ).where(
             Product.is_active.is_(True),
             Product.is_deleted.is_(False),
-            Product.is_available.is_(True),
         )
+        if store_id is None:
+            statement = statement.where(Product.is_available.is_(True), Product.stock_quantity > 0)
         if category_ids is not None:
             statement = statement.where(Product.category_id.in_(category_ids))
 
@@ -292,6 +317,7 @@ class ProductRepository:
             )
             statement = statement.where(store_has_stock)
 
+        statement = self._store_assortment(statement, store_id)
         result = (await session.execute(statement)).one()
         discount_count = int(result.discount_count or 0)
         halal_count = int(result.halal_count or 0)
@@ -310,6 +336,7 @@ class ProductRepository:
         )
 
     def _base_statement(self, *, query: ProductListQueryParams, category_ids: set[int] | None):
+        price, old_price = self._store_prices(query.store_id)
         statement = (
             select(Product, Category)
             .outerjoin(Category, Product.category_id == Category.id)
@@ -339,17 +366,17 @@ class ProductRepository:
                 (Product.is_available.is_(False)) | (Product.stock_quantity <= 0),
             )
         if query.min_price is not None:
-            statement = statement.where(Product.price >= query.min_price)
+            statement = statement.where(price >= query.min_price)
         if query.max_price is not None:
-            statement = statement.where(Product.price <= query.max_price)
+            statement = statement.where(price <= query.max_price)
         if query.has_discount is True:
             statement = statement.where(
-                Product.old_price.is_not(None),
-                Product.old_price > Product.price,
+                old_price.is_not(None),
+                old_price > price,
             )
         elif query.has_discount is False:
             statement = statement.where(
-                (Product.old_price.is_(None)) | (Product.old_price <= Product.price),
+                (old_price.is_(None)) | (old_price <= price),
             )
         if query.product_type is not None:
             statement = statement.where(Product.product_type == query.product_type)
@@ -377,14 +404,15 @@ class ProductRepository:
             if clean_val.isdigit():
                 article_filters.append(Product.id == int(clean_val))
             statement = statement.where(or_(*article_filters))
-        return statement
+        return self._store_assortment(statement, query.store_id)
 
-    def _apply_sort(self, statement, *, sort: str | None):
+    def _apply_sort(self, statement, *, sort: str | None, store_id: int | None = None):
+        price, _ = self._store_prices(store_id)
         match sort:
             case "price_asc":
-                return statement.order_by(Product.price.asc(), Product.name.asc())
+                return statement.order_by(price.asc(), Product.name.asc())
             case "price_desc":
-                return statement.order_by(Product.price.desc(), Product.name.asc())
+                return statement.order_by(price.desc(), Product.name.asc())
             case "newest":
                 return statement.order_by(desc(Product.created_date), Product.name.asc())
             case "popular":
@@ -395,6 +423,7 @@ class ProductRepository:
                 return statement.order_by(Product.name.asc())
 
     def _search_statement(self, *, query: ProductSearchQueryParams, category_ids: set[int] | None):
+        price, old_price = self._store_prices(query.store_id)
         search_pattern = f"%{query.q}%"
         clean_q = re.sub(r"^(арт|art)\.?\s*[:\-]?\s*", "", query.q, flags=re.IGNORECASE).strip()
         search_conditions = [
@@ -449,17 +478,17 @@ class ProductRepository:
             )
         if query.has_discount is True:
             statement = statement.where(
-                Product.old_price.is_not(None),
-                Product.old_price > Product.price,
+                old_price.is_not(None),
+                old_price > price,
             )
         elif query.has_discount is False:
             statement = statement.where(
-                (Product.old_price.is_(None)) | (Product.old_price <= Product.price),
+                (old_price.is_(None)) | (old_price <= price),
             )
         if query.min_price is not None:
-            statement = statement.where(Product.price >= query.min_price)
+            statement = statement.where(price >= query.min_price)
         if query.max_price is not None:
-            statement = statement.where(Product.price <= query.max_price)
+            statement = statement.where(price <= query.max_price)
         if query.product_type is not None:
             statement = statement.where(Product.product_type == query.product_type)
         if query.tag is not None:
@@ -477,14 +506,15 @@ class ProductRepository:
                     | Product.description.ilike(f"%{tag_val}%")
                     | Product.search_keywords.ilike(f"%{tag_val}%")
                 )
-        return statement
+        return self._store_assortment(statement, query.store_id)
 
     def _apply_search_sort(self, statement, *, query: ProductSearchQueryParams):
+        price, old_price = self._store_prices(query.store_id)
         match query.sort:
             case "price_asc":
-                return statement.order_by(Product.price.asc(), Product.name.asc())
+                return statement.order_by(price.asc(), Product.name.asc())
             case "price_desc":
-                return statement.order_by(Product.price.desc(), Product.name.asc())
+                return statement.order_by(price.desc(), Product.name.asc())
             case "newest":
                 return statement.order_by(desc(Product.created_date), Product.name.asc())
             case "popular":
@@ -536,27 +566,36 @@ class ProductRepository:
                 Product.is_available.is_(True),
                 Product.stock_quantity > 0,
             )
-        return statement
+        return self._store_assortment(statement, query.store_id)
 
     def _discounted_statement(self, *, query: ProductDiscountedQueryParams, category_ids: set[int] | None):
+        price, old_price = self._store_prices(query.store_id)
         statement = (
             select(Product, Category)
             .outerjoin(Category, Product.category_id == Category.id)
             .where(
                 Product.is_active.is_(True),
                 Product.is_deleted.is_(False),
-                Product.old_price.is_not(None),
-                Product.old_price > Product.price,
+                old_price.is_not(None),
+                old_price > price,
             )
         )
         if category_ids is not None:
             statement = statement.where(Product.category_id.in_(category_ids))
-        if query.in_stock:
+        if query.store_id is not None:
+            statement = self._store_assortment(statement, query.store_id)
+            if query.in_stock:
+                statement = statement.where(exists(select(ProductStock.id).where(
+                    ProductStock.product_id == Product.id,
+                    ProductStock.pickup_point_id == query.store_id,
+                    ProductStock.stock_quantity > 0,
+                )))
+        elif query.in_stock:
             statement = statement.where(
                 Product.is_available.is_(True),
                 Product.stock_quantity > 0,
             )
-        return statement
+        return self._store_assortment(statement, query.store_id)
 
     def _new_statement(
         self,
@@ -591,19 +630,20 @@ class ProductRepository:
                 Product.is_available.is_(True),
                 Product.stock_quantity > 0,
             )
-        return statement
+        return self._store_assortment(statement, query.store_id)
 
     def _apply_discounted_sort(self, statement, *, query: ProductDiscountedQueryParams):
+        price, old_price = self._store_prices(query.store_id)
         match query.sort:
             case "price_asc":
-                return statement.order_by(Product.price.asc(), Product.name.asc())
+                return statement.order_by(price.asc(), Product.name.asc())
             case "price_desc":
-                return statement.order_by(Product.price.desc(), Product.name.asc())
+                return statement.order_by(price.desc(), Product.name.asc())
             case "newest":
                 return statement.order_by(desc(Product.created_date), Product.name.asc())
             case "discount_desc" | _:
                 return statement.order_by(
-                    ((Product.old_price - Product.price) / Product.old_price).desc(),
+                    ((old_price - price) / old_price).desc(),
                     Product.name.asc(),
                 )
 
@@ -615,7 +655,7 @@ class ProductRepository:
         category_ids: set[int] | None = None,
     ) -> list[ProductShortResponse]:
         statement = (
-            self._apply_sort(self._base_statement(query=query, category_ids=category_ids), sort=query.sort)
+            self._apply_sort(self._base_statement(query=query, category_ids=category_ids), sort=query.sort, store_id=query.store_id)
             .limit(query.limit)
             .offset(query.offset)
         )
@@ -745,6 +785,7 @@ class ProductRepository:
         return int(result.scalar_one())
 
     def _discount_products_statement(self, *, query: DiscountProductsQueryParams):
+        price, old_price = self._store_prices(query.store_id)
         now = datetime.now(settings.tz)
         active_discount_exists = (
             select(Discount.id)
@@ -767,8 +808,8 @@ class ProductRepository:
             .where(
                 Product.is_active.is_(True),
                 Product.is_deleted.is_(False),
-                Product.old_price.is_not(None),
-                Product.old_price > Product.price,
+                old_price.is_not(None),
+                old_price > price,
                 active_discount_exists,
             )
         )
@@ -786,7 +827,7 @@ class ProductRepository:
             )
         elif query.in_stock:
             statement = statement.where(Product.is_available.is_(True), Product.stock_quantity > 0)
-        return statement
+        return self._store_assortment(statement, query.store_id)
 
     async def get_new_active(
         self,
@@ -925,7 +966,7 @@ class ProductRepository:
     ) -> list[Product]:
         if not product_ids:
             return []
-        stmt = select(Product).where(Product.id.in_(product_ids))
+        stmt = select(Product).where(Product.id.in_(product_ids)).order_by(Product.id)
         if for_update:
             stmt = stmt.with_for_update()
         result = await session.execute(stmt)
@@ -1033,7 +1074,15 @@ class ProductRepository:
         )
         if category_id is not None:
             statement = statement.where(Product.category_id == category_id)
-        if query.in_stock:
+        if query.store_id is not None:
+            statement = self._store_assortment(statement, query.store_id)
+            if query.in_stock:
+                statement = statement.where(exists(select(ProductStock.id).where(
+                    ProductStock.product_id == Product.id,
+                    ProductStock.pickup_point_id == query.store_id,
+                    ProductStock.stock_quantity > 0,
+                )))
+        elif query.in_stock:
             statement = statement.where(
                 Product.is_available.is_(True),
                 Product.stock_quantity > 0,
@@ -1044,21 +1093,20 @@ class ProductRepository:
             for product, category in result.all()
         ]
 
-    async def count_active_by_category_id(
-        self,
-        *,
-        session: AsyncSession,
-        category_id: int,
-    ) -> int:
-        result = await session.execute(
-            select(func.count(Product.id)).where(
-                Product.category_id == category_id,
-                Product.is_active.is_(True),
-                Product.is_deleted.is_(False),
-                Product.is_available.is_(True),
-                Product.stock_quantity > 0,
-            ),
+    async def count_active_by_category_id(self, *, session: AsyncSession, category_id: int) -> int:
+        statement = select(func.count(Product.id)).where(
+            Product.category_id == category_id,
+            Product.is_active.is_(True), Product.is_deleted.is_(False),
         )
+        store_id = session.info.get("store_id")
+        if store_id is None:
+            statement = statement.where(Product.is_available.is_(True), Product.stock_quantity > 0)
+        else:
+            statement = statement.where(exists(select(ProductStock.id).where(
+                ProductStock.product_id == Product.id, ProductStock.pickup_point_id == store_id,
+                ProductStock.stock_quantity > 0,
+            )))
+        result = await session.execute(statement)
         return int(result.scalar_one())
 
     async def count_by_category_id(

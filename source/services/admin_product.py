@@ -1,6 +1,13 @@
 from decimal import Decimal
 from datetime import datetime
 
+from sqlalchemy import select, func
+from source.db.models.product_stock import ProductStock
+from source.db.models.pickup_point import PickupPoint
+from source.schemas.pydantic.admin_product import AdminProductStoreResponse, AdminProductStoreUpdateRequest
+from source.errors.delivery import PickupPointAdminNotFoundError
+from source.services.stock import StockService
+
 from source.config.settings import settings
 from source.errors.category import CategoryNotFoundError
 from source.errors.auth import AdminAuthAccessDeniedError, InactiveUserError
@@ -34,6 +41,80 @@ from source.utils.search import normalize_search_query
 
 
 class AdminProductService:
+    async def get_store_products(self, *, session, user, permission_service, product_repository, product_id):
+        self._check_read_permission(user=user, permission_service=permission_service)
+        product = await product_repository.get_by_id(session=session, product_id=product_id)
+        if product is None or product.is_deleted:
+            raise ProductNotFoundError
+        result = await session.execute(select(PickupPoint, ProductStock).outerjoin(
+            ProductStock, (ProductStock.pickup_point_id == PickupPoint.id) & (ProductStock.product_id == product_id),
+        ).where(PickupPoint.is_active.is_(True), PickupPoint.is_deleted.is_(False)).order_by(PickupPoint.sort_order, PickupPoint.id))
+        return [self._store_response(product, point, stock) for point, stock in result.all()]
+
+    def _store_response(self, product, point, stock):
+        custom_price = stock is not None and stock.price is not None
+        return AdminProductStoreResponse(
+            store_id=point.id, store_name=point.name, address=point.address,
+            stock_quantity=stock.stock_quantity if stock else Decimal("0"),
+            reserved_quantity=stock.reserved_quantity if stock else Decimal("0"),
+            price=stock.price if custom_price else product.price,
+            old_price=stock.old_price if custom_price else product.old_price,
+            uses_base_price=not custom_price,
+        )
+
+    async def update_store_product(self, *, session, user, permission_service, product_repository,
+                                   product_id, store_id, data, commiter, redis_service,
+                                   product_cache_service, cart_cache_service, admin_product_cache_service,
+                                   admin_audit_log_repository):
+        if {"price", "old_price"} & data.model_fields_set:
+            self._check_update_permission(user=user, permission_service=permission_service)
+        if "stock_quantity" in data.model_fields_set:
+            self._check_stock_update_permission(user=user, permission_service=permission_service)
+        products = await product_repository.get_by_ids(session=session, product_ids=[product_id], for_update=True)
+        if not products or products[0].is_deleted:
+            raise ProductNotFoundError
+        product = products[0]
+        point = await session.scalar(select(PickupPoint).where(PickupPoint.id == store_id, PickupPoint.is_deleted.is_(False)))
+        if point is None:
+            raise PickupPointAdminNotFoundError
+        stock = await session.scalar(select(ProductStock).where(
+            ProductStock.product_id == product_id, ProductStock.pickup_point_id == store_id,
+        ).with_for_update())
+        if stock is None:
+            stock = ProductStock(product_id=product_id, pickup_point_id=store_id,
+                                 stock_quantity=Decimal("0"), reserved_quantity=Decimal("0"), low_stock_threshold=product.low_stock_threshold)
+            session.add(stock)
+        previous = {"stock_quantity": str(stock.stock_quantity), "price": str(stock.price) if stock.price is not None else None,
+                    "old_price": str(stock.old_price) if stock.old_price is not None else None}
+        if "stock_quantity" in data.model_fields_set:
+            StockService().validate_stock_quantity(product=product, stock_quantity=data.stock_quantity)
+            stock.stock_quantity = data.stock_quantity
+            stock.stock_updated_at = datetime.now(settings.tz)
+        if "price" in data.model_fields_set:
+            stock.price = data.price
+            if data.price is None:
+                stock.old_price = None
+        if "old_price" in data.model_fields_set:
+            stock.old_price = data.old_price
+        if stock.old_price is not None and (stock.price is None or stock.old_price < stock.price):
+            raise ValueError("Цена до скидки должна быть не меньше цены магазина")
+        if {"price", "old_price"} & data.model_fields_set:
+            stock.price_updated_at = datetime.now(settings.tz)
+        await session.flush()
+        product.stock_quantity = await session.scalar(select(func.coalesce(func.sum(ProductStock.stock_quantity), 0)).where(ProductStock.product_id == product_id))
+        product.is_available = product.stock_quantity > 0
+        await admin_audit_log_repository.create(
+            session=session, user_id=user.id, login=getattr(user, "email", None) or str(user.id),
+            event="admin_store_product_update", status="success",
+            details={"product_id": product_id, "store_id": store_id, "before": previous, "update": data.model_dump(mode="json", exclude_unset=True)},
+        )
+        response = self._store_response(product, point, stock)
+        await commiter.commit()
+        await product_cache_service.invalidate_all(redis_service=redis_service)
+        await cart_cache_service.invalidate_all(redis_service=redis_service)
+        await admin_product_cache_service.invalidate_all(redis_service=redis_service)
+        return response
+
     def _check_read_permission(self, *, user, permission_service) -> None:
         if not user.is_active or user.is_deleted:
             raise InactiveUserError

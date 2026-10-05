@@ -2,7 +2,7 @@ from typing import Any
 from secrets import compare_digest
 
 from dishka.integrations.fastapi import FromDishka, inject
-from fastapi import Depends, Header, HTTPException, status
+from fastapi import Depends, Header, HTTPException, Query, status
 from jose import JWTError, jwt
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -12,6 +12,25 @@ from source.db.models.user import User
 from source.db.models.choises.enum import UserRole
 from source.services.admin_auth import PermissionService, STAFF_ROLES
 from source.services.redis import RedisService
+from source.db.models.pickup_point import PickupPoint
+
+
+@inject
+async def select_store_context(
+    store_id: int | None = Query(default=None, ge=1),
+    x_store_id: int | None = Header(default=None, ge=1),
+    session: FromDishka[AsyncSession] = None,
+) -> None:
+    selected_id = store_id if store_id is not None else x_store_id
+    if selected_id is not None:
+        store = await session.scalar(select(PickupPoint).where(
+            PickupPoint.id == selected_id,
+            PickupPoint.is_active.is_(True),
+            PickupPoint.is_deleted.is_(False),
+        ))
+        if store is None:
+            raise HTTPException(status_code=404, detail="Магазин недоступен")
+    session.info["store_id"] = selected_id
 
 
 @inject

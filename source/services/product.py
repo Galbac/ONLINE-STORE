@@ -3,6 +3,7 @@ from datetime import datetime, timedelta
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from source.services.store_catalog import StoreCatalogService
 from source.config.settings import settings
 from source.db.models.pickup_point import PickupPoint
 from source.db.models.product_stock import ProductStock
@@ -34,7 +35,6 @@ from source.schemas.pydantic.product import (
 from source.services.product_cache import ProductCacheService
 from source.services.redis import RedisService
 from source.utils.query_hash import build_query_hash
-from source.utils.product import build_stock_display
 from source.utils.search import normalize_search_query
 from source.utils.slug import normalize_slug
 
@@ -284,36 +284,9 @@ class ProductService:
         items: list[ProductShortResponse],
         store_id: int | None,
     ) -> list[ProductShortResponse]:
-        if store_id is None or not items:
-            return items
-
-        product_ids = [item.id for item in items]
-        result = await session.execute(
-            select(ProductStock.product_id, ProductStock.stock_quantity)
-            .where(
-                ProductStock.product_id.in_(product_ids),
-                ProductStock.pickup_point_id == store_id,
-            ),
+        return await StoreCatalogService().scope_responses(
+            session=session, items=items, store_id=store_id,
         )
-        quantities = {product_id: quantity for product_id, quantity in result.all()}
-        enriched_items = []
-        for item in items:
-            quantity = quantities.get(item.id, 0)
-            is_available = quantity > 0
-            enriched_items.append(
-                item.model_copy(
-                    update={
-                        "store_stock_quantity": quantity,
-                        "store_is_available": is_available,
-                        "is_available": is_available,
-                        "stock_display": build_stock_display(
-                            is_available=is_available,
-                            stock_quantity=quantity,
-                        ),
-                    },
-                ),
-            )
-        return enriched_items
 
     async def get_popular_products(
         self,
@@ -390,6 +363,7 @@ class ProductService:
             query=query,
             category_ids=category_ids,
         )
+        items = await self._attach_store_stock(session=session, items=items, store_id=query.store_id)
         response = ProductDiscountedResponse.build(
             items=items,
             total=total,
@@ -477,6 +451,7 @@ class ProductService:
             category_id=product.category.id if product.category is not None else None,
             query=query,
         )
+        items = await self._attach_store_stock(session=session, items=items, store_id=query.store_id)
         response = ProductSimilarResponse(items=items, total=len(items))
         await product_cache_service.set_similar(
             redis_service=redis_service,
@@ -600,11 +575,19 @@ class ProductService:
                     store_id=pp.id,
                     store_name=pp.name,
                     address=pp.address,
+                    price=ps.price if ps.price is not None else product.price,
+                    old_price=ps.old_price if ps.price is not None else product.old_price,
                     stock_quantity=ps.stock_quantity,
                     is_available=ps.stock_quantity > 0,
                 )
                 for ps, pp in stores_res.all()
             ]
+
+        product = (await self._attach_store_stock(session=session, items=[product], store_id=query.store_id))[0]
+        if similar is not None:
+            similar = await self._attach_store_stock(session=session, items=similar, store_id=query.store_id)
+            if query.store_id is not None:
+                similar = [item for item in similar if item.store_is_available]
 
         return product.model_copy(
             update={

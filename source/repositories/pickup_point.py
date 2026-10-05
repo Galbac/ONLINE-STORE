@@ -50,6 +50,7 @@ class PickupPointRepository:
         data: AdminPickupPointCreateRequest,
     ) -> PickupPoint:
         pickup_point = PickupPoint(
+            external_1c_id=data.external_1c_id,
             name=data.name,
             city=data.city,
             address=data.address,

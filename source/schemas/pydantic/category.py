@@ -2,6 +2,7 @@ from pydantic import BaseModel, Field
 
 
 class CategoryListQueryParams(BaseModel):
+    store_id: int | None = Field(default=None, ge=1)
     parent_id: int | None = Field(default=None, ge=1)
     only_root: bool = False
     include_empty: bool = False
@@ -10,6 +11,7 @@ class CategoryListQueryParams(BaseModel):
 
 
 class CategoryTreeQueryParams(BaseModel):
+    store_id: int | None = Field(default=None, ge=1)
     include_empty: bool = False
     max_depth: int = Field(default=3, ge=1, le=10)
     root_id: int | None = Field(default=None, ge=1)
@@ -17,6 +19,7 @@ class CategoryTreeQueryParams(BaseModel):
 
 
 class CategoryDetailQueryParams(BaseModel):
+    store_id: int | None = Field(default=None, ge=1)
     with_children: bool = True
     with_breadcrumbs: bool = True
     with_products_count: bool = True

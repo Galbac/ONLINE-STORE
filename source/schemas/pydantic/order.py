@@ -8,6 +8,7 @@ from source.utils.order import normalize_phone
 
 
 class OrderCreateRequest(BaseModel):
+    expected_cart_total: Decimal | None = Field(default=None, ge=0)
     delivery_type: str = Field(pattern="^(delivery|pickup)$")
     payment_method: str = Field(pattern="^(online|on_delivery|sbp)$")
     address_id: int | None = Field(default=None, gt=0)

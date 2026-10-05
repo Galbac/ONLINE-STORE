@@ -1,8 +1,9 @@
 from dishka.integrations.fastapi import FromDishka, inject
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from source.api.dependencies import select_store_context
 from source.repositories.discount import DiscountRepository
 from source.repositories.product import ProductRepository
 from source.schemas.pydantic.discount import ActiveDiscountsQueryParams, ActiveDiscountsResponse, DiscountProductsQueryParams, DiscountProductsResponse
@@ -10,7 +11,7 @@ from source.services.discount import DiscountService
 from source.services.discount_cache import DiscountCacheService
 from source.services.redis import RedisService
 
-router = APIRouter(tags=["discounts"])
+router = APIRouter(tags=["discounts"], dependencies=[Depends(select_store_context)])
 
 
 @router.get("/discounts/active", response_model=ActiveDiscountsResponse, status_code=status.HTTP_200_OK)
@@ -57,7 +58,7 @@ async def get_discount_products(
     product_repository: FromDishka[ProductRepository] = None,
 ) -> DiscountProductsResponse:
     try:
-        resolved_store_id = store_id if isinstance(store_id, int) else None
+        resolved_store_id = store_id if isinstance(store_id, int) else session.info.get("store_id")
         query = DiscountProductsQueryParams(
             page=page,
             limit=limit,

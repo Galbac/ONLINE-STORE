@@ -228,6 +228,7 @@ class AdminPickupPointListQueryParams(BaseModel):
 
 
 class AdminPickupPointCreateRequest(BaseModel):
+    external_1c_id: str | None = Field(default=None, min_length=1, max_length=100)
     name: str = Field(min_length=1, max_length=255)
     city: str = Field(min_length=1, max_length=100)
     address: str = Field(min_length=1, max_length=500)
@@ -274,6 +275,7 @@ class AdminPickupPointCreateRequest(BaseModel):
 
 
 class AdminPickupPointUpdateRequest(BaseModel):
+    external_1c_id: str | None = Field(default=None, min_length=1, max_length=100)
     name: str | None = Field(default=None, min_length=1, max_length=255)
     city: str | None = Field(default=None, min_length=1, max_length=100)
     address: str | None = Field(default=None, min_length=1, max_length=500)
@@ -319,6 +321,7 @@ class AdminPickupPointUpdateRequest(BaseModel):
 
 
 class AdminPickupPointResponse(BaseModel):
+    external_1c_id: str | None = Field(default=None, min_length=1, max_length=100)
     id: int
     name: str
     city: str

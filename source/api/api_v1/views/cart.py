@@ -2,6 +2,7 @@ from dishka.integrations.fastapi import FromDishka, inject
 from fastapi import APIRouter, Body, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from source.api.dependencies import select_store_context
 from source.api.dependencies import get_current_user
 from source.common.commiter import Commiter
 from source.db.models.user import User
@@ -35,7 +36,7 @@ from source.services.redis import RedisService
 from source.services.stock import StockService
 from source.services.promo_code import PromoCodeService
 
-router = APIRouter(tags=["cart"])
+router = APIRouter(tags=["cart"], dependencies=[Depends(select_store_context)])
 
 
 def _format_insufficient_stock_detail(error: CartInsufficientStockError) -> str:

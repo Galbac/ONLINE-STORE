@@ -291,6 +291,10 @@ class OrderUnavailableItemsError(Exception):
         self.items = items
 
 
+class OrderPriceChangedError(Exception):
+    pass
+
+
 class OrderPromoCodeInvalidError(Exception):
     pass
 

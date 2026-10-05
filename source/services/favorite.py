@@ -1,5 +1,6 @@
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from source.services.store_catalog import StoreCatalogService
 from source.config.settings import settings
 from source.errors.auth import InactiveUserError
 from source.errors.favorite import FavoriteProductNotFoundError, FavoriteProductUnavailableError
@@ -92,7 +93,10 @@ class FavoriteService:
         query_hash = build_query_hash(query.model_dump())
         cached = await favorite_cache_service.get(redis_service=redis_service, user_id=user.id, query_hash=query_hash)
         if cached is not None:
-            return cached
+            items = await StoreCatalogService().scope_responses(
+                session=session, items=cached.items, store_id=session.info.get("store_id"),
+            )
+            return cached.model_copy(update={"items": items})
 
         items = await favorite_repository.get_by_user_id(session=session, user_id=user.id, query=query)
         total = await favorite_repository.count_by_user_id(session=session, user_id=user.id)
@@ -104,4 +108,7 @@ class FavoriteService:
             response=response,
             ttl_seconds=settings.favorites.cache_ttl_seconds,
         )
-        return response
+        items = await StoreCatalogService().scope_responses(
+            session=session, items=response.items, store_id=session.info.get("store_id"),
+        )
+        return response.model_copy(update={"items": items})

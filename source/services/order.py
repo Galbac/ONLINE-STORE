@@ -4,6 +4,8 @@ from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
+from source.errors.auth import OrderPriceChangedError
+from source.services.store_catalog import StoreCatalogService
 from source.config.settings import settings
 from source.errors.auth import (
     CartEmptyError,
@@ -126,6 +128,10 @@ class OrderService:
         products = await product_repository.get_by_ids(
             session=session,
             product_ids=[item.product_id for item in order_items],
+        )
+        products = await StoreCatalogService().scope_products(
+            session=session, products=products,
+            store_id=session.info.get("store_id") or getattr(cart, "store_id", None),
         )
         products_by_id = {product.id: product for product in products}
         warnings: list[RepeatOrderWarningResponse] = []
@@ -322,6 +328,7 @@ class OrderService:
         products = await product_repository.get_by_ids(
             session=session,
             product_ids=[item.product_id for item in order_items],
+            for_update=True,
         )
         products_by_id = {product.id: product for product in products}
 
@@ -331,6 +338,7 @@ class OrderService:
             order.cancelled_at = datetime.now(settings.tz)
             order.cancelled_by = "customer"
             released_products = await stock_service.release_reserved_items(
+                store_id=getattr(order, "fulfilling_store_id", None),
                 product_repository=product_repository,
                 session=session,
                 products_by_id=products_by_id,
@@ -620,13 +628,10 @@ class OrderService:
             for_update=True,
         )
         products_by_id = {product.id: product for product in products}
-        unavailable_items = stock_service.validate_order_items(cart_items=cart_items, products_by_id=products_by_id)
-        if unavailable_items:
-            raise OrderUnavailableItemsError(unavailable_items)
 
         address_id = None
         pickup_point_id = None
-        fulfilling_store_id = None
+        fulfilling_store_id = session.info.get("store_id") or getattr(cart, "store_id", None)
         if data.delivery_type == "delivery":
             address = await address_repository.get_by_id(session=session, address_id=data.address_id)
             if address is None or address.is_deleted:
@@ -647,6 +652,26 @@ class OrderService:
                 raise OrderPickupPointInactiveError
             pickup_point_id = pickup_point.id
             fulfilling_store_id = pickup_point.id
+
+        if fulfilling_store_id is None:
+            fulfilling_store_id = getattr(user, "assigned_pickup_point_id", None)
+        if fulfilling_store_id is None:
+            raise OrderPickupPointNotFoundError
+        fulfillment_point = await pickup_point_repository.get_by_id(
+            session=session, pickup_point_id=fulfilling_store_id,
+        )
+        if fulfillment_point is None or getattr(fulfillment_point, "is_deleted", False):
+            raise OrderPickupPointNotFoundError
+        if not fulfillment_point.is_active:
+            raise OrderPickupPointInactiveError
+        original_products_by_id = products_by_id
+        scoped_products = await StoreCatalogService().scope_products(
+            session=session, products=products, store_id=fulfilling_store_id, for_update=True,
+        )
+        products_by_id = {product.id: product for product in scoped_products}
+        unavailable_items = stock_service.validate_order_items(cart_items=cart_items, products_by_id=products_by_id)
+        if unavailable_items:
+            raise OrderUnavailableItemsError(unavailable_items)
 
         if (
             data.delivery_time_slot_id is not None
@@ -730,6 +755,9 @@ class OrderService:
             promo_code=promo_code,
             promo_discount_amount=promo_discount_amount,
         )
+        if data.expected_cart_total is not None and cart_snapshot.final_price != data.expected_cart_total:
+            raise OrderPriceChangedError
+
         delivery_price = delivery_service.calculate_delivery_price(
             delivery_type=data.delivery_type,
             order_amount=cart_snapshot.subtotal,
@@ -824,7 +852,7 @@ class OrderService:
                     for item in cart_items
                 ],
             )
-            await stock_service.reserve_items(products_by_id=products_by_id, cart_items=cart_items)
+            await stock_service.reserve_items(products_by_id=original_products_by_id, cart_items=cart_items, session=session, store_id=fulfilling_store_id)
             if promo_code is not None:
                 await promo_code_service.reserve_usage(
                     promo_code_usage_repository=promo_code_usage_repository,

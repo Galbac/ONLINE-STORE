@@ -7,6 +7,8 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from source.errors.auth import OrderPriceChangedError
+from source.api.dependencies import select_store_context
 from source.api.dependencies import get_current_user
 from source.common.commiter import Commiter
 from source.config.settings import settings
@@ -78,7 +80,7 @@ from source.services.stock import StockService
 from source.services.web_push import WebPushService
 from source.config.settings import settings
 
-router = APIRouter(tags=["orders"])
+router = APIRouter(tags=["orders"], dependencies=[Depends(select_store_context)])
 
 
 @router.get("/orders/my", response_model=OrderMyListResponse, status_code=status.HTTP_200_OK)
@@ -529,6 +531,8 @@ async def create_order(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Точка самовывоза неактивна") from error
     except DeliveryTimeSlotUnavailableError as error:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Временной интервал недоступен") from error
+    except OrderPriceChangedError as error:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Цены в выбранном магазине изменились. Обновите корзину и подтвердите заказ заново") from error
     except OrderPromoCodeInvalidError as error:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Промокод больше недействителен") from error
     except OrderUnavailableItemsError as error:

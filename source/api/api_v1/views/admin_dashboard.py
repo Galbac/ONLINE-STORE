@@ -1,3 +1,4 @@
+from source.schemas.pydantic.admin_product import AdminProductStoreResponse, AdminProductStoreUpdateRequest
 from dishka.integrations.fastapi import FromDishka, inject
 from datetime import date
 
@@ -3896,3 +3897,62 @@ async def get_admin_dashboard_analytics(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Недостаточно прав") from error
     except InactiveUserError as error:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Пользователь заблокирован") from error
+
+
+@router.get("/products/{product_id}/stores", response_model=list[AdminProductStoreResponse])
+@inject
+async def get_admin_product_stores(
+    product_id: int = Path(ge=1),
+    current_user: User = Depends(get_current_user),
+    session: FromDishka[AsyncSession] = None,
+    admin_product_service: FromDishka[AdminProductService] = None,
+    permission_service: FromDishka[PermissionService] = None,
+    product_repository: FromDishka[ProductRepository] = None,
+) -> list[AdminProductStoreResponse]:
+    try:
+        return await admin_product_service.get_store_products(
+            session=session, user=current_user, permission_service=permission_service,
+            product_repository=product_repository, product_id=product_id,
+        )
+    except (AdminAuthAccessDeniedError, InactiveUserError) as error:
+        raise HTTPException(status_code=403, detail="Недостаточно прав") from error
+    except ProductNotFoundError as error:
+        raise HTTPException(status_code=404, detail="Товар не найден") from error
+
+
+@router.patch("/products/{product_id}/stores/{store_id}", response_model=AdminProductStoreResponse)
+@inject
+async def update_admin_product_store(
+    product_id: int = Path(ge=1),
+    store_id: int = Path(ge=1),
+    data: AdminProductStoreUpdateRequest = Body(),
+    current_user: User = Depends(get_current_user),
+    session: FromDishka[AsyncSession] = None,
+    commiter: FromDishka[Commiter] = None,
+    redis_service: FromDishka[RedisService] = None,
+    admin_product_service: FromDishka[AdminProductService] = None,
+    permission_service: FromDishka[PermissionService] = None,
+    product_repository: FromDishka[ProductRepository] = None,
+    product_cache_service: FromDishka[ProductCacheService] = None,
+    cart_cache_service: FromDishka[CartCacheService] = None,
+    admin_product_cache_service: FromDishka[AdminProductCacheService] = None,
+    admin_audit_log_repository: FromDishka[AdminAuditLogRepository] = None,
+) -> AdminProductStoreResponse:
+    try:
+        return await admin_product_service.update_store_product(
+            session=session, user=current_user, permission_service=permission_service,
+            product_repository=product_repository, product_id=product_id, store_id=store_id,
+            data=data, commiter=commiter, redis_service=redis_service,
+            product_cache_service=product_cache_service, cart_cache_service=cart_cache_service,
+            admin_product_cache_service=admin_product_cache_service,
+            admin_audit_log_repository=admin_audit_log_repository,
+        )
+    except (AdminAuthAccessDeniedError, InactiveUserError) as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=403, detail="Недостаточно прав") from error
+    except (ProductNotFoundError, PickupPointAdminNotFoundError) as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=404, detail="Товар или магазин не найден") from error
+    except ValueError as error:
+        await commiter.rollback()
+        raise HTTPException(status_code=400, detail=str(error)) from error

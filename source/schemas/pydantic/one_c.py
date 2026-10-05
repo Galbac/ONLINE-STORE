@@ -78,11 +78,12 @@ class OneCPriceImportItem(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     product_external_1c_id: str = Field(min_length=1, max_length=100)
+    warehouse_external_1c_id: str | None = Field(default=None, min_length=1, max_length=100)
     price: Decimal = Field(max_digits=12, decimal_places=2)
     old_price: Decimal | None = Field(default=None, max_digits=12, decimal_places=2)
     currency: str = Field(min_length=3, max_length=3)
 
-    @field_validator("product_external_1c_id", "currency", mode="before")
+    @field_validator("product_external_1c_id", "warehouse_external_1c_id", "currency", mode="before")
     @classmethod
     def normalize_string(cls, value: str | None) -> str | None:
         if value is None:

@@ -125,7 +125,7 @@ class MiddlewareSettings(BaseModel):
         default_factory=lambda: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     )
     allow_headers: list[str] = Field(
-        default_factory=lambda: ["Authorization", "Content-Type", "X-Telegram-Init-Data"],
+        default_factory=lambda: ["Authorization", "Content-Type", "X-Telegram-Init-Data", "X-Store-ID"],
     )
 
 

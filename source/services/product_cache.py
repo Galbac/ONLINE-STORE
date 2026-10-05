@@ -316,6 +316,9 @@ class ProductCacheService:
         await redis_service.delete_by_pattern("products:similar:*")
 
     async def invalidate_product(self, *, redis_service: RedisService, product_id: int, slug: str | None = None) -> None:
+        await redis_service.delete_by_pattern("products:facets:*")
+        await redis_service.delete_by_pattern("categories:*")
+        await redis_service.delete_by_pattern("discounts:products:*")
         await redis_service.delete_by_pattern(f"products:detail:{product_id}:*")
         await redis_service.delete_by_pattern(f"products:similar:{product_id}:*")
         if slug is not None:
@@ -328,6 +331,10 @@ class ProductCacheService:
         await redis_service.delete_by_pattern("products:similar:*")
 
     async def invalidate_all(self, *, redis_service: RedisService) -> None:
+        await redis_service.delete_by_pattern("products:facets:*")
+        await redis_service.delete_by_pattern("categories:*")
+        await redis_service.delete_by_pattern("discounts:products:*")
+        await redis_service.delete_by_pattern("discounts:products:*")
         await redis_service.delete_by_pattern("products:list:*")
         await redis_service.delete_by_pattern("products:detail:*")
         await redis_service.delete_by_pattern("products:slug:*")
@@ -338,6 +345,7 @@ class ProductCacheService:
         await redis_service.delete_by_pattern("products:similar:*")
 
     async def invalidate_by_stock_changes(self, *, redis_service: RedisService, products: list) -> None:
+        await redis_service.delete_by_pattern("discounts:products:*")
         if not products:
             await self.invalidate_all(redis_service=redis_service)
             await redis_service.delete("admin:dashboard:summary")

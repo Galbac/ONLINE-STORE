@@ -1,10 +1,9 @@
 from datetime import datetime
 
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from source.services.store_catalog import StoreCatalogService
 from source.config.settings import settings
-from source.db.models.product_stock import ProductStock
 from source.repositories.discount import DiscountRepository
 from source.repositories.product import ProductRepository
 from source.schemas.pydantic.discount import (
@@ -16,7 +15,6 @@ from source.schemas.pydantic.discount import (
 from source.services.discount_cache import DiscountCacheService
 from source.services.redis import RedisService
 from source.utils.query_hash import build_query_hash
-from source.utils.product import build_stock_display
 from source.schemas.pydantic.product import ProductShortResponse
 
 
@@ -78,27 +76,6 @@ class DiscountService:
         items: list[ProductShortResponse],
         store_id: int | None,
     ) -> list[ProductShortResponse]:
-        if store_id is None or not items:
-            return items
-        result = await session.execute(
-            select(ProductStock.product_id, ProductStock.stock_quantity).where(
-                ProductStock.product_id.in_([item.id for item in items]),
-                ProductStock.pickup_point_id == store_id,
-            ),
+        return await StoreCatalogService().scope_responses(
+            session=session, items=items, store_id=store_id,
         )
-        quantities = {product_id: quantity for product_id, quantity in result.all()}
-        updated_items = []
-        for item in items:
-            quantity = quantities.get(item.id, 0)
-            available = quantity > 0
-            updated_items.append(
-                item.model_copy(
-                    update={
-                        "store_stock_quantity": quantity,
-                        "store_is_available": available,
-                        "is_available": available,
-                        "stock_display": build_stock_display(is_available=available, stock_quantity=quantity),
-                    },
-                ),
-            )
-        return updated_items
