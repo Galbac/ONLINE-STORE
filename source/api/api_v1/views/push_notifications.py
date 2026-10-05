@@ -1,8 +1,10 @@
 from dishka.integrations.fastapi import FromDishka, inject
 from fastapi import APIRouter, Body, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
+from secrets import compare_digest
+from source.config.settings import settings
 
-from source.api.dependencies import get_current_user_optional, require_admin_or_manager
+from source.api.dependencies import get_current_user, require_admin_or_manager
 from source.common.commiter import Commiter
 from source.db.models.user import User
 from source.repositories.push_subscription import PushSubscriptionRepository
@@ -40,18 +42,32 @@ async def get_vapid_public_key(
 @inject
 async def subscribe_push(
     body: PushSubscriptionCreate = Body(...),
-    current_user: User | None = Depends(get_current_user_optional),
+    current_user: User = Depends(get_current_user),
     session: FromDishka[AsyncSession] = None,
     commiter: FromDishka[Commiter] = None,
     push_subscription_repository: FromDishka[PushSubscriptionRepository] = None,
 ) -> PushSubscriptionResponse:
     try:
+        existing = await push_subscription_repository.get_by_endpoint(
+            session=session, endpoint=body.endpoint
+        )
+        if (
+            existing
+            and existing.user_id != current_user.id
+            and (
+                not compare_digest(existing.auth, body.keys.auth)
+                or not compare_digest(existing.p256dh, body.keys.p256dh)
+            )
+        ):
+            raise HTTPException(
+                status_code=403, detail="Не удалось подтвердить подписку устройства"
+            )
         subscription = await push_subscription_repository.save_or_update(
             session=session,
             endpoint=body.endpoint,
             p256dh=body.keys.p256dh,
             auth=body.keys.auth,
-            user_id=current_user.id if current_user else None,
+            user_id=current_user.id,
             user_agent=body.user_agent,
         )
         await commiter.commit()
@@ -69,6 +85,7 @@ async def subscribe_push(
 @inject
 async def unsubscribe_push(
     body: dict = Body(...),
+    current_user: User = Depends(get_current_user),
     session: FromDishka[AsyncSession] = None,
     commiter: FromDishka[Commiter] = None,
     push_subscription_repository: FromDishka[PushSubscriptionRepository] = None,
@@ -80,12 +97,42 @@ async def unsubscribe_push(
             detail="endpoint обязателен для отписки",
         )
     try:
-        await push_subscription_repository.deactivate(session=session, endpoint=endpoint)
+        subscription = await push_subscription_repository.get_by_endpoint(
+            session=session, endpoint=endpoint
+        )
+        if subscription is not None and subscription.user_id != current_user.id:
+            raise HTTPException(
+                status_code=403, detail="Подписка принадлежит другому аккаунту"
+            )
+        await push_subscription_repository.deactivate(
+            session=session, endpoint=endpoint
+        )
         await commiter.commit()
         return {"success": True, "message": "Подписка успешно деактивирована"}
     except Exception:
         await commiter.rollback()
         raise
+
+
+@router.get("/status")
+@inject
+async def get_push_status(
+    endpoint: str,
+    current_user: User = Depends(get_current_user),
+    session: FromDishka[AsyncSession] = None,
+    push_subscription_repository: FromDishka[PushSubscriptionRepository] = None,
+) -> dict:
+    subscription = await push_subscription_repository.get_by_endpoint(
+        session=session, endpoint=endpoint
+    )
+    return {
+        "enabled": settings.web_push.enabled,
+        "is_subscribed": bool(
+            subscription
+            and subscription.is_active
+            and subscription.user_id == current_user.id
+        ),
+    }
 
 
 @router.post(
@@ -97,7 +144,7 @@ async def unsubscribe_push(
 @inject
 async def send_test_push(
     body: SendPushNotificationRequest = Body(...),
-    current_user: User | None = Depends(get_current_user_optional),
+    current_user: User = Depends(get_current_user),
     session: FromDishka[AsyncSession] = None,
     commiter: FromDishka[Commiter] = None,
     push_subscription_repository: FromDishka[PushSubscriptionRepository] = None,
@@ -126,7 +173,11 @@ async def send_test_push(
             success=sent > 0,
             sent_count=sent,
             failed_count=0 if sent > 0 else 1,
-            message="Тестовое уведомление отправлено" if sent > 0 else "Нет активных подписок для пользователя",
+            message=(
+                "Тестовое уведомление отправлено"
+                if sent > 0
+                else "Нет активных подписок для пользователя"
+            ),
         )
     except Exception:
         await commiter.rollback()

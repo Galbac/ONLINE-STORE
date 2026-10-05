@@ -75,5 +75,5 @@ class LoyaltyService:
             description=f"Списание бонусов на заказ #{order_id}" if order_id else "Списание бонусов",
             order_id=order_id,
         )
-        await commiter.commit()
+        await session.flush()
         return actual_deduct

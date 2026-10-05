@@ -5,6 +5,11 @@ import hashlib
 import hmac
 import json
 import urllib.parse
+import urllib.request
+import asyncio
+import base64
+from uuid import uuid5, NAMESPACE_URL
+from source.repositories.settings import SettingsRepository
 
 from source.config.settings import settings
 from source.errors.auth import (
@@ -24,7 +29,6 @@ from source.errors.auth import (
     InvalidRefundAmountError,
     RefundAmountExceedsAvailableError,
     InvalidPaymentWebhookPayloadError,
-    InvalidPaymentWebhookSignatureError,
 )
 from source.schemas.pydantic.payment import (
     PaymentCancelPaymentResponse,
@@ -40,7 +44,7 @@ from source.schemas.pydantic.payment import (
 @dataclass(slots=True)
 class ProviderPayment:
     provider_payment_id: str
-    payment_url: str
+    payment_url: str | None
     status: str
 
 
@@ -67,6 +71,68 @@ class ProviderRefund:
 
 
 class PaymentProviderService:
+    async def request_yookassa(
+        self,
+        *,
+        method,
+        path,
+        data=None,
+        session=None,
+        shop_id=None,
+        secret_key=None,
+        operation_key=None,
+    ):
+        if session is not None:
+            configured = await SettingsRepository().get(session=session)
+            if configured:
+                shop_id = shop_id or configured.yookassa_shop_id
+                secret_key = secret_key or configured.yookassa_secret_key
+        shop_id = shop_id or settings.payments.provider_shop_id
+        secret_key = secret_key or settings.payments.provider_secret_key
+        if not shop_id or not secret_key:
+            raise PaymentProviderCreateError
+
+        def send():
+            headers = {
+                "Content-Type": "application/json",
+                "Authorization": "Basic "
+                + base64.b64encode(f"{shop_id}:{secret_key}".encode()).decode(),
+            }
+            if method != "GET":
+                headers["Idempotence-Key"] = str(
+                    uuid5(
+                        NAMESPACE_URL,
+                        operation_key or path + json.dumps(data, sort_keys=True),
+                    )
+                )
+            request = urllib.request.Request(
+                "https://api.yookassa.ru/v3/" + path,
+                data=json.dumps(data).encode() if data is not None else None,
+                headers=headers,
+                method=method,
+            )
+            with urllib.request.urlopen(request, timeout=15) as response:
+                result = json.load(response)
+            if not isinstance(result, dict):
+                raise PaymentProviderCreateError
+            return result
+
+        try:
+            return await asyncio.to_thread(send)
+        except Exception as error:
+            raise PaymentProviderCreateError from error
+
+    def payment_status(self, data):
+        status = {"succeeded": "paid", "canceled": "cancelled"}.get(
+            data["status"], data["status"]
+        )
+        paid_at = (
+            datetime.fromisoformat(data["captured_at"].replace("Z", "+00:00"))
+            if data.get("captured_at")
+            else None
+        )
+        return ProviderPaymentStatus(status=status, paid_at=paid_at)
+
     async def create_payment(
         self,
         *,
@@ -85,18 +151,26 @@ class PaymentProviderService:
         yookassa_secret_key: str | None = None,
         payment_id: int | None = None,
     ) -> ProviderPayment:
-        selected_provider = (provider or settings.payments.provider or "yookassa").lower()
+        selected_provider = (
+            provider or settings.payments.provider or "yookassa"
+        ).lower()
         if selected_provider not in ("yookassa", "robokassa"):
             raise PaymentProviderCreateError
 
         if selected_provider == "robokassa":
-            merchant_login = robokassa_login or settings.payments.robokassa_merchant_login
+            merchant_login = (
+                robokassa_login or settings.payments.robokassa_merchant_login
+            )
             password_1 = robokassa_password_1 or settings.payments.robokassa_password_1
             if not merchant_login or not password_1:
                 raise PaymentProviderCreateError
 
             out_sum = f"{amount:.2f}"
-            inv_id = int(order_number) if str(order_number).isdigit() else 0
+            inv_id = (
+                payment_id
+                if payment_id is not None
+                else int(order_number) if str(order_number).isdigit() else 0
+            )
 
             shp_params: dict[str, str] = {"Shp_order_number": str(order_number)}
             if payment_id is not None:
@@ -130,42 +204,88 @@ class PaymentProviderService:
                 status="pending",
             )
 
-        # YooKassa flow
-        shop_id = yookassa_shop_id or settings.payments.provider_shop_id
-        secret_key = yookassa_secret_key or settings.payments.provider_secret_key
-        if not shop_id or not secret_key:
-            raise PaymentProviderCreateError
-
+        data = await self.request_yookassa(
+            method="POST",
+            path="payments",
+            shop_id=yookassa_shop_id,
+            secret_key=yookassa_secret_key,
+            operation_key=f"payment:{order_number}:{payment_id}",
+            data={
+                "amount": {"value": f"{amount:.2f}", "currency": currency},
+                "capture": settings.payments.capture_mode != "manual",
+                "confirmation": {"type": "redirect", "return_url": return_url},
+                "description": description[:128],
+                "metadata": {
+                    "payment_id": str(payment_id),
+                    "order_number": order_number,
+                },
+            },
+        )
         return ProviderPayment(
-            provider_payment_id=f"yookassa-{order_number}",
-            payment_url=f"https://payment.example.com/pay/{order_number}",
-            status="pending",
+            provider_payment_id=data["id"],
+            payment_url=data.get("confirmation", {}).get("confirmation_url"),
+            status=self.payment_status(data).status,
         )
 
-    async def get_payment_status(self, *, provider_payment_id: str) -> ProviderPaymentStatus:
-        return ProviderPaymentStatus(status="pending")
+    async def get_payment_status(
+        self, *, provider_payment_id: str, session=None
+    ) -> ProviderPaymentStatus:
+        if not provider_payment_id or provider_payment_id.startswith("robokassa-"):
+            raise PaymentProviderConfirmError
+        data = await self.request_yookassa(
+            method="GET",
+            path="payments/" + urllib.parse.quote(provider_payment_id, safe=""),
+            session=session,
+        )
+        return self.payment_status(data)
 
     async def confirm_payment(
         self,
         *,
         provider_payment_id: str,
         amount: Decimal | None = None,
+        session=None,
+        currency=None,
     ) -> ProviderPaymentStatus:
         if settings.payments.capture_mode != "manual":
             raise PaymentConfirmationNotSupportedError
-        if not provider_payment_id:
+        if not provider_payment_id or provider_payment_id.startswith("robokassa-"):
             raise PaymentProviderConfirmError
-        return ProviderPaymentStatus(status="paid")
+        try:
+            data = await self.request_yookassa(
+                method="POST",
+                path=f"payments/{urllib.parse.quote(provider_payment_id, safe='')}/capture",
+                session=session,
+                data=(
+                    {
+                        "amount": {
+                            "value": f"{amount:.2f}",
+                            "currency": currency or settings.payments.currency,
+                        }
+                    }
+                    if amount is not None
+                    else {}
+                ),
+            )
+            return self.payment_status(data)
+        except PaymentProviderCreateError as error:
+            raise PaymentProviderConfirmError from error
 
     async def cancel_payment(
-        self,
-        *,
-        provider_payment_id: str,
-        reason: str | None = None,
+        self, *, provider_payment_id: str, reason: str | None = None, session=None
     ) -> ProviderPaymentStatus:
-        if not provider_payment_id:
+        if not provider_payment_id or provider_payment_id.startswith("robokassa-"):
             raise PaymentProviderCancelError
-        return ProviderPaymentStatus(status="cancelled")
+        try:
+            data = await self.request_yookassa(
+                method="POST",
+                path=f"payments/{urllib.parse.quote(provider_payment_id, safe='')}/cancel",
+                data={},
+                session=session,
+            )
+            return self.payment_status(data)
+        except PaymentProviderCreateError as error:
+            raise PaymentProviderCancelError from error
 
     async def refund_payment(
         self,
@@ -173,10 +293,30 @@ class PaymentProviderService:
         provider_payment_id: str,
         amount: Decimal,
         reason: str | None = None,
+        session=None,
+        currency=None,
+        operation_key=None,
     ) -> ProviderRefund:
-        if not provider_payment_id:
+        if not provider_payment_id or provider_payment_id.startswith("robokassa-"):
             raise PaymentProviderRefundError
-        return ProviderRefund(provider_refund_id=f"refund-{provider_payment_id}", status="succeeded")
+        try:
+            data = await self.request_yookassa(
+                method="POST",
+                path="refunds",
+                session=session,
+                operation_key=operation_key,
+                data={
+                    "payment_id": provider_payment_id,
+                    "amount": {
+                        "value": f"{amount:.2f}",
+                        "currency": currency or settings.payments.currency,
+                    },
+                    "description": (reason or "Возврат заказа")[:250],
+                },
+            )
+            return ProviderRefund(provider_refund_id=data["id"], status=data["status"])
+        except PaymentProviderCreateError as error:
+            raise PaymentProviderRefundError from error
 
     def verify_webhook_signature(
         self,
@@ -185,9 +325,6 @@ class PaymentProviderService:
         signature: str | None,
         robokassa_password_2: str | None = None,
     ) -> bool:
-        if not settings.payments.webhook_verify_signature:
-            return True
-
         try:
             raw_str = raw_body.decode("utf-8")
         except UnicodeDecodeError:
@@ -256,7 +393,12 @@ class PaymentProviderService:
                 provider_payment_id=provider_payment_id,
                 payment_id=parsed_payment_id,
                 status="succeeded",
-                payload={"InvId": inv_id, "OutSum": out_sum, "SignatureValue": sig, "raw": raw_str},
+                payload={
+                    "InvId": inv_id,
+                    "OutSum": out_sum,
+                    "SignatureValue": sig,
+                    "raw": raw_str,
+                },
             )
 
         # YooKassa JSON format
@@ -265,6 +407,8 @@ class PaymentProviderService:
         except json.JSONDecodeError as error:
             raise InvalidPaymentWebhookPayloadError from error
 
+        if not isinstance(payload, dict):
+            raise InvalidPaymentWebhookPayloadError
         event_type = payload.get("event")
         event_object = payload.get("object")
         if not isinstance(event_type, str) or not isinstance(event_object, dict):
@@ -287,7 +431,11 @@ class PaymentProviderService:
         return ProviderWebhookEvent(
             provider_event_id=str(provider_event_id),
             event_type=event_type,
-            provider_payment_id=str(provider_payment_id) if provider_payment_id is not None else None,
+            provider_payment_id=str(
+                event_object.get("payment_id")
+                if event_type.startswith("refund.")
+                else provider_payment_id
+            ),
             payment_id=parsed_payment_id,
             status=event_object.get("status"),
             payload=payload,
@@ -318,7 +466,9 @@ class PaymentService:
         yookassa_secret_key = getattr(settings.payments, "provider_secret_key", None)
 
         if settings_repository is not None and session is not None:
-            store_settings, _ = await settings_repository.get_or_create_default(session=session)
+            store_settings, _ = await settings_repository.get_or_create_default(
+                session=session
+            )
             if store_settings is not None:
                 if getattr(store_settings, "payment_provider", None):
                     provider = store_settings.payment_provider
@@ -333,9 +483,7 @@ class PaymentService:
                 if getattr(store_settings, "yookassa_secret_key", None):
                     yookassa_secret_key = store_settings.yookassa_secret_key
 
-        # Старый сценарий используется при создании заказа.
         if commiter is None:
-            payment_url = f"https://payment.example.com/pay/{order.id}"
             await payment_repository.create(
                 session=session,
                 order_id=order.id,
@@ -343,46 +491,23 @@ class PaymentService:
                 currency=settings.payments.currency,
                 status="unpaid",
                 provider=provider,
-                payment_url=payment_url,
+                payment_url=None,
             )
-            return payment_url
+            return None
 
         active_payment = None
         try:
             order_service.validate_order_for_payment(order=order, user=user)
-            active_payment = await payment_repository.get_active_by_order_id(session=session, order_id=order.id)
-            if active_payment is not None:
-                if (
-                    settings.app.environment.lower() == "development"
-                    and active_payment.status == "unpaid"
-                    and (active_payment.payment_url or "").startswith("https://payment.example.com/")
-                ):
-                    active_payment = await payment_repository.update_status(
-                        session=session,
-                        payment=active_payment,
-                        status="paid",
-                        paid_at=datetime.now(),
-                    )
-                    await order_repository.update_payment_status(
-                        session=session,
-                        order=order,
-                        payment_status="paid",
-                    )
-                    if order.status == "pending_payment":
-                        await order_repository.update_status(
-                            session=session,
-                            order=order,
-                            status="new",
-                        )
-                    await commiter.commit()
-                    await order_cache_service.invalidate_order(
-                        redis_service=redis_service,
-                        user_id=user.id,
-                        order_id=order.id,
-                    )
+            active_payment = await payment_repository.get_active_by_order_id(
+                session=session, order_id=order.id
+            )
+            if (
+                active_payment is not None
+                and active_payment.provider_payment_id
+                and active_payment.payment_url
+            ):
                 return self._build_response(order=order, payment=active_payment)
-
-            payment = await payment_repository.create(
+            payment = active_payment or await payment_repository.create(
                 session=session,
                 order_id=order.id,
                 amount=order.final_price,
@@ -414,11 +539,11 @@ class PaymentService:
                 payment_url=provider_payment.payment_url,
                 status=provider_payment.status,
             )
-            if order.payment_status != "pending":
+            if order.payment_status != provider_payment.status:
                 await order_repository.update_payment_status(
                     session=session,
                     order=order,
-                    payment_status="pending",
+                    payment_status=provider_payment.status,
                 )
             await commiter.commit()
         except Exception as error:
@@ -434,29 +559,62 @@ class PaymentService:
         )
         return self._build_response(order=order, payment=payment)
 
-    async def create_refund_request(self, *, order) -> None:
-        return None
+    async def create_refund_request(self, *, order, session, payment) -> None:
+        from source.repositories.refund import RefundRepository
+
+        refunded = await RefundRepository().sum_refunded_by_payment_id(
+            session=session, payment_id=payment.id
+        )
+        amount = payment.amount - refunded
+        if amount <= 0:
+            return
+        result = await PaymentProviderService().refund_payment(
+            provider_payment_id=payment.provider_payment_id,
+            amount=amount,
+            currency=payment.currency,
+            session=session,
+            reason="Отмена заказа",
+            operation_key=f"refund:{payment.id}:{refunded}:{amount}",
+        )
+        await RefundRepository().create(
+            session=session,
+            payment_id=payment.id,
+            amount=amount,
+            currency=payment.currency,
+            status=result.status,
+            reason="Отмена заказа",
+            provider_refund_id=result.provider_refund_id,
+        )
+        payment.refund_status = (
+            "refunded" if result.status == "succeeded" else "pending"
+        )
+        order.payment_status = payment.refund_status
+        await session.flush()
 
     def build_fiscal_receipt_items(self, *, order, order_items) -> list[dict]:
         items = []
         for item in order_items:
-            items.append({
-                "name": item.product_name,
-                "quantity": item.quantity,
-                "price": item.price,
-                "total_amount": item.final_price,
-                "payment_subject": 1,
-                "payment_subject_name": "ТОВАР",
-            })
+            items.append(
+                {
+                    "name": item.product_name,
+                    "quantity": item.quantity,
+                    "price": item.price,
+                    "total_amount": item.final_price,
+                    "payment_subject": 1,
+                    "payment_subject_name": "ТОВАР",
+                }
+            )
         if getattr(order, "delivery_price", Decimal("0")) > Decimal("0"):
-            items.append({
-                "name": "Услуга курьерской доставки",
-                "quantity": Decimal("1.0"),
-                "price": order.delivery_price,
-                "total_amount": order.delivery_price,
-                "payment_subject": 4,
-                "payment_subject_name": "УСЛУГА",
-            })
+            items.append(
+                {
+                    "name": "Услуга курьерской доставки",
+                    "quantity": Decimal("1.0"),
+                    "price": order.delivery_price,
+                    "total_amount": order.delivery_price,
+                    "payment_subject": 4,
+                    "payment_subject_name": "УСЛУГА",
+                }
+            )
         return items
 
     async def get_payment_detail(
@@ -484,20 +642,29 @@ class PaymentService:
         if cached_payment is not None:
             return cached_payment
 
-        payment = await payment_repository.get_by_id(session=session, payment_id=payment_id)
+        payment = await payment_repository.get_by_id(
+            session=session, payment_id=payment_id
+        )
         if payment is None:
             raise PaymentNotFoundError
-        order = await order_repository.get_by_id(session=session, order_id=payment.order_id)
+        order = await order_repository.get_by_id(
+            session=session, order_id=payment.order_id
+        )
         if order is None:
             raise PaymentNotFoundError
         if order.user_id != user.id:
             raise PaymentAccessDeniedError
 
-        if settings.payments.status_sync_enabled and payment.provider_payment_id:
+        if (
+            settings.payments.status_sync_enabled
+            and payment.provider_payment_id
+            and payment.provider != "robokassa"
+        ):
             provider_status = await payment_provider_service.get_payment_status(
                 provider_payment_id=payment.provider_payment_id,
+                session=session,
             )
-            if provider_status.status != payment.status:
+            if provider_status.status != payment.status and payment.status != "paid":
                 try:
                     payment = await payment_repository.update_status(
                         session=session,
@@ -548,10 +715,14 @@ class PaymentService:
         if not user.is_active or user.is_deleted:
             raise InactiveUserError
 
-        payment = await payment_repository.get_by_id(session=session, payment_id=payment_id)
+        payment = await payment_repository.get_by_id(
+            session=session, payment_id=payment_id
+        )
         if payment is None:
             raise PaymentNotFoundError
-        order = await order_repository.get_by_id(session=session, order_id=payment.order_id)
+        order = await order_repository.get_by_id(
+            session=session, order_id=payment.order_id
+        )
         if order is None:
             raise PaymentNotFoundError
         if order.user_id != user.id:
@@ -566,9 +737,15 @@ class PaymentService:
         try:
             provider_status = await payment_provider_service.confirm_payment(
                 provider_payment_id=payment.provider_payment_id,
+                session=session,
                 amount=amount,
+                currency=payment.currency,
             )
-            normalized_status = "paid" if provider_status.status in {"paid", "succeeded"} else provider_status.status
+            normalized_status = (
+                "paid"
+                if provider_status.status in {"paid", "succeeded"}
+                else provider_status.status
+            )
             payment = await payment_repository.update_status(
                 session=session,
                 payment=payment,
@@ -635,10 +812,14 @@ class PaymentService:
         if not user.is_active or user.is_deleted:
             raise InactiveUserError
 
-        payment = await payment_repository.get_by_id(session=session, payment_id=payment_id)
+        payment = await payment_repository.get_by_id(
+            session=session, payment_id=payment_id
+        )
         if payment is None:
             raise PaymentNotFoundError
-        order = await order_repository.get_by_id(session=session, order_id=payment.order_id)
+        order = await order_repository.get_by_id(
+            session=session, order_id=payment.order_id
+        )
         if order is None:
             raise PaymentNotFoundError
         if order.user_id != user.id:
@@ -651,6 +832,7 @@ class PaymentService:
         try:
             provider_status = await payment_provider_service.cancel_payment(
                 provider_payment_id=payment.provider_payment_id,
+                session=session,
                 reason=reason,
             )
             payment = await payment_repository.update_status(
@@ -717,12 +899,16 @@ class PaymentService:
         web_push_service=None,
         push_subscription_repository=None,
     ) -> PaymentRefundResponse:
-        payment = await payment_repository.get_by_id(session=session, payment_id=payment_id)
+        payment = await payment_repository.get_by_id(
+            session=session, payment_id=payment_id
+        )
         if payment is None:
             raise PaymentNotFoundError
         if payment.status != "paid":
             raise PaymentNotPaidError
-        order = await order_repository.get_by_id(session=session, order_id=payment.order_id)
+        order = await order_repository.get_by_id(
+            session=session, order_id=payment.order_id
+        )
         if order is None:
             raise PaymentNotFoundError
 
@@ -740,7 +926,10 @@ class PaymentService:
         try:
             provider_refund = await payment_provider_service.refund_payment(
                 provider_payment_id=payment.provider_payment_id,
+                session=session,
                 amount=refund_amount,
+                currency=payment.currency,
+                operation_key=f"refund:{payment.id}:{already_refunded}:{refund_amount}",
                 reason=reason,
             )
             refund = await refund_repository.create(
@@ -753,7 +942,11 @@ class PaymentService:
                 provider_refund_id=provider_refund.provider_refund_id,
             )
             is_full_refund = refund_amount == available_amount
-            refund_status = "refunded" if is_full_refund else "partial_refunded"
+            refund_status = (
+                ("refunded" if is_full_refund else "partial_refunded")
+                if provider_refund.status == "succeeded"
+                else "pending"
+            )
             await payment_repository.update_refund_status(
                 session=session,
                 payment=payment,

@@ -569,7 +569,7 @@ class AdminOrderService:
             )
             if payment is not None and order.payment_status == "paid":
                 if settings.payments.auto_refund_enabled:
-                    await payment_service.create_refund_request(order=order)
+                    await payment_service.create_refund_request(order=order, session=session, payment=payment)
                 elif getattr(payment, "refund_status", None) is None:
                     await payment_repository.update_refund_status(
                         session=session,

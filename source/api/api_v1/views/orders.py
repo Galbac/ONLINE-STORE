@@ -1,8 +1,20 @@
 from dishka.integrations.fastapi import FromDishka, inject
 from datetime import date, datetime
 from decimal import Decimal
+import hashlib
+from sqlalchemy import select, text
+from source.db.models.order import Order
 
-from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, Request, status
+from fastapi import (
+    APIRouter,
+    Body,
+    Depends,
+    Header,
+    HTTPException,
+    Query,
+    Request,
+    status,
+)
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -32,7 +44,10 @@ from source.errors.auth import (
     RepeatOrderUnavailableError,
     PhoneVerificationRequiredError,
 )
-from source.errors.delivery import DeliveryMinOrderAmountError, DeliveryTimeSlotUnavailableError
+from source.errors.delivery import (
+    DeliveryMinOrderAmountError,
+    DeliveryTimeSlotUnavailableError,
+)
 from source.repositories.address import AddressRepository
 from source.repositories.cart import CartRepository
 from source.repositories.cart_item import CartItemRepository
@@ -67,7 +82,11 @@ from source.services.cart_cache import CartCacheService
 from source.services.delivery import DeliveryService, DeliveryTimeSlotService
 from source.services.delivery_cache import DeliveryCacheService
 from source.services.loyalty import LoyaltyService
-from source.services.notifications import EmailService, NotificationService, TelegramNotificationService
+from source.services.notifications import (
+    EmailService,
+    NotificationService,
+    TelegramNotificationService,
+)
 from source.services.one_c import OneCIntegrationService
 from source.services.store_catalog import StoreCatalogService
 from source.services.order import OrderService
@@ -79,7 +98,6 @@ from source.services.promo_code import PromoCodeService
 from source.services.redis import RedisService
 from source.services.stock import StockService
 from source.services.web_push import WebPushService
-from source.config.settings import settings
 
 router = APIRouter(tags=["orders"], dependencies=[Depends(select_store_context)])
 
@@ -410,15 +428,44 @@ async def create_order(
     loyalty_repository: FromDishka[LoyaltyRepository] = None,
     loyalty_service: FromDishka[LoyaltyService] = None,
 ) -> OrderCreateResponse:
-    # 1. Защита от повторной отправки (Idempotency)
-    idempotency_redis_key = None
-    if idempotency_key and redis_service is not None:
-        idempotency_redis_key = f"order:idempotency:{current_user.id}:{idempotency_key}"
-        cached_order_data = await redis_service.get(idempotency_redis_key)
-        if cached_order_data:
-            if isinstance(cached_order_data, bytes):
-                cached_order_data = cached_order_data.decode("utf-8")
-            return OrderCreateResponse.model_validate_json(cached_order_data)
+    request_hash = hashlib.sha256(body.model_dump_json().encode()).hexdigest()
+    if idempotency_key:
+        if len(idempotency_key) > 128:
+            raise HTTPException(status_code=400, detail="Слишком длинный ключ оформления заказа")
+        lock_key = int.from_bytes(
+            hashlib.sha256(f"order:{current_user.id}:{idempotency_key}".encode()).digest()[:8],
+            "big",
+            signed=True,
+        )
+        await session.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": lock_key})
+        existing_order = await session.scalar(
+            select(Order).where(
+                Order.user_id == current_user.id,
+                Order.idempotency_key == idempotency_key,
+            )
+        )
+        if existing_order:
+            if existing_order.request_hash != request_hash:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Этот ключ уже использован для другого заказа",
+                )
+            payment = await payment_repository.get_by_order_id(session=session, order_id=existing_order.id)
+            return OrderCreateResponse(
+                id=existing_order.id,
+                order_number=existing_order.order_number,
+                status=existing_order.status,
+                payment_method=existing_order.payment_method,
+                payment_status=existing_order.payment_status,
+                delivery_type=existing_order.delivery_type,
+                subtotal=existing_order.subtotal,
+                discount_amount=existing_order.discount_amount,
+                promo_discount_amount=existing_order.promo_discount_amount,
+                delivery_price=existing_order.delivery_price,
+                final_price=existing_order.final_price,
+                payment_url=payment.payment_url if payment else None,
+                created_at=existing_order.created_date,
+            )
 
     # 2. Валидация корзины и минимальной суммы в контроллере
     if cart_repository is not None and cart_item_repository is not None:
@@ -437,11 +484,20 @@ async def create_order(
                 product_ids=[item.product_id for item in cart_items],
             )
             products = await StoreCatalogService().scope_products(
-                session=session, products=products, store_id=cart.store_id,
+                session=session,
+                products=products,
+                store_id=cart.store_id,
             )
             products_by_id = {p.id: p for p in products}
             items_total = sum(
-                (products_by_id[item.product_id].price * item.quantity for item in cart_items if item.product_id in products_by_id and products_by_id[item.product_id].is_available and products_by_id[item.product_id].is_active and not products_by_id[item.product_id].is_deleted),
+                (
+                    products_by_id[item.product_id].price * item.quantity
+                    for item in cart_items
+                    if item.product_id in products_by_id
+                    and products_by_id[item.product_id].is_available
+                    and products_by_id[item.product_id].is_active
+                    and not products_by_id[item.product_id].is_deleted
+                ),
                 Decimal("0"),
             )
             if items_total < Decimal("1000.00"):
@@ -498,32 +554,40 @@ async def create_order(
             loyalty_repository=loyalty_repository,
             user_ip=client_ip,
             user_agent=user_agent,
+            idempotency_key=idempotency_key,
+            request_hash=request_hash,
             accepted_terms_version="1.0",
             accepted_at=datetime.now(settings.tz),
         )
 
-        if idempotency_redis_key and redis_service is not None:
-            await redis_service.set(idempotency_redis_key, response.model_dump_json(), ttl_seconds=1800)
-
         return response
     except InactiveUserError as error:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Пользователь заблокирован или удалён") from error
-    except PhoneVerificationRequiredError as error:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Пользователь заблокирован или удалён",
+        ) from error
+    except PhoneVerificationRequiredError:
         return JSONResponse(
             status_code=status.HTTP_403_FORBIDDEN,
-            content={"code": "PHONE_VERIFICATION_REQUIRED", "detail": "Для оплаты при получении требуется подтверждение номера телефона"},
+            content={
+                "code": "PHONE_VERIFICATION_REQUIRED",
+                "detail": "Для оплаты при получении требуется подтверждение номера телефона",
+            },
         )
     except OrderCartNotFoundError as error:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Корзина не найдена") from error
-    except CartEmptyError as error:
+    except CartEmptyError:
         return JSONResponse(
             status_code=status.HTTP_400_BAD_REQUEST,
             content={"code": "EMPTY_CART", "detail": "Корзина пустая"},
         )
-    except DeliveryMinOrderAmountError as error:
+    except DeliveryMinOrderAmountError:
         return JSONResponse(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            content={"code": "MIN_ORDER_AMOUNT_NOT_MET", "detail": "Минимальная сумма заказа для оформления — 1 000 ₽"},
+            content={
+                "code": "MIN_ORDER_AMOUNT_NOT_MET",
+                "detail": "Минимальная сумма заказа для оформления — 1 000 ₽",
+            },
         )
     except OrderAddressNotFoundError as error:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Адрес не найден") from error
@@ -536,9 +600,15 @@ async def create_order(
     except DeliveryTimeSlotUnavailableError as error:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Временной интервал недоступен") from error
     except OrderPriceChangedError as error:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Цены в выбранном магазине изменились. Обновите корзину и подтвердите заказ заново") from error
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Цены в выбранном магазине изменились. Обновите корзину и подтвердите заказ заново",
+        ) from error
     except OrderPromoCodeInvalidError as error:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Промокод больше недействителен") from error
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Промокод больше недействителен",
+        ) from error
     except OrderUnavailableItemsError as error:
         return JSONResponse(
             status_code=status.HTTP_409_CONFLICT,

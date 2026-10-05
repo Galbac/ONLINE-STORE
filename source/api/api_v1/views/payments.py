@@ -329,7 +329,7 @@ async def process_payment_webhook(
 ) -> PaymentWebhookResponse:
     raw_body = await request.body()
     try:
-        return await payment_webhook_service.process_webhook(
+        result = await payment_webhook_service.process_webhook(
             raw_body=raw_body,
             signature=x_payment_signature,
             session=session,
@@ -351,6 +351,11 @@ async def process_payment_webhook(
             push_subscription_repository=push_subscription_repository,
             web_push_service=web_push_service,
         )
+        if b"OutSum=" in raw_body:
+            from fastapi.responses import PlainTextResponse
+            from urllib.parse import parse_qs
+            return PlainTextResponse("OK" + parse_qs(raw_body.decode())["InvId"][0])
+        return result
     except InvalidPaymentWebhookSignatureError as error:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Неверная подпись webhook") from error
     except InvalidPaymentWebhookPayloadError as error:

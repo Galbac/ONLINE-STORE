@@ -350,7 +350,9 @@ class OrderService:
                 order_id=order.id,
             )
             if payment is not None and order.payment_method == "online" and order.payment_status == "paid":
-                await payment_service.create_refund_request(order=order)
+                if payment.provider == "robokassa":
+                    raise OrderPaidCancellationRequiresManagerError
+                await payment_service.create_refund_request(order=order, session=session, payment=payment)
             await one_c_integration_service.mark_order_cancel_pending_sync(order=order)
             await commiter.commit()
         except Exception:
@@ -603,6 +605,8 @@ class OrderService:
         user_agent: str | None = None,
         accepted_terms_version: str | None = None,
         accepted_at: datetime | None = None,
+        idempotency_key: str | None = None,
+        request_hash: str | None = None,
     ) -> OrderCreateResponse:
         if not user.is_active or user.is_deleted:
             raise InactiveUserError
@@ -783,18 +787,6 @@ class OrderService:
         if items_subtotal_after_promos < Decimal("0"):
             items_subtotal_after_promos = Decimal("0")
 
-        if getattr(data, "use_points", 0) > 0 and loyalty_service is not None and loyalty_repository is not None:
-            max_points = max(0, int(items_subtotal_after_promos) - 1)
-            points_to_spend = max(0, min(data.use_points, max_points))
-            if points_to_spend > 0:
-                deducted = await loyalty_service.write_off_points(
-                    session=session,
-                    loyalty_repository=loyalty_repository,
-                    commiter=commiter,
-                    user_id=user.id,
-                    points_to_spend=points_to_spend,
-                )
-                final_price = max(Decimal("1.00"), items_subtotal_after_promos - Decimal(deducted)) + delivery_price
 
         try:
             order = await order_repository.create(
@@ -829,7 +821,24 @@ class OrderService:
                 accepted_terms_version=accepted_terms_version or "1.0",
                 accepted_at=accepted_at or datetime.now(settings.tz),
             )
+            order.idempotency_key = idempotency_key
+            order.request_hash = request_hash
             order.order_number = generate_order_number(prefix=settings.orders.number_prefix, order_id=order.id)
+            if getattr(data, "use_points", 0) > 0 and loyalty_service is not None and loyalty_repository is not None:
+                max_points = max(0, int(items_subtotal_after_promos) - 1)
+                points_to_spend = max(0, min(data.use_points, max_points))
+                if points_to_spend > 0:
+                    deducted = await loyalty_service.write_off_points(
+                        session=session,
+                        loyalty_repository=loyalty_repository,
+                        commiter=commiter,
+                        user_id=user.id,
+                        order_id=order.id,
+                        points_to_spend=points_to_spend,
+                    )
+                    final_price = max(Decimal("1.00"), items_subtotal_after_promos - Decimal(deducted)) + delivery_price
+            order.final_price = final_price
+
             await order_item_repository.bulk_create(
                 session=session,
                 items=[
