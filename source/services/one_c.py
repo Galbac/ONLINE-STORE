@@ -2127,6 +2127,8 @@ class AdminOneCIntegrationService:
         cart_cache_service,
         admin_dashboard_cache_service,
         admin_product_cache_service,
+        product_stock_repository=None,
+        pickup_point_repository=None,
     ) -> AdminOneCSyncResponse:
         self._check_sync_permission(user=user, permission_service=permission_service)
         if not config.one_c.sync_enabled or not config.one_c.api_url:
@@ -2178,6 +2180,8 @@ class AdminOneCIntegrationService:
                 cart_cache_service=cart_cache_service,
                 admin_dashboard_cache_service=admin_dashboard_cache_service,
                 admin_product_cache_service=admin_product_cache_service,
+                product_stock_repository=product_stock_repository,
+                pickup_point_repository=pickup_point_repository,
             )
             await product_cache_service.invalidate_by_stock_changes(redis_service=redis_service, products=[])
             await cart_cache_service.invalidate_all(redis_service=redis_service)

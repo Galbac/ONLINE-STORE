@@ -83,6 +83,7 @@ class FakeOneCImportService:
         self.calls = 0
         self.price_calls = 0
         self.stock_calls = 0
+        self.stock_kwargs: dict = {}
 
     async def import_products(self, **kwargs):
         self.calls += 1
@@ -94,6 +95,7 @@ class FakeOneCImportService:
 
     async def import_stocks(self, **kwargs):
         self.stock_calls += 1
+        self.stock_kwargs = kwargs
         return OneCImportResultResponse(updated=100, errors=[])
 
 
@@ -467,6 +469,8 @@ def build_stock_dependencies(**overrides):
         "integration_log_repository": FakeIntegrationLogRepository(),
         "product_repository": object(),
         "stock_movement_repository": object(),
+        "product_stock_repository": object(),
+        "pickup_point_repository": object(),
         "product_cache_service": FakeCacheService(),
         "cart_cache_service": FakeCacheService(),
         "admin_dashboard_cache_service": FakeCacheService(),
@@ -718,6 +722,8 @@ async def test_admin_one_c_sync_stocks_success() -> None:
     assert response.errors == []
     assert deps["one_c_client"].stock_full_sync_values == [True]
     assert deps["one_c_import_service"].stock_calls == 1
+    assert deps["one_c_import_service"].stock_kwargs["product_stock_repository"] is deps["product_stock_repository"]
+    assert deps["one_c_import_service"].stock_kwargs["pickup_point_repository"] is deps["pickup_point_repository"]
     assert deps["redis_lock_service"].release_calls == [{"key": "integration:1c:lock:stocks"}]
 
 

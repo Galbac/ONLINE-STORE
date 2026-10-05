@@ -269,6 +269,8 @@ async def admin_sync_one_c_stocks(
     cart_cache_service: FromDishka[CartCacheService] = None,
     admin_dashboard_cache_service: FromDishka[AdminDashboardCacheService] = None,
     admin_product_cache_service: FromDishka[AdminProductCacheService] = None,
+    product_stock_repository: FromDishka[ProductStockRepository] = None,
+    pickup_point_repository: FromDishka[PickupPointRepository] = None,
 ) -> AdminOneCSyncResponse:
     try:
         return await admin_one_c_integration_service.sync_stocks(
