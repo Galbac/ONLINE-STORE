@@ -353,6 +353,7 @@ class ProductCacheService:
             await redis_service.delete("admin:dashboard:summary")
             await redis_service.delete_by_pattern("admin:dashboard:low_stock:*")
             return
+        await self.invalidate_popular(redis_service=redis_service)
         for product in products:
             await self.invalidate_product(
                 redis_service=redis_service,

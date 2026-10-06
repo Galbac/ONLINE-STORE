@@ -35,6 +35,7 @@ class PaymentWebhookService:
         notification_repository=None,
         web_push_service=None,
         push_subscription_repository=None,
+        product_cache_service=None,
     ) -> PaymentWebhookResponse:
         robokassa_pwd_2 = getattr(settings.payments, "robokassa_password_2", None)
         if settings_repository is not None and session is not None:
@@ -268,6 +269,8 @@ class PaymentWebhookService:
         await profile_cache_service.delete_summary(
             redis_service=redis_service, user_id=order.user_id
         )
+        if event.event_type == "payment.succeeded" and product_cache_service is not None:
+            await product_cache_service.invalidate_popular(redis_service=redis_service)
         if event.event_type == "payment.succeeded":
             await notification_service.notify_payment_success(
                 email_service=email_service,

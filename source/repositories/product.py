@@ -1,5 +1,5 @@
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 
 from sqlalchemy import case, desc, exists, func, or_, select
@@ -8,6 +8,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from source.config.settings import settings
 from source.db.models.category import Category
 from source.db.models.discount import Discount
+from source.db.models.order import Order
+from source.db.models.order_item import OrderItem
 from source.db.models.product import Product
 from source.db.models.product_stock import ProductStock
 from source.schemas.pydantic.admin_product import (
@@ -541,9 +543,28 @@ class ProductRepository:
                 )
 
     def _popular_statement(self, *, query: ProductPopularQueryParams, category_ids: set[int] | None):
+        period_start = datetime.now(settings.tz) - timedelta(days=query.period_days)
+        sales_statement = (
+            select(
+                OrderItem.product_id.label("product_id"),
+                func.count(func.distinct(OrderItem.order_id)).label("order_count"),
+                func.sum(OrderItem.quantity).label("units_sold"),
+            )
+            .join(Order, Order.id == OrderItem.order_id)
+            .where(
+                Order.created_date >= period_start,
+                Order.status.not_in(("cancelled", "pending_payment")),
+            )
+        )
+        if query.store_id is not None:
+            sales_statement = sales_statement.where(
+                func.coalesce(Order.fulfilling_store_id, Order.pickup_point_id) == query.store_id,
+            )
+        sales = sales_statement.group_by(OrderItem.product_id).subquery()
         statement = (
             select(Product, Category)
             .outerjoin(Category, Product.category_id == Category.id)
+            .outerjoin(sales, sales.c.product_id == Product.id)
             .where(
                 Product.is_active.is_(True),
                 Product.is_deleted.is_(False),
@@ -566,7 +587,11 @@ class ProductRepository:
                 Product.is_available.is_(True),
                 Product.stock_quantity > 0,
             )
-        return self._store_assortment(statement, query.store_id)
+        return self._store_assortment(statement, query.store_id).order_by(
+            func.coalesce(sales.c.order_count, 0).desc(),
+            func.coalesce(sales.c.units_sold, 0).desc(),
+            Product.name.asc(),
+        )
 
     def _discounted_statement(self, *, query: ProductDiscountedQueryParams, category_ids: set[int] | None):
         price, old_price = self._store_prices(query.store_id)
@@ -714,7 +739,6 @@ class ProductRepository:
     ) -> list[ProductShortResponse]:
         result = await session.execute(
             self._popular_statement(query=query, category_ids=category_ids)
-            .order_by(Product.popularity.desc(), Product.name.asc())
             .limit(query.limit),
         )
         return [

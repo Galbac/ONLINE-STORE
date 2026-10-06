@@ -112,11 +112,16 @@ class FakeCategoryRepository:
 
 
 class FakeProductRepository:
-    def __init__(self, products: list[object] | None = None) -> None:
+    def __init__(
+        self,
+        products: list[object] | None = None,
+        popular_sales: dict[int, tuple[int, Decimal]] | None = None,
+    ) -> None:
         self.products = products if products is not None else [
             build_product(product_id=55, name="Яблоки красные", slug="yabloki-krasnye", category_id=11),
             build_product(product_id=56, name="Бананы", slug="banany", category_id=1, price=Decimal("90.00")),
         ]
+        self.popular_sales = popular_sales or {}
         self.query: ProductListQueryParams | None = None
         self.category_ids: set[int] | None = None
         self.requested_slug: str | None = None
@@ -219,7 +224,14 @@ class FakeProductRepository:
             products = [product for product in products if product.category_id in category_ids]
         if query.in_stock:
             products = [product for product in products if product.is_available and product.stock_quantity > 0]
-        products = sorted(products, key=lambda product: (-product.popularity, product.name))
+        products = sorted(
+            products,
+            key=lambda product: (
+                -self.popular_sales.get(product.id, (0, Decimal("0")))[0],
+                -self.popular_sales.get(product.id, (0, Decimal("0")))[1],
+                product.name,
+            ),
+        )
         return [build_product_response(product) for product in products[: query.limit]]
 
     async def get_discounted_active(
@@ -1243,9 +1255,10 @@ async def test_get_popular_products_success() -> None:
     response = await execute_get_popular_products(
         product_repository=FakeProductRepository(
             products=[
-                build_product(product_id=55, name="Популярный", slug="popular", category_id=11, popularity=100),
-                build_product(product_id=56, name="Обычный", slug="regular", category_id=11, popularity=10),
+                build_product(product_id=55, name="Популярный", slug="popular", category_id=11),
+                build_product(product_id=56, name="Обычный", slug="regular", category_id=11),
             ],
+            popular_sales={55: (12, Decimal("18")), 56: (3, Decimal("4"))},
         ),
     )
 
@@ -1280,10 +1293,15 @@ async def test_get_popular_products_limit_works() -> None:
     response = await execute_get_popular_products(
         product_repository=FakeProductRepository(
             products=[
-                build_product(product_id=1, name="A", slug="a", category_id=11, popularity=30),
-                build_product(product_id=2, name="B", slug="b", category_id=11, popularity=20),
-                build_product(product_id=3, name="C", slug="c", category_id=11, popularity=10),
+                build_product(product_id=1, name="A", slug="a", category_id=11),
+                build_product(product_id=2, name="B", slug="b", category_id=11),
+                build_product(product_id=3, name="C", slug="c", category_id=11),
             ],
+            popular_sales={
+                1: (30, Decimal("33")),
+                2: (20, Decimal("24")),
+                3: (10, Decimal("17")),
+            },
         ),
         query=ProductPopularQueryParams(limit=2),
     )
@@ -1378,19 +1396,24 @@ async def test_get_popular_products_excludes_deleted_products() -> None:
 
 
 @pytest.mark.asyncio
-async def test_get_popular_products_sorts_by_popularity() -> None:
+async def test_get_popular_products_sorts_by_recent_order_count_then_sold_quantity() -> None:
     response = await execute_get_popular_products(
         product_repository=FakeProductRepository(
             products=[
-                build_product(product_id=1, name="Low", slug="low", category_id=11, popularity=1),
-                build_product(product_id=2, name="High", slug="high", category_id=11, popularity=100),
-                build_product(product_id=3, name="Middle", slug="middle", category_id=11, popularity=50),
+                build_product(product_id=1, name="Low", slug="low", category_id=11),
+                build_product(product_id=2, name="High", slug="high", category_id=11),
+                build_product(product_id=3, name="Middle", slug="middle", category_id=11),
             ],
+            popular_sales={
+                1: (1, Decimal("40")),
+                2: (8, Decimal("9")),
+                3: (8, Decimal("15")),
+            },
         ),
         query=ProductPopularQueryParams(in_stock=False),
     )
 
-    assert [product.id for product in response.items] == [2, 3, 1]
+    assert [product.id for product in response.items] == [3, 2, 1]
 
 
 @pytest.mark.asyncio

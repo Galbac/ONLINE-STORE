@@ -56,6 +56,7 @@ from source.services.payment_cache import PaymentCacheService
 from source.services.payment import PaymentProviderService, PaymentService
 from source.services.payment_webhook import PaymentWebhookService
 from source.services.profile_cache import ProfileCacheService
+from source.services.product_cache import ProductCacheService
 from source.services.redis import RedisService
 
 
@@ -318,6 +319,7 @@ async def process_payment_webhook(
     payment_cache_service: FromDishka[PaymentCacheService] = None,
     order_cache_service: FromDishka[OrderCacheService] = None,
     profile_cache_service: FromDishka[ProfileCacheService] = None,
+    product_cache_service: FromDishka[ProductCacheService] = None,
     notification_service: FromDishka[NotificationService] = None,
     email_service: FromDishka[EmailService] = None,
     telegram_service: FromDishka[TelegramNotificationService] = None,
@@ -342,6 +344,7 @@ async def process_payment_webhook(
             payment_cache_service=payment_cache_service,
             order_cache_service=order_cache_service,
             profile_cache_service=profile_cache_service,
+            product_cache_service=product_cache_service,
             notification_service=notification_service,
             email_service=email_service,
             telegram_service=telegram_service,

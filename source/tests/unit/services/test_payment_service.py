@@ -219,6 +219,14 @@ class FakeProfileCacheService:
         self.deleted.append(user_id)
 
 
+class FakeProductCacheService:
+    def __init__(self) -> None:
+        self.invalidated_popular = 0
+
+    async def invalidate_popular(self, *, redis_service) -> None:
+        self.invalidated_popular += 1
+
+
 class FakeNotificationService:
     def __init__(self) -> None:
         self.payment_success = []
@@ -495,6 +503,7 @@ async def execute_webhook(*, body=None, payment="default", order=None, log_repos
     payment_cache_service = FakePaymentCacheService()
     order_cache_service = FakeOrderCacheService()
     profile_cache_service = FakeProfileCacheService()
+    product_cache_service = FakeProductCacheService()
     notification_service = FakeNotificationService()
     one_c_service = FakeOneCIntegrationService()
     commiter = FakeCommiter()
@@ -514,6 +523,7 @@ async def execute_webhook(*, body=None, payment="default", order=None, log_repos
         payment_cache_service=payment_cache_service,
         order_cache_service=order_cache_service,
         profile_cache_service=profile_cache_service,
+        product_cache_service=product_cache_service,
         notification_service=notification_service,
         email_service=DummyEmailService(),
         telegram_service=DummyTelegramService(),
@@ -527,6 +537,7 @@ async def execute_webhook(*, body=None, payment="default", order=None, log_repos
         payment_cache_service=payment_cache_service,
         order_cache_service=order_cache_service,
         profile_cache_service=profile_cache_service,
+        product_cache_service=product_cache_service,
         notification_service=notification_service,
         one_c_service=one_c_service,
         commiter=commiter,
@@ -705,6 +716,7 @@ async def test_webhook_processes_payment_succeeded(monkeypatch):
     assert result.order_repository.updated_status == "new"
     assert result.notification_service.payment_success == [101]
     assert result.one_c_service.marked == [101]
+    assert result.product_cache_service.invalidated_popular == 1
 
 
 @pytest.mark.asyncio
@@ -716,6 +728,7 @@ async def test_webhook_processes_payment_canceled(monkeypatch):
 
     assert result.payment_repository.updated_status == "cancelled"
     assert result.order_repository.updated_payment_status == "cancelled"
+    assert result.product_cache_service.invalidated_popular == 0
 
 
 @pytest.mark.asyncio
