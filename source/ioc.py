@@ -51,6 +51,7 @@ from source.repositories.product_price_history import ProductPriceHistoryReposit
 from source.repositories.product_review import ProductReviewRepository
 from source.repositories.promo_code import PromoCodeCategoryRepository, PromoCodeProductRepository, PromoCodeRepository, PromoCodeUsageRepository
 from source.repositories.stock_alert import StockAlertRepository
+from source.repositories.search_query_stat import SearchQueryStatRepository
 from source.repositories.stock_movement import StockMovementRepository
 from source.repositories.settings import SettingsRepository
 from source.repositories.legal_document import LegalDocumentRepository
@@ -307,6 +308,10 @@ class AppProvider(Provider):
     )
     product_repository = provide(
         ProductRepository,
+        scope=Scope.REQUEST,
+    )
+    search_query_stat_repository = provide(
+        SearchQueryStatRepository,
         scope=Scope.REQUEST,
     )
     product_stock_repository = provide(

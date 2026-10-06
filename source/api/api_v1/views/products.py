@@ -1,7 +1,9 @@
 from decimal import Decimal
+import re
+from datetime import datetime
 
 from dishka.integrations.fastapi import FromDishka, inject
-from fastapi import Depends, APIRouter, HTTPException, Path, Query, status
+from fastapi import Depends, APIRouter, HTTPException, Path, Query, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from source.services.store_catalog import StoreCatalogService
@@ -12,6 +14,7 @@ from source.errors.product import ProductNotFoundError
 from source.repositories.category import CategoryRepository
 from source.repositories.product import ProductRepository
 from source.repositories.product_image import ProductImageRepository
+from source.repositories.search_query_stat import SearchQueryStatRepository
 from source.repositories.stock_alert import StockAlertRepository
 from source.common.commiter import Commiter
 from source.schemas.pydantic.recommendation import ProductRecommendationResponse
@@ -42,6 +45,7 @@ from source.schemas.pydantic.search_suggestions import (
     SuggestionCategoryItem,
     SuggestionProductItem,
 )
+from source.schemas.pydantic.search_query import SearchQueryTrackRequest, SearchQueryTrackResponse
 from source.services.product import ProductService
 from source.services.product_cache import ProductCacheService
 from source.services.redis import RedisService
@@ -372,27 +376,49 @@ async def get_search_suggestions(
 )
 @inject
 async def get_popular_searches(
+    response: Response,
+    limit: int = Query(default=8, ge=1, le=20),
     session: FromDishka[AsyncSession] = None,
-    category_repository: FromDishka[CategoryRepository] = None,
+    search_query_stat_repository: FromDishka[SearchQueryStatRepository] = None,
 ) -> list[str]:
-    if category_repository is not None and session is not None:
-        try:
-            tree = await category_repository.get_active_tree(session=session)
-            if tree:
-                return [c.name for c in tree[:8]]
-        except Exception:
-            pass
+    response.headers["Cache-Control"] = "public, max-age=300"
+    return await search_query_stat_repository.get_popular(
+        session=session,
+        today=datetime.now(settings.tz).date(),
+        limit=limit,
+    )
 
-    return [
-        "Фрукты и ягоды",
-        "Молоко фермерское",
-        "Сыр твердый",
-        "Свежий хлеб",
-        "Мясо и птица",
-        "Кофе зерновой",
-        "Авокадо Хасс",
-        "Без сахара",
-    ]
+
+@router.post(
+    "/products/search/track",
+    response_model=SearchQueryTrackResponse,
+    status_code=status.HTTP_200_OK,
+)
+@inject
+async def track_search_query(
+    payload: SearchQueryTrackRequest,
+    session: FromDishka[AsyncSession] = None,
+    search_query_stat_repository: FromDishka[SearchQueryStatRepository] = None,
+) -> SearchQueryTrackResponse:
+    query = normalize_search_query(payload.query)
+    if not _is_trackable_search_query(query):
+        return SearchQueryTrackResponse(tracked=False)
+
+    await search_query_stat_repository.track(
+        session=session,
+        query=query,
+        today=datetime.now(settings.tz).date(),
+    )
+    return SearchQueryTrackResponse(tracked=True)
+
+
+def _is_trackable_search_query(query: str) -> bool:
+    if len(query) < 2 or len(query) > 80:
+        return False
+    digits = re.sub(r"\D", "", query)
+    if "@" in query or len(digits) >= 7:
+        return False
+    return any(character.isalpha() for character in query)
 
 
 @router.get(
