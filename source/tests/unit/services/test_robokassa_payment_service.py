@@ -26,7 +26,7 @@ async def test_robokassa_create_payment_success():
     )
 
     assert isinstance(payment, ProviderPayment)
-    assert payment.provider_payment_id == "robokassa-ORD-000999"
+    assert payment.provider_payment_id == "robokassa-777"
     assert payment.status == "pending"
     assert payment.payment_url.startswith("https://auth.robokassa.ru/Merchant/Index.aspx?")
 
@@ -71,7 +71,7 @@ def test_robokassa_verify_webhook_signature_and_parse():
     service = PaymentProviderService()
 
     out_sum = "1500.50"
-    inv_id = "0"
+    inv_id = "777"
     pwd2 = "secret_pass_2"
     shp_order_num = "ORD-000999"
     shp_payment_id = "777"
@@ -100,6 +100,6 @@ def test_robokassa_verify_webhook_signature_and_parse():
     # Проверка парсинга вебхука
     event = service.parse_webhook_event(raw_body=raw_body)
     assert event.event_type == "payment.succeeded"
-    assert event.provider_payment_id == f"robokassa-{shp_order_num}"
+    assert event.provider_payment_id == f"robokassa-{inv_id}"
     assert event.payment_id == 777
     assert event.status == "succeeded"

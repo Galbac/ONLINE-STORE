@@ -37,6 +37,8 @@ class PaymentWebhookService:
         push_subscription_repository=None,
         product_cache_service=None,
     ) -> PaymentWebhookResponse:
+        if len(raw_body) > settings.payments.webhook_max_body_bytes:
+            raise InvalidPaymentWebhookPayloadError
         robokassa_pwd_2 = getattr(settings.payments, "robokassa_password_2", None)
         if settings_repository is not None and session is not None:
             store_settings, _ = await settings_repository.get_or_create_default(
@@ -58,6 +60,14 @@ class PaymentWebhookService:
 
                 raise InvalidPaymentWebhookSignatureError
         else:
+            expected = {
+                "payment.succeeded": "succeeded",
+                "payment.canceled": "canceled",
+                "payment.waiting_for_capture": "waiting_for_capture",
+                "refund.succeeded": "succeeded",
+            }
+            if event.event_type not in expected:
+                return PaymentWebhookResponse(message="Webhook ignored")
             object_id = event.payload["object"].get("id")
             if not isinstance(object_id, str) or not object_id:
                 raise InvalidPaymentWebhookPayloadError
@@ -69,11 +79,6 @@ class PaymentWebhookService:
             )
             if verified.get("id") != object_id:
                 raise InvalidPaymentWebhookPayloadError
-            expected = {
-                "payment.succeeded": "succeeded",
-                "payment.canceled": "canceled",
-                "refund.succeeded": "succeeded",
-            }
             if (
                 event.event_type not in expected
                 or verified.get("status") != expected[event.event_type]
@@ -114,7 +119,22 @@ class PaymentWebhookService:
             raise RuntimeError("Payment not committed yet; retry webhook")
 
         await session.refresh(payment, with_for_update=True)
-        if event.event_type == "payment.succeeded":
+        is_robokassa = "OutSum" in event.payload
+        if payment.provider != ("robokassa" if is_robokassa else "yookassa"):
+            raise InvalidPaymentWebhookPayloadError
+        if event.payment_id is not None and event.payment_id != payment.id:
+            raise InvalidPaymentWebhookPayloadError
+        provider_id_matches = payment.provider_payment_id == event.provider_payment_id
+        if is_robokassa and not provider_id_matches:
+            # Старые ссылки использовали номер заказа вместо ID платежа.
+            provider_id_matches = (
+                str(payment.id) == event.payload["InvId"]
+                and bool(event.payload.get("Shp_order_number"))
+                and payment.provider_payment_id == f"robokassa-{event.payload['Shp_order_number']}"
+            )
+        if not provider_id_matches:
+            raise InvalidPaymentWebhookPayloadError
+        if event.event_type.startswith("payment."):
             amount_data = event.payload.get("object", {}).get("amount", {})
             if not isinstance(amount_data, dict):
                 raise InvalidPaymentWebhookPayloadError
@@ -130,11 +150,6 @@ class PaymentWebhookService:
                 not amount.is_finite()
                 or amount != payment.amount
                 or currency != payment.currency
-            ):
-                raise InvalidPaymentWebhookPayloadError
-            if (
-                event.provider_payment_id
-                and payment.provider_payment_id != event.provider_payment_id
             ):
                 raise InvalidPaymentWebhookPayloadError
 
@@ -155,12 +170,20 @@ class PaymentWebhookService:
             await commiter.commit()
             return PaymentWebhookResponse(message="Webhook processed")
 
+        await session.refresh(order, with_for_update=True)
+        if is_robokassa and event.payload.get("Shp_order_number", order.order_number) != order.order_number:
+            raise InvalidPaymentWebhookPayloadError
+
         ignore_event = (
             (
                 event.event_type in {"payment.failed", "payment.canceled"}
-                and payment.status == "paid"
+                and (payment.status == "paid" or order.payment_status in {"paid", "refunded", "partial_refunded"})
             )
             or (event.event_type == "payment.succeeded" and payment.status == "paid")
+            or (event.event_type == "payment.waiting_for_capture" and (
+                payment.status in {"paid", "cancelled", "failed"}
+                or order.payment_status in {"paid", "refunded", "partial_refunded"}
+            ))
             or (
                 event.event_type == "refund.succeeded"
                 and payment.refund_status == "refunded"
@@ -201,6 +224,13 @@ class PaymentWebhookService:
                 )
                 await order_repository.update_payment_status(
                     session=session, order=order, payment_status="cancelled"
+                )
+            elif event.event_type == "payment.waiting_for_capture":
+                await payment_repository.update_status(
+                    session=session, payment=payment, status="waiting_for_capture"
+                )
+                await order_repository.update_payment_status(
+                    session=session, order=order, payment_status="waiting_for_capture"
                 )
             elif event.event_type == "payment.failed":
                 await payment_repository.update_status(

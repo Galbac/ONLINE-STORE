@@ -1,7 +1,7 @@
 import os
 from datetime import tzinfo
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 from urllib.parse import quote_plus
 from zoneinfo import ZoneInfo
 
@@ -403,6 +403,8 @@ class PaymentsSettings(BaseSettings):
     robokassa_password_1: str = Field(default="", alias="ROBOKASSA_PASSWORD_1")
     robokassa_password_2: str = Field(default="", alias="ROBOKASSA_PASSWORD_2")
     robokassa_is_test: bool = Field(default=False, alias="ROBOKASSA_IS_TEST")
+    robokassa_hash_algorithm: Literal["md5", "sha256", "sha512"] = Field(default="md5", alias="ROBOKASSA_HASH_ALGORITHM")
+    webhook_max_body_bytes: int = Field(default=65536, ge=1024, le=1048576, alias="PAYMENT_WEBHOOK_MAX_BODY_BYTES")
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

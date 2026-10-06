@@ -1,9 +1,11 @@
 from dishka.integrations.fastapi import FromDishka, inject
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
+from fastapi.responses import PlainTextResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from source.api.dependencies import get_current_user, require_admin_or_manager
 from source.common.commiter import Commiter
+from source.config.settings import settings
 from source.db.models.user import User
 from source.errors.auth import (
     InactiveUserError,
@@ -303,7 +305,7 @@ async def refund_payment(
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Ошибка провайдера") from error
 
 
-@router.post("/payments/webhook", response_model=PaymentWebhookResponse, status_code=status.HTTP_200_OK)
+@router.api_route("/payments/webhook", methods=["GET", "POST"], response_model=PaymentWebhookResponse, status_code=status.HTTP_200_OK)
 @inject
 async def process_payment_webhook(
     request: Request,
@@ -329,8 +331,23 @@ async def process_payment_webhook(
     push_subscription_repository: FromDishka[PushSubscriptionRepository] = None,
     web_push_service: FromDishka[WebPushService] = None,
 ) -> PaymentWebhookResponse:
-    raw_body = await request.body()
+    if request.method == "GET":
+        raw_body = request.scope.get("query_string", b"")
+    else:
+        raw_body = bytearray()
+        async for chunk in request.stream():
+            raw_body.extend(chunk)
+            if len(raw_body) > settings.payments.webhook_max_body_bytes:
+                raise HTTPException(status_code=413, detail="Webhook слишком большой")
+        raw_body = bytes(raw_body)
+    if len(raw_body) > settings.payments.webhook_max_body_bytes:
+        raise HTTPException(status_code=413, detail="Webhook слишком большой")
     try:
+        robokassa_params = None
+        if not raw_body.lstrip().startswith(b"{"):
+            robokassa_params = payment_provider_service.parse_robokassa_params(raw_body)
+        elif request.method == "GET":
+            raise InvalidPaymentWebhookPayloadError
         result = await payment_webhook_service.process_webhook(
             raw_body=raw_body,
             signature=x_payment_signature,
@@ -354,10 +371,8 @@ async def process_payment_webhook(
             push_subscription_repository=push_subscription_repository,
             web_push_service=web_push_service,
         )
-        if b"OutSum=" in raw_body:
-            from fastapi.responses import PlainTextResponse
-            from urllib.parse import parse_qs
-            return PlainTextResponse("OK" + parse_qs(raw_body.decode())["InvId"][0])
+        if robokassa_params is not None:
+            return PlainTextResponse("OK" + robokassa_params["InvId"])
         return result
     except InvalidPaymentWebhookSignatureError as error:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Неверная подпись webhook") from error

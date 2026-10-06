@@ -71,6 +71,29 @@ class ProviderRefund:
 
 
 class PaymentProviderService:
+    def parse_robokassa_params(self, raw_body: bytes) -> dict[str, str]:
+        try:
+            params = urllib.parse.parse_qs(
+                raw_body.decode("utf-8"), keep_blank_values=True,
+                strict_parsing=True, max_num_fields=64, errors="strict",
+            )
+        except (UnicodeError, ValueError) as error:
+            raise InvalidPaymentWebhookPayloadError from error
+        if any(len(values) != 1 for values in params.values()):
+            raise InvalidPaymentWebhookPayloadError
+        result = {key: values[0] for key, values in params.items()}
+        if any(not result.get(key) for key in ("OutSum", "InvId", "SignatureValue")):
+            raise InvalidPaymentWebhookPayloadError
+        if not result["InvId"].isascii() or not result["InvId"].isdigit():
+            raise InvalidPaymentWebhookPayloadError
+        if len(result["InvId"]) > 19 or not 0 < int(result["InvId"]) <= 9223372036854775807:
+            raise InvalidPaymentWebhookPayloadError
+        if any(":" in value for key, value in result.items() if key.startswith("Shp_")):
+            raise InvalidPaymentWebhookPayloadError
+        if any(":" in key or "=" in key for key in result if key.startswith("Shp_")):
+            raise InvalidPaymentWebhookPayloadError
+        return result
+
     async def request_yookassa(
         self,
         *,
@@ -181,7 +204,7 @@ class PaymentProviderService:
             signature_source = f"{merchant_login}:{out_sum}:{inv_id}:{password_1}"
             if shp_signature_part:
                 signature_source = f"{signature_source}:{shp_signature_part}"
-            signature_value = hashlib.md5(signature_source.encode("utf-8")).hexdigest()
+            signature_value = hashlib.new(settings.payments.robokassa_hash_algorithm, signature_source.encode("utf-8")).hexdigest()
 
             query_params: dict[str, str] = {
                 "MerchantLogin": merchant_login,
@@ -199,7 +222,7 @@ class PaymentProviderService:
 
             payment_url = f"https://auth.robokassa.ru/Merchant/Index.aspx?{urllib.parse.urlencode(query_params)}"
             return ProviderPayment(
-                provider_payment_id=f"robokassa-{order_number}",
+                provider_payment_id=f"robokassa-{inv_id}" if payment_id is not None else f"robokassa-{order_number}",
                 payment_url=payment_url,
                 status="pending",
             )
@@ -331,23 +354,26 @@ class PaymentProviderService:
             raw_str = ""
 
         # Robokassa ResultURL signature check
-        if "OutSum=" in raw_str or "SignatureValue=" in raw_str:
-            params = urllib.parse.parse_qs(raw_str)
-            out_sum = params.get("OutSum", [""])[0]
-            inv_id = params.get("InvId", [""])[0]
-            sig_received = params.get("SignatureValue", [""])[0]
+        if not raw_str.lstrip().startswith("{"):
+            try:
+                params = self.parse_robokassa_params(raw_body)
+            except InvalidPaymentWebhookPayloadError:
+                return False
+            out_sum = params["OutSum"]
+            inv_id = params["InvId"]
+            sig_received = params["SignatureValue"]
             pwd2 = robokassa_password_2 or settings.payments.robokassa_password_2
             if not pwd2 or not sig_received:
                 return False
 
-            shp_params = {k: v[0] for k, v in params.items() if k.startswith("Shp_")}
+            shp_params = {k: v for k, v in params.items() if k.startswith("Shp_")}
             sorted_shp = sorted(shp_params.items(), key=lambda x: x[0])
             shp_part = ":".join(f"{k}={v}" for k, v in sorted_shp)
             sign_str = f"{out_sum}:{inv_id}:{pwd2}"
             if shp_part:
                 sign_str = f"{sign_str}:{shp_part}"
-            expected_sig = hashlib.md5(sign_str.encode("utf-8")).hexdigest()
-            return expected_sig.lower() == sig_received.lower()
+            expected_sig = hashlib.new(settings.payments.robokassa_hash_algorithm, sign_str.encode("utf-8")).hexdigest()
+            return hmac.compare_digest(expected_sig, sig_received.lower()) if sig_received.isascii() else False
 
         # YooKassa signature check
         if not signature or not settings.payments.provider_webhook_secret:
@@ -366,13 +392,11 @@ class PaymentProviderService:
             raise InvalidPaymentWebhookPayloadError from error
 
         # Robokassa ResultURL format
-        if "OutSum=" in raw_str or "SignatureValue=" in raw_str:
-            params = urllib.parse.parse_qs(raw_str)
-            inv_id = params.get("InvId", [None])[0]
-            out_sum = params.get("OutSum", [None])[0]
-            sig = params.get("SignatureValue", [""])[0]
-            shp_payment_id = params.get("Shp_payment_id", [None])[0]
-            shp_order_num = params.get("Shp_order_number", [None])[0]
+        if not raw_str.lstrip().startswith("{"):
+            params = self.parse_robokassa_params(raw_body)
+            inv_id = params["InvId"]
+            out_sum = params["OutSum"]
+            shp_payment_id = params.get("Shp_payment_id")
 
             if not out_sum or not inv_id:
                 raise InvalidPaymentWebhookPayloadError
@@ -381,52 +405,59 @@ class PaymentProviderService:
             if shp_payment_id is not None:
                 try:
                     parsed_payment_id = int(shp_payment_id)
-                except (ValueError, TypeError):
-                    pass
+                except (ValueError, TypeError) as error:
+                    raise InvalidPaymentWebhookPayloadError from error
+                if parsed_payment_id <= 0 or str(parsed_payment_id) != inv_id:
+                    raise InvalidPaymentWebhookPayloadError
 
-            provider_payment_id = f"robokassa-{shp_order_num or inv_id}"
-            event_id = f"robokassa:{provider_payment_id}:{sig or out_sum}"
+            provider_payment_id = f"robokassa-{inv_id}"
+            event_id = f"robokassa:payment.succeeded:{inv_id}"
 
             return ProviderWebhookEvent(
                 provider_event_id=str(event_id),
                 event_type="payment.succeeded",
                 provider_payment_id=provider_payment_id,
-                payment_id=parsed_payment_id,
+                payment_id=parsed_payment_id or int(inv_id),
                 status="succeeded",
-                payload={
-                    "InvId": inv_id,
-                    "OutSum": out_sum,
-                    "SignatureValue": sig,
-                    "raw": raw_str,
-                },
+                payload={key: value for key, value in params.items() if key in {"InvId", "OutSum"} or key.startswith("Shp_")},
             )
 
         # YooKassa JSON format
+        def unique_object(pairs):
+            result = {}
+            for key, value in pairs:
+                if key in result:
+                    raise InvalidPaymentWebhookPayloadError
+                result[key] = value
+            return result
+
         try:
-            payload = json.loads(raw_str)
-        except json.JSONDecodeError as error:
+            payload = json.loads(raw_str, object_pairs_hook=unique_object)
+        except (json.JSONDecodeError, RecursionError) as error:
             raise InvalidPaymentWebhookPayloadError from error
 
         if not isinstance(payload, dict):
             raise InvalidPaymentWebhookPayloadError
         event_type = payload.get("event")
         event_object = payload.get("object")
-        if not isinstance(event_type, str) or not isinstance(event_object, dict):
+        if not isinstance(event_type, str) or not event_type or len(event_type) > 100 or not isinstance(event_object, dict):
             raise InvalidPaymentWebhookPayloadError
 
         provider_payment_id = event_object.get("id")
-        metadata = event_object.get("metadata") or {}
+        metadata = event_object.get("metadata", {})
+        if metadata is None:
+            metadata = {}
+        if not isinstance(metadata, dict) or not isinstance(provider_payment_id, str) or not provider_payment_id or len(provider_payment_id) > 128:
+            raise InvalidPaymentWebhookPayloadError
         payment_id = metadata.get("payment_id")
         try:
             parsed_payment_id = int(payment_id) if payment_id is not None else None
         except (TypeError, ValueError) as error:
             raise InvalidPaymentWebhookPayloadError from error
 
-        provider_event_id = payload.get("id")
-        if provider_event_id is None:
-            if not provider_payment_id:
-                raise InvalidPaymentWebhookPayloadError
-            provider_event_id = f"{event_type}:{provider_payment_id}"
+        if event_type.startswith("refund.") and not isinstance(event_object.get("payment_id"), str):
+            raise InvalidPaymentWebhookPayloadError
+        provider_event_id = f"yookassa:{event_type}:{provider_payment_id}"
 
         return ProviderWebhookEvent(
             provider_event_id=str(provider_event_id),
